@@ -8,7 +8,7 @@ import promiseLimit from 'promise-limit';
 import { DataSource } from 'typeorm';
 import { ModuleRef } from '@nestjs/core';
 import { DI } from '@/di-symbols.js';
-import type { FollowingsRepository, InstancesRepository, MiMeta, UserProfilesRepository, UserPublickeysRepository, UsersRepository } from '@/models/_.js';
+import type { FollowingsRepository, InstancesRepository, MiMeta, UserProfilesRepository, UsersRepository } from '@/models/_.js';
 import type { Config } from '@/config.js';
 import type { MiLocalUser, MiRemoteUser } from '@/models/User.js';
 import { MiUser } from '@/models/User.js';
@@ -94,9 +94,6 @@ export class ApPersonService implements OnModuleInit {
 
 		@Inject(DI.userProfilesRepository)
 		private userProfilesRepository: UserProfilesRepository,
-
-		@Inject(DI.userPublickeysRepository)
-		private userPublickeysRepository: UserPublickeysRepository,
 
 		@Inject(DI.instancesRepository)
 		private instancesRepository: InstancesRepository,
@@ -681,10 +678,7 @@ export class ApPersonService implements OnModuleInit {
 		}
 
 		if (person.publicKey) {
-			await this.userPublickeysRepository.update({ userId: exist.id }, {
-				keyId: person.publicKey.id,
-				keyPem: person.publicKey.publicKeyPem,
-			});
+			await this.updatePublicKey(exist.id, person.publicKey);
 		}
 
 		let _description: string | null = null;
@@ -745,6 +739,19 @@ export class ApPersonService implements OnModuleInit {
 		return 'skip';
 	}
 
+	private async updatePublicKey(userId: MiRemoteUser['id'], publicKey: NonNullable<IActor['publicKey']>): Promise<void> {
+		const { id: keyId, publicKeyPem: keyPem } = publicKey;
+		await this.db.transaction(async manager => {
+			const current = await manager.findOne(MiUserPublickey, {
+				where: { userId },
+				lock: { mode: 'pessimistic_write' },
+			});
+			if (!current || (current.keyId === keyId && current.keyPem === keyPem)) return;
+
+			await manager.update(MiUserPublickey, { userId }, { keyId, keyPem });
+		});
+	}
+
 	/**
 	 * Personを解決します。
 	 *
@@ -797,7 +804,7 @@ export class ApPersonService implements OnModuleInit {
 
 		// Resolve to Object(may be Note) arrays
 		const unresolvedItems = isCollection(collection) ? collection.items : collection.orderedItems;
-		const items = await Promise.all(toArray(unresolvedItems).map(x => _resolver.resolve(x)));
+		const items = await Promise.all(toArray(unresolvedItems).map(x => _resolver.resolveFeaturedItem(x)));
 
 		// Resolve and regist Notes
 		const limit = promiseLimit<MiNote | null>(2);

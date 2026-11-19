@@ -12,6 +12,8 @@ import type { ModerationLogService } from '@/core/ModerationLogService.js';
 import type { GlobalEventService } from '@/core/GlobalEventService.js';
 import type { HttpRequestService } from '@/core/HttpRequestService.js';
 import { AvatarDecorationService } from '@/core/AvatarDecorationService.js';
+import type { RoleService } from '@/core/RoleService.js';
+import GetAvatarDecorationsEndpoint from '@/server/api/endpoints/get-avatar-decorations.js';
 
 describe('AvatarDecorationService', () => {
 	const user = { id: 'user1', username: 'alice', host: 'remote.example' } as MiUser;
@@ -74,6 +76,50 @@ describe('AvatarDecorationService', () => {
 			{ publishInternalEvent: publish } as unknown as GlobalEventService,
 			{ send } as unknown as HttpRequestService,
 		);
+	});
+
+	test('the public endpoint reuses the local decoration cache until a change is published', async () => {
+		find.mockResolvedValueOnce([{
+			id: 'local1',
+			name: 'Frame',
+			description: '',
+			url: 'https://local.example/frame.png',
+			roleIdsThatCanBeUsedThisDecoration: ['public', 'private'],
+		}]).mockResolvedValueOnce([]);
+		const endpoint = new GetAvatarDecorationsEndpoint(service, {
+			getRoles: async () => [{ id: 'public', isPublic: true }, { id: 'private', isPublic: false }],
+		} as unknown as RoleService);
+
+		const first = await endpoint.exec({}, null, null, null);
+		const second = await endpoint.exec({}, null, null, null);
+
+		expect(first[0].roleIdsThatCanBeUsedThisDecoration).toEqual(['public']);
+		expect(second).toEqual(first);
+		expect(find).toHaveBeenCalledTimes(1);
+
+		await onMessage('', JSON.stringify({
+			channel: 'internal',
+			message: { type: 'avatarDecorationDeleted', body: { id: 'local1' } },
+		}));
+
+		expect(await endpoint.exec({}, null, null, null)).toEqual([]);
+		expect(find).toHaveBeenCalledTimes(2);
+	});
+
+	test.each([false, true])('does not cache an in-flight list after a change (withRemote: %s)', async withRemote => {
+		const read = Promise.withResolvers<Partial<MiAvatarDecoration>[]>();
+		find.mockReturnValueOnce(read.promise);
+		const pending = service.getAll(false, withRemote);
+
+		await onMessage('', JSON.stringify({
+			channel: 'internal',
+			message: { type: 'avatarDecorationDeleted', body: { id: 'local1' } },
+		}));
+		read.resolve([{ id: 'local1' }]);
+		await pending;
+
+		expect(await service.getAll(false, withRemote)).toEqual([]);
+		expect(find).toHaveBeenCalledTimes(2);
 	});
 
 	describe('group decorations', () => {

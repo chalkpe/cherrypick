@@ -8,6 +8,7 @@ import { createECDH, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
 import push from 'web-push';
+import type { QueryRunner } from 'typeorm';
 import { Test } from '@nestjs/testing';
 import type { TestingModule } from '@nestjs/testing';
 import { CoreModule } from '@/core/CoreModule.js';
@@ -18,16 +19,17 @@ import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { IdService } from '@/core/IdService.js';
 import { HttpRequestService } from '@/core/HttpRequestService.js';
 import { PushNotificationService } from '@/core/PushNotificationService.js';
+import { RoleService } from '@/core/RoleService.js';
 import { ChatService } from '@/core/ChatService.js';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import type { Config } from '@/config.js';
 import type * as Redis from 'ioredis';
-import { MiChatMessage, MiChatRoom, MiChatRoomMembership, MiChatRoomUserSettings, MiUser } from '@/models/_.js';
+import { MiBlocking, MiChatMessage, MiChatRoom, MiChatRoomMembership, MiChatRoomUserSettings, MiUser } from '@/models/_.js';
 import type { MiMeta, SwSubscriptionsRepository } from '@/models/_.js';
 import type { MiRemoteUser } from '@/models/User.js';
-import { api, connectStream, initTestDb, origin, relativeFetch, signup } from '../utils.js';
+import { api, connectStream, initTestDb, origin, relativeFetch, role, signup } from '../utils.js';
 import type { UserToken } from '../utils.js';
 import { waitForChatNotificationTurn } from '../misc/chat-notification-drain.js';
 
@@ -834,6 +836,204 @@ describe('그룹 알림과 채널 읽음', () => {
 		expect(await redis.sismember(`newChatMessagesExists:${owner.id}`, `room:${roomId}`)).toBe(0);
 		expect(await db.getRepository(MiChatRoomUserSettings).countBy({ roomId })).toBe(0);
 	});
+
+	test('글쓴이를 차단한 수신자에게 그룹 쪽지 알림과 푸시를 보내지 않는다', async () => {
+		const reader = await signup({ username: 'blockingreader' });
+		const writer = await signup({ username: 'blockedwriter' });
+		const created = await api('chat/rooms/create', { name: '차단 알림 시험' }, reader);
+		expect(created.status).toBe(200);
+		const roomId = created.body.id;
+		expect((await api('chat/rooms/invitations/create', { roomId, userId: writer.id }, reader)).status).toBe(200);
+		expect((await api('chat/rooms/join', { roomId }, writer)).status).toBe(204);
+		const target = await db.getRepository(MiChatRoom).findOneByOrFail({ id: roomId });
+		const author = await db.getRepository(MiUser).findOneByOrFail({ id: writer.id });
+		const chat = app.get(ChatService);
+		const alerts: string[] = [];
+		const roomMessages = new Map<string, boolean>();
+		const mainStream = await connectStream(reader, 'main', event => {
+			if (event.type === 'newChatMessage' && event.body.toRoomId === roomId) alerts.push(event.body.id);
+		});
+		const roomStream = await connectStream(reader, 'chatRoom', event => {
+			if (event.type === 'message') roomMessages.set(event.body.id, event.body.shouldNotify);
+		}, { roomId });
+		let connections = 0;
+		const collector = createServer(socket => {
+			socket.on('error', () => {});
+			socket.once('data', () => { connections++; socket.destroy(); });
+		});
+		let subscription: { endpoint: string; auth: string; publickey: string } | undefined;
+		collector.listen(0, '127.0.0.1');
+		try {
+			await once(collector, 'listening');
+			const address = collector.address();
+			if (address == null || typeof address === 'string') throw new Error('push collector is not listening');
+			const keys = createECDH('prime256v1');
+			keys.generateKeys();
+			subscription = {
+				endpoint: `https://127.0.0.1:${address.port}/push`,
+				auth: randomBytes(16).toString('base64url'),
+				publickey: keys.getPublicKey().toString('base64url'),
+			};
+			expect((await api('sw/register', subscription, reader)).status).toBe(200);
+			expect((await api('blocking/create', { userId: writer.id }, reader)).status).toBe(200);
+
+			const blocked = await chat.createMessageToRoom(author, target, { text: '@blockingreader 차단한 계정의 글' });
+			await expect.poll(() => roomMessages.get(blocked.id)).toBe(false);
+			await waitForChatNotificationTurn();
+
+			expect(await unread(roomId, reader)).toMatchObject({ hasUnreadNotification: false });
+			expect(alerts).toEqual([]);
+			expect(connections).toBe(0);
+
+			expect((await api('blocking/delete', { userId: writer.id }, reader)).status).toBe(200);
+			expect((await api('blocking/create', { userId: reader.id }, writer)).status).toBe(200);
+			const reverse = await chat.createMessageToRoom(author, target, { text: '글쓴이만 수신자를 차단한 경우' });
+			await expect.poll(() => roomMessages.get(reverse.id)).toBe(true);
+			await expect.poll(() => alerts, { timeout: 10_000 }).toEqual([reverse.id]);
+			await expect.poll(() => connections, { timeout: 10_000 }).toBe(1);
+		} finally {
+			mainStream.close();
+			roomStream.close();
+			await new Promise<void>((resolve, reject) => collector.close(error => error ? reject(error) : resolve()));
+			if (subscription != null) await api('sw/unregister', subscription, reader);
+		}
+	}, 30_000);
+
+	test('차단 조회에 실패해도 저장된 그룹 글과 수정 내용을 방에 전송한다', async () => {
+		const { roomId } = await room();
+		const target = await db.getRepository(MiChatRoom).findOneByOrFail({ id: roomId });
+		const author = await db.getRepository(MiUser).findOneByOrFail({ id: member.id });
+		const chat = app.get(ChatService);
+		const received: string[] = [];
+		const stream = await connectStream(owner, 'chatRoom', event => {
+			if (event.type === 'message' || event.type === 'updated') received.push(event.body.text);
+		}, { roomId });
+		const findBy = db.manager.findBy.bind(db.manager);
+		const blocks = vi.spyOn(db.manager, 'findBy').mockImplementation((entity, where) => {
+			if (entity === MiBlocking) return Promise.reject(new Error('block lookup unavailable'));
+			return findBy(entity, where);
+		});
+		try {
+			const message = await chat.createMessageToRoom(author, target, { text: '원본' });
+			const edited = await chat.updateMessage(author.id, message.id, '@notifyowner 수정');
+			expect(edited.text).toBe('@notifyowner 수정');
+			await expect.poll(() => received).toEqual(['원본', '@notifyowner 수정']);
+			expect(await db.getRepository(MiChatMessage).findOneBy({ id: message.id })).toMatchObject({ text: '@notifyowner 수정' });
+			expect(await unread(roomId)).toMatchObject({ hasUnread: false });
+		} finally {
+			blocks.mockRestore();
+			stream.close();
+		}
+	});
+
+	test.each(['role', 'block', 'failure'] as const)('지연 알림의 준비 중 변경된 %s 판정을 발행에 반영한다', async change => {
+		const reader = await signup({ username: `latereader${change}` });
+		const readonly = await signup({ username: `readonly${change}` });
+		const writer = await signup({ username: `latewriter${change}` });
+		const readonlyRole = await role(owner, { name: 'Read only' }, {
+			chatAvailability: { priority: 2, useDefault: false, value: 'readonly' },
+		});
+		const unavailableRole = await role(owner, { name: 'No chat' }, {
+			chatAvailability: { priority: 2, useDefault: false, value: 'unavailable' },
+		});
+		const created = await api('chat/rooms/create', { name: '지연 알림 시험' }, reader);
+		expect(created.status).toBe(200);
+		const roomId = created.body.id;
+		for (const user of [readonly, writer]) {
+			expect((await api('chat/rooms/invitations/create', { roomId, userId: user.id }, reader)).status).toBe(200);
+			expect((await api('chat/rooms/join', { roomId }, user)).status).toBe(204);
+		}
+		expect((await api('admin/roles/assign', { roleId: readonlyRole.id, userId: readonly.id }, owner)).status).toBe(204);
+
+		const chat = app.get(ChatService);
+		await expect.poll(() => chat.getChatAvailability(readonly.id)).toEqual({ read: true, write: false });
+		const target = await db.getRepository(MiChatRoom).findOneByOrFail({ id: roomId });
+		const author = await db.getRepository(MiUser).findOneByOrFail({ id: writer.id });
+		const alerts = new Map<string, string[]>();
+		const streams = [];
+		for (const user of [reader, readonly]) {
+			const received: string[] = [];
+			alerts.set(user.id, received);
+			streams.push(await connectStream(user, 'main', event => {
+				if (event.type === 'newChatMessage' && event.body.toRoomId === roomId) received.push(event.body.id);
+			}));
+		}
+		const redis = app.get<Redis.Redis>(DI.redis);
+		const sadd = redis.sadd.bind(redis);
+		const reachedDeduplication = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		let messageId: string | undefined;
+		const deduplication = vi.spyOn(redis, 'sadd').mockImplementation(async (key, ...args) => {
+			const result = await sadd(key, ...args);
+			if (key === `chatRoomNotified:${messageId}`) {
+				reachedDeduplication.resolve();
+				await resume.promise;
+			}
+			return result;
+		});
+		const pushNotification = vi.spyOn(app.get(PushNotificationService), 'pushNotification');
+		const createQueryRunner = db.createQueryRunner.bind(db);
+		const finalPrimaryReads = new Map<string, QueryRunner>();
+		const runners = vi.spyOn(db, 'createQueryRunner').mockImplementation(mode => {
+			const runner = createQueryRunner(mode);
+			if (mode === 'master') {
+				const existsBy = runner.manager.existsBy.bind(runner.manager);
+				vi.spyOn(runner.manager, 'existsBy').mockImplementation((entity, where) => {
+					if (entity === MiBlocking && 'blockeeId' in where && where.blockeeId === writer.id && 'blockerId' in where && typeof where.blockerId === 'string') {
+						finalPrimaryReads.set(where.blockerId, runner);
+					}
+					return existsBy(entity, where);
+				});
+			}
+			return runner;
+		});
+		const roleService = app.get(RoleService);
+		const getPolicies = roleService.getUserPolicies.bind(roleService);
+		let failRoleLookup = false;
+		const policies = vi.spyOn(roleService, 'getUserPolicies').mockImplementation(userId => {
+			if (userId === reader.id && failRoleLookup) {
+				failRoleLookup = false;
+				return Promise.reject(new Error('role lookup unavailable'));
+			}
+			return getPolicies(userId);
+		});
+		try {
+			const message = await chat.createMessageToRoom(author, target, { text: '지연 알림' });
+			messageId = message.id;
+			await reachedDeduplication.promise;
+			if (change === 'role') {
+				expect((await api('admin/roles/assign', { roleId: unavailableRole.id, userId: reader.id }, owner)).status).toBe(204);
+				await expect.poll(() => chat.getChatAvailability(reader.id)).toEqual({ read: false, write: false });
+			} else if (change === 'block') {
+				expect((await api('blocking/create', { userId: writer.id }, reader)).status).toBe(200);
+			} else {
+				failRoleLookup = true;
+			}
+			resume.resolve();
+			await expect.poll(() => alerts.get(readonly.id)).toEqual([message.id]);
+			await expect.poll(() => pushNotification.mock.calls.some(([id, type, body]) => id === readonly.id && type === 'newChatMessage' && body?.id === message.id)).toBe(true);
+			await waitForChatNotificationTurn();
+			expect(alerts.get(reader.id)).toEqual([]);
+			expect(pushNotification.mock.calls.filter(([id, type]) => id === reader.id && type === 'newChatMessage')).toEqual([]);
+			expect(await redis.smembers(`chatRoomNotified:${message.id}`)).toEqual([readonly.id]);
+			if (change === 'block') expect(finalPrimaryReads.get(reader.id)?.isReleased).toBe(true);
+			expect(finalPrimaryReads.get(readonly.id)?.isReleased).toBe(true);
+
+			if (change === 'failure') {
+				expect(failRoleLookup).toBe(false);
+				const recovered = await chat.createMessageToRoom(author, target, { text: '역할 조회 복구 후 알림' });
+				await expect.poll(() => alerts.get(reader.id), { timeout: 10_000 }).toEqual([recovered.id]);
+				await expect.poll(() => pushNotification.mock.calls.some(([id, type, body]) => id === reader.id && type === 'newChatMessage' && body?.id === recovered.id)).toBe(true);
+			}
+		} finally {
+			resume.resolve();
+			deduplication.mockRestore();
+			pushNotification.mockRestore();
+			runners.mockRestore();
+			policies.mockRestore();
+			for (const stream of streams) stream.close();
+		}
+	}, 30_000);
 
 	test('실제 푸시 전송 경로는 새 멘션에만 연결하고 조용한 글·중복·끄기에서는 연결하지 않는다', async () => {
 		let connections = 0;

@@ -83,7 +83,7 @@ export class NoteStreamingHidingService {
 
 		for (let i = 0; i < clonedNotes.length; i++) {
 			if (shouldHide[i]) {
-				this.noteEntityService.hideNote(clonedNotes[i]);
+				this.noteEntityService.hideNote(clonedNotes[i], meId);
 			}
 		}
 

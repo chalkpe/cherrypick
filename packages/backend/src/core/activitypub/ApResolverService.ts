@@ -23,8 +23,9 @@ import { LoggerService } from '@/core/LoggerService.js';
 import type Logger from '@/logger.js';
 import { SystemAccountService } from '@/core/SystemAccountService.js';
 import { IdentifiableError } from '@/misc/identifiable-error.js';
+import { StatusError } from '@/misc/status-error.js';
 import type { ICollection, IObject, IOrderedCollection } from './type.js';
-import { isCollectionOrOrderedCollection } from './type.js';
+import { isCollectionOrOrderedCollection, isNote } from './type.js';
 import { ApDbResolverService } from './ApDbResolverService.js';
 import { ApRendererService } from './ApRendererService.js';
 import { ApRequestService } from './ApRequestService.js';
@@ -34,6 +35,8 @@ import { ModuleRef } from '@nestjs/core';
 @Injectable({ scope: Scope.TRANSIENT })
 export class Resolver {
 	private history: Set<string>;
+	private readonly prefetchedNotes = new Map<string, IObject>();
+	private readonly permanentNoteFailures = new Map<string, StatusError>();
 	private user?: MiLocalUser;
 	private logger: Logger;
 	private recursionLimit = 256;
@@ -78,6 +81,8 @@ export class Resolver {
 	@bindThis
 	public signAs(user: MiLocalUser): void {
 		this.user = user;
+		this.prefetchedNotes.clear();
+		this.permanentNoteFailures.clear();
 	}
 
 	@bindThis
@@ -100,6 +105,39 @@ export class Resolver {
 			return collection;
 		} else {
 			throw new IdentifiableError('f100eccf-f347-43fb-9b45-96a0831fb635', `unrecognized collection type: ${collection.type}`);
+		}
+	}
+
+	public async resolveFeaturedItem(value: string | IObject): Promise<IObject> {
+		const object = await this.resolve(value);
+		if (typeof value === 'string' && isNote(object)) {
+			this.prefetchedNotes.set(value, object);
+		}
+		return object;
+	}
+
+	public async resolveNote(value: string | IObject): Promise<IObject> {
+		if (typeof value !== 'string') {
+			if (value.id != null) this.prefetchedNotes.delete(value.id);
+			return await this.resolve(value);
+		}
+
+		const prefetched = this.prefetchedNotes.get(value);
+		if (prefetched != null) {
+			// 미리 조회한 객체는 한 번만 사용한다. 글을 처리하는 도중의 재진입은 기존 중복 검사에 맡긴다.
+			this.prefetchedNotes.delete(value);
+			return prefetched;
+		}
+
+		const failure = this.permanentNoteFailures.get(value);
+		if (failure != null) throw failure;
+
+		try {
+			return await this.resolve(value);
+		} catch (err) {
+			// 같은 대상의 영구 조회 실패는 같은 인용을 처리할 때도 유지한다.
+			if (err instanceof StatusError && !err.isRetryable) this.permanentNoteFailures.set(value, err);
+			throw err;
 		}
 	}
 

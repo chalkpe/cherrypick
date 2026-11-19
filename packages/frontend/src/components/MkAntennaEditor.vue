@@ -60,6 +60,7 @@ import MkSwitch from '@/components/MkSwitch.vue';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { deepMerge } from '@/utility/merge.js';
 import { useMkSelect } from '@/composables/use-mkselect.js';
 
@@ -201,7 +202,7 @@ async function deleteAntenna() {
 
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.removeAreYouSure({ x: initialAntenna.name }),
+		text: i18n.tsx.removeAreYouSure({ x: mfmPlain(initialAntenna.name) }),
 	});
 	if (canceled) return;
 

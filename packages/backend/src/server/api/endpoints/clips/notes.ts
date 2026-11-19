@@ -90,7 +90,11 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				.leftJoinAndSelect('renote.user', 'renoteUser')
 				.andWhere('clipNote.clipId = :clipId', { clipId: clip.id });
 
-			this.queryService.generateVisibilityQuery(query, me);
+			// The unfiltered page is only for owners managing the slots they already saved.
+			const ownerList = clip.userId === me?.id && ps.search == null;
+			const ownerPage = ownerList ? query.clone().limit(ps.limit) : null;
+
+			this.queryService.generateNoteContentVisibilityQuery(query, me);
 			this.queryService.generateBlockedHostQueryForNote(query);
 			// this.queryService.generateSuspendedUserQueryForNote(query); // To avoid problems with removing notes, ignoring suspended user for now
 			if (me) {
@@ -109,11 +113,24 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				}
 			}
 
+			if (ownerPage) {
+				const notes = await ownerPage.getMany();
+				if (notes.length === 0) return [];
+				const visible = await query
+					.select('note.id', 'id')
+					.andWhere('note.id IN (:...clipPageIds)', { clipPageIds: notes.map(note => note.id) })
+					.getRawMany<{ id: string }>();
+				const visibleIds = new Set(visible.map(note => note.id));
+				const hiddenNoteIds = new Set(notes.filter(note => !visibleIds.has(note.id)).map(note => note.id));
+				return await this.noteEntityService.packMany(notes, me, { useCurrentFollowings: true, hiddenNoteIds });
+			}
+
 			const notes = await query
 				.limit(ps.limit)
 				.getMany();
 
-			return await this.noteEntityService.packMany(notes, me);
+			const packed = await this.noteEntityService.packMany(notes, me, { useCurrentFollowings: true });
+			return packed.filter(note => !note.isHidden);
 		});
 	}
 }

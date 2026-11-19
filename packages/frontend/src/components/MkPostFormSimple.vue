@@ -18,7 +18,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<header v-if="showForm" :class="$style.header">
 			<div :class="$style.headerLeft">
 				<button v-if="!fixed" :class="$style.cancel" class="_button" @click="cancel"><i class="ti ti-x"></i></button>
-				<button ref="accountMenuEl" v-click-anime v-tooltip="i18n.ts.account" :class="[$style.account, { [$style.fixed]: fixed }]" class="_button" @click="openAccountMenu">
+				<button ref="accountMenuEl" v-click-anime v-tooltip="i18n.ts.account" :class="[$style.account, { [$style.fixed]: fixed }]" class="_button" :disabled="posting || uploader.uploading.value" @click="openAccountMenu">
 					<img :class="[$style.avatar, { [$style.square]: prefer.s.squareAvatars }]" :src="(postAccount ?? $i).avatarUrl"/>
 				</button>
 			</div>
@@ -60,7 +60,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		</header>
 	</Transition>
 	<div v-if="quoteId && showForm" :class="$style.withQuote"><i class="ti ti-quote"></i> {{ i18n.ts.quoteAttached }}<button class="_button" @click="quoteId = null; renoteTargetNote = null;"><i class="ti ti-x"></i></button></div>
-	<MkEventEditor v-if="event && showForm" v-model="event" @destroyed="event = null"/>
+	<MkEventEditor v-if="event && showForm" :key="draftRestoreVersion" v-model="event" @destroyed="event = null"/>
 	<div v-if="visibility === 'specified' && showForm && !props.updateMode" :class="$style.toSpecified">
 		<span style="margin-right: 8px;">{{ i18n.ts.recipient }}</span>
 		<div :class="$style.visibleUsers">
@@ -71,6 +71,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<button class="_buttonPrimary" style="padding: 4px; border-radius: 8px;" @click="addVisibleUser"><i class="ti ti-plus ti-fw"></i></button>
 		</div>
 	</div>
+	<MkInfo v-if="unavailableRecipientIds.length > 0" warn>
+		{{ i18n.tsx._postForm.unavailableDraftRecipients({ count: unavailableRecipientIds.length }) }}
+		<button type="button" class="_textButton" @click="unavailableRecipientIds = []">{{ i18n.ts._postForm.removeUnavailableDraftRecipients }}</button>
+	</MkInfo>
 	<MkInfo v-if="!store.r.tips.value.postForm && showForm" :class="$style.showHowToUse" closable @close="closeTip('postForm')">
 		<button class="_textButton" @click="showTour">{{ i18n.ts._postForm.showHowToUse }}</button>
 	</MkInfo>
@@ -103,15 +107,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<div v-if="maxTextLength - textLength < 100" :class="['_acrylic', $style.textCount, { [$style.textOver]: textLength > maxTextLength }]">{{ maxTextLength - textLength }}</div>
 	</div>
 	<input v-show="withHashtags && showForm" ref="hashtagsInputEl" v-model="hashtags" name="search" autocomplete="off" :class="$style.hashtags" :placeholder="i18n.ts.hashtags" list="hashtags" @paste="pastePlainTextInsteadOfUriList">
-	<XPostFormAttaches v-if="showForm" v-model="files" @detach="detachFile" @changeSensitive="updateFileSensitive" @changeName="updateFileName"/>
+	<XPostFormAttaches v-if="showForm" v-model="files" :getAccountToken="getAttachmentAccountToken" @detach="detachFile" @changeSensitive="updateFileSensitive" @changeName="updateFileName"/>
 	<div v-if="uploader.items.value.length > 0" style="padding: 12px;">
 		<MkTip k="postFormUploader" style="margin-bottom: 10px;">
 			{{ i18n.ts._postForm.uploaderTip }}
 		</MkTip>
 		<MkUploaderItems :items="uploader.items.value" @showMenu="(item, ev) => showPerUploadItemMenu(item, ev)" @showMenuViaContextmenu="(item, ev) => showPerUploadItemMenuViaContextmenu(item, ev)"/>
 	</div>
-	<MkPollEditor v-if="poll && !props.updateMode && showForm" v-model="poll" @destroyed="poll = null"/>
-	<MkScheduledNoteDelete v-if="scheduledNoteDelete" v-model="scheduledNoteDelete" @destroyed="scheduledNoteDelete = null"/>
+	<MkPollEditor v-if="poll && !props.updateMode && showForm" :key="draftRestoreVersion" v-model="poll" @destroyed="poll = null"/>
+	<MkScheduledNoteDelete v-if="scheduledNoteDelete" :key="draftRestoreVersion" v-model="scheduledNoteDelete" @destroyed="scheduledNoteDelete = null"/>
 	<MkDeliveryTargetEditor v-if="deliveryTargets && !props.updateMode" v-model="deliveryTargets" @destroyed="deliveryTargets = null"/>
 	<MkNotePreview v-if="showPreview && showForm" v-show="textLength > 0" :class="$style.preview" :text="text" :files="files" :poll="poll ?? undefined" :useCw="useCw" :cw="cw" :user="postAccount ?? $i" :showProfile="showProfilePreview"/>
 	<div v-if="showingOptions && showForm" style="padding: 8px 16px;">
@@ -154,10 +158,10 @@ import { host, url } from '@@/js/config.js';
 import { erase, unique } from '@@/js/array.js';
 import MkUploaderItems from './MkUploaderItems.vue';
 import type { ShallowRef } from 'vue';
-import type { PostFormProps } from '@/types/post-form.js';
+import type { PostFormProps, StoredDrafts } from '@/types/post-form.js';
 import type { MenuItem } from '@/types/menu.js';
 import type { PollEditorModelValue } from '@/components/MkPollEditor.vue';
-import type { UploaderItem } from '@/composables/use-uploader.js';
+import type { UploadAccount, UploaderItem } from '@/composables/use-uploader.js';
 import type { DeleteScheduleEditorModelValue } from '@/components/MkScheduledNoteDelete.vue';
 import type { DeliveryTargetEditorModelValue } from '@/components/MkDeliveryTargetEditor.vue';
 import { parseMfmCached } from '@/utility/mfm-cache.js';
@@ -181,7 +185,8 @@ import { i18n } from '@/i18n.js';
 import { instance } from '@/instance.js';
 import { ensureSignin, notesCount, incNotesCount } from '@/i.js';
 import { clampNoteVisibility, nextNoteVisibility } from '@/utility/note-visibility-limit.js';
-import { getAccounts, getAccountMenu } from '@/accounts.js';
+import { getAccountMenu } from '@/accounts.js';
+import { getPostAccountToken, getStoredPostAccount } from '@/utility/post-account-token.js';
 import { deepClone } from '@/utility/clone.js';
 import MkRippleEffect from '@/components/MkRippleEffect.vue';
 import { miLocalStorage } from '@/local-storage.js';
@@ -237,6 +242,11 @@ const submitButtonEl = useTemplateRef('submitButtonEl');
 const showForm = ref(false);
 
 const posting = ref(false);
+const postAccount = ref<Misskey.entities.MeDetailed | null>(null);
+const postingAccount = computed(() => postAccount.value ?? $i);
+const postAccountId = computed(() => postingAccount.value.id);
+const attachmentAccountId = ref($i.id);
+let recipientsRevision = 0;
 const posted = ref(false);
 const text = ref(props.initialText ?? '');
 const files = ref(props.initialFiles ?? ([] as Misskey.entities.DriveFile[]));
@@ -253,6 +263,7 @@ const cw = ref<string | null>(props.initialCw ?? null);
 const localOnly = ref(props.initialLocalOnly ?? (prefer.s.rememberNoteVisibility ? store.s.localOnly : prefer.s.defaultNoteLocalOnly));
 const requestedVisibility = ref(props.initialVisibility ?? (prefer.s.rememberNoteVisibility ? store.s.visibility : prefer.s.defaultNoteVisibility));
 const visibleUsers = ref<Misskey.entities.UserLite[]>([]);
+const unavailableRecipientIds = ref<string[]>([]);
 if (props.initialVisibleUsers) {
 	props.initialVisibleUsers.forEach(u => pushVisibleUser(u));
 }
@@ -272,14 +283,15 @@ const renoteTargetNote: ShallowRef<PostFormProps['renote'] | null> = shallowRef(
 const replyTargetNote: ShallowRef<PostFormProps['reply'] | null> = shallowRef(props.reply);
 const targetChannel = shallowRef(props.channel);
 const visibility = computed({
-	get: () => targetChannel.value ? 'public' as const : clampNoteVisibility(requestedVisibility.value, $i.noteVisibilityLimit ?? 'none', $i.isSilenced),
+	get: () => targetChannel.value ? 'public' as const : clampNoteVisibility(requestedVisibility.value, postingAccount.value.noteVisibilityLimit ?? 'none', postingAccount.value.isSilenced),
 	set: (value: typeof Misskey.noteVisibilities[number]) => {
-		requestedVisibility.value = targetChannel.value ? 'public' : clampNoteVisibility(value, $i.noteVisibilityLimit ?? 'none', $i.isSilenced);
+		requestedVisibility.value = targetChannel.value ? 'public' : clampNoteVisibility(value, postingAccount.value.noteVisibilityLimit ?? 'none', postingAccount.value.isSilenced);
 	},
 });
 const deliveryTargets = ref<DeliveryTargetEditorModelValue | null>(null);
 
-const serverDraftId = ref<string | null>(null);
+const serverDraft = ref<{ id: string; accountId: string } | null>(null);
+const draftRestoreVersion = ref(0);
 const postFormActions = getPluginHandlers('post_form_action');
 
 const scheduledNoteDelete = ref<DeleteScheduleEditorModelValue | null>(null);
@@ -294,10 +306,12 @@ const uploader = useUploader({
 });
 
 onUnmounted(() => {
+	recipientsRevision++;
 	uploader.dispose();
 });
 
 uploader.events.on('itemUploaded', ctx => {
+	attachmentAccountId.value = ctx.accountId;
 	files.value.push(ctx.item.uploaded!);
 	uploader.removeItem(ctx.item);
 });
@@ -379,6 +393,7 @@ const maxCwTextLength = 100;
 
 const canPost = computed((): boolean => {
 	return !props.mock && !posting.value && !posted.value && !uploader.uploading.value && (uploader.items.value.length === 0 || uploader.readyForUpload.value) &&
+		unavailableRecipientIds.value.length === 0 &&
 		(
 			1 <= textLength.value ||
 			1 <= files.value.length ||
@@ -402,7 +417,7 @@ const canPost = computed((): boolean => {
 
 // cannot save pure renote as draft
 const canSaveAsServerDraft = computed((): boolean => {
-	return canPost.value && (textLength.value > 0 || files.value.length > 0 || poll.value != null || event.value != null);
+	return canPost.value && (textLength.value > 0 || files.value.length > 0 || uploader.items.value.length > 0 || poll.value != null || event.value != null);
 });
 
 const withHashtags = store.model('postFormWithHashtags');
@@ -439,17 +454,17 @@ if (replyTargetNote.value && ['home', 'followers', 'specified'].includes(replyTa
 
 	if (visibility.value === 'specified') {
 		if (replyTargetNote.value.visibleUserIds) {
+			const revision = recipientsRevision;
 			misskeyApi('users/show', {
 				userIds: replyTargetNote.value.visibleUserIds.filter(uid => uid !== $i.id && uid !== replyTargetNote.value?.userId),
 			}).then(users => {
+				if (recipientsRevision !== revision) return;
 				users.forEach(u => pushVisibleUser(u));
 			});
 		}
 
 		if (replyTargetNote.value.userId !== $i.id) {
-			misskeyApi('users/show', { userId: replyTargetNote.value.userId }).then(user => {
-				pushVisibleUser(user);
-			});
+			pushVisibleUser(replyTargetNote.value.user);
 		}
 	}
 }
@@ -466,6 +481,7 @@ if (prefer.s.keepCw && replyTargetNote.value && replyTargetNote.value.cw) {
 }
 
 function watchForDraft() {
+	watch([visibleUsers, unavailableRecipientIds], () => saveDraft(), { deep: true });
 	watch(text, () => saveDraft());
 	watch(useCw, () => saveDraft());
 	watch(cw, () => saveDraft());
@@ -498,12 +514,16 @@ function checkMissingMention() {
 }
 
 function addMissingMention() {
+	const token = getPostAccountToken(postAccount.value?.id);
+	if (token === null || posting.value) return;
+	const revision = recipientsRevision;
+	const accountId = postAccountId.value;
 	const ast = parseMfmCached(text.value);
 
 	for (const x of extractMentions(ast)) {
 		if (!visibleUsers.value.some(u => (u.username === x.username) && (u.host === x.host))) {
-			misskeyApi('users/show', { username: x.username, host: x.host }).then(user => {
-				pushVisibleUser(user);
+			misskeyApi('users/show', { username: x.username, host: x.host }, token).then(user => {
+				if (recipientsRevision === revision && postAccountId.value === accountId) pushVisibleUser(user);
 			});
 		}
 	}
@@ -556,23 +576,43 @@ function focus() {
 }
 
 function chooseFileFromPc(ev: MouseEvent) {
-	if (props.mock) return;
+	if (props.mock || posting.value) return;
 
 	os.chooseFileFromPc({ multiple: true }).then(files => {
-		if (files.length === 0) return;
+		if (files.length === 0 || posting.value) return;
 		uploader.addFiles(files);
 	});
 }
 
-function chooseFileFromDrive(ev: MouseEvent) {
-	if (props.mock) return;
+function hasAttachmentsFromAnotherAccount(accountId: string) {
+	return files.value.length > 0 && attachmentAccountId.value !== accountId;
+}
 
-	chooseDriveFile({ multiple: true }).then(driveFiles => {
+function getAttachmentAccountToken() {
+	if (posting.value) return null;
+	if (hasAttachmentsFromAnotherAccount(postAccountId.value)) {
+		os.alert({ type: 'warning', text: i18n.ts._postForm.attachmentAccountMismatch });
+		return null;
+	}
+	return getPostAccountToken(postAccount.value?.id);
+}
+
+function chooseFileFromDrive(ev: MouseEvent) {
+	if (props.mock || posting.value) return;
+
+	const accountId = postAccountId.value;
+	const token = getAttachmentAccountToken();
+	if (token === null) return;
+
+	chooseDriveFile({ multiple: true, token }).then(driveFiles => {
+		if (posting.value || postAccountId.value !== accountId) return;
+		attachmentAccountId.value = accountId;
 		files.value.push(...driveFiles);
 	});
 }
 
 function detachFile(id: string) {
+	if (posting.value) return;
 	files.value = files.value.filter(x => x.id !== id);
 }
 
@@ -580,11 +620,13 @@ function updateFileSensitive(file: Misskey.entities.DriveFile, sensitive: boolea
 	if (props.mock) {
 		emit('fileChangeSensitive', file.id, sensitive);
 	}
-	files.value[files.value.findIndex(x => x.id === file.id)].isSensitive = sensitive;
+	const attached = files.value.find(x => x.id === file.id);
+	if (attached) attached.isSensitive = sensitive;
 }
 
 function updateFileName(file: Misskey.entities.DriveFile, name: string) {
-	files.value[files.value.findIndex(x => x.id === file.id)].name = name;
+	const attached = files.value.find(x => x.id === file.id);
+	if (attached) attached.name = name;
 }
 
 function setVisibility() {
@@ -596,8 +638,8 @@ function setVisibility() {
 
 	const { dispose } = os.popup(defineAsyncComponent(() => import('@/components/MkVisibilityPicker.vue')), {
 		currentVisibility: visibility.value,
-		isSilenced: $i.isSilenced,
-		noteVisibilityLimit: $i.noteVisibilityLimit ?? 'none',
+		isSilenced: postingAccount.value.isSilenced,
+		noteVisibilityLimit: postingAccount.value.noteVisibilityLimit ?? 'none',
 		anchorElement: visibilityButton.value,
 		...(replyTargetNote.value ? { isReplyVisibilitySpecified: replyTargetNote.value.visibility === 'specified' } : {}),
 	}, {
@@ -734,7 +776,7 @@ function showOtherSettings() {
 			}
 			saveServerDraft();
 		},
-	}, */...($i.policies.scheduledNoteLimit > 0 ? [{
+	}, */...((postAccount.value ?? $i).policies.scheduledNoteLimit > 0 ? [{
 		icon: 'ti ti-calendar-time',
 		text: i18n.ts.schedulePost + '...',
 		action: () => {
@@ -792,8 +834,26 @@ function pushVisibleUser(user: Misskey.entities.UserLite) {
 	}
 }
 
+async function loadDraftRecipients(ids: string[], token: string | undefined) {
+	const recipients = ids.length === 0 ? [] : await misskeyApi('users/show', { userIds: ids }, token).catch(() => []);
+	const resolvedIds = new Set(recipients.map(user => user.id));
+	return { recipients, unavailableIds: ids.filter(id => !resolvedIds.has(id)) };
+}
+
+function selectPostUser(options: { localOnly?: boolean; includeSelf?: boolean; } = {}) {
+	const token = getPostAccountToken(postAccount.value?.id);
+	if (token === null) return;
+	const id = postAccountId.value;
+	const revision = recipientsRevision;
+	return os.selectUser({ ...options, account: token == null ? undefined : { id, token } }).then(user =>
+		postAccountId.value === id && recipientsRevision === revision && !posting.value ? user : undefined,
+	);
+}
+
 function addVisibleUser() {
-	os.selectUser().then(user => {
+	if (posting.value) return;
+	selectPostUser()?.then(user => {
+		if (!user) return;
 		pushVisibleUser(user);
 
 		if (!text.value.toLowerCase().includes(`@${user.username.toLowerCase()}`)) {
@@ -807,6 +867,9 @@ function removeVisibleUser(user: Misskey.entities.UserLite) {
 }
 
 function clear(keepCw = false) {
+	recipientsRevision++;
+	serverDraft.value = null;
+	unavailableRecipientIds.value = [];
 	text.value = '';
 	if (!keepCw) cw.value = null;
 	files.value = [];
@@ -829,7 +892,7 @@ function onKeydown(ev: KeyboardEvent) {
 
 	if (prefer.s.postFormVisibilityHotkey && !props.updateMode) {
 		if (ev.ctrlKey && ev.shiftKey && !targetChannel.value) {
-			visibility.value = nextNoteVisibility(visibility.value, $i.noteVisibilityLimit ?? 'none', $i.isSilenced, replyTargetNote.value?.visibility === 'specified');
+			visibility.value = nextNoteVisibility(visibility.value, postingAccount.value.noteVisibilityLimit ?? 'none', postingAccount.value.isSilenced, replyTargetNote.value?.visibility === 'specified');
 		}
 		if ((ev.ctrlKey || ev.metaKey) && ev.altKey) localOnly.value = !localOnly.value;
 	}
@@ -952,6 +1015,7 @@ function onDragleave() {
 
 function onDrop(ev: DragEvent): void {
 	draghover.value = false;
+	if (posting.value) return;
 
 	// ファイルだったら
 	if (ev.dataTransfer && ev.dataTransfer.files.length > 0) {
@@ -964,15 +1028,20 @@ function onDrop(ev: DragEvent): void {
 	{
 		const droppedData = getDragData(ev, 'driveFiles');
 		if (droppedData != null) {
-			files.value.push(...droppedData);
 			ev.preventDefault();
+			if (postAccount.value != null || hasAttachmentsFromAnotherAccount($i.id)) {
+				os.alert({ type: 'warning', text: i18n.ts._postForm.attachmentAccountMismatch });
+				return;
+			}
+			attachmentAccountId.value = $i.id;
+			files.value.push(...droppedData);
 		}
 	}
 	//#endregion
 }
 
 function saveDraft() {
-	if (props.instant || props.mock) return;
+	if (props.instant || props.mock || props.initialNote) return;
 
 	const draftData = JSON.parse(miLocalStorage.getItem('drafts') ?? '{}');
 
@@ -983,13 +1052,15 @@ function saveDraft() {
 			useCw: useCw.value,
 			cw: cw.value,
 			disableRightClick: disableRightClick.value,
-			saveToDraft: text.value === '' ? false : saveToDraft.value,
+			saveToDraft: saveToDraft.value,
 			visibility: visibility.value,
 			localOnly: localOnly.value,
 			files: files.value,
+			attachmentAccountId: attachmentAccountId.value,
+			postAccountId: postAccountId.value,
 			poll: poll.value,
 			event: event.value,
-			...( visibleUsers.value.length > 0 ? { visibleUserIds: visibleUsers.value.map(x => x.id) } : {}),
+			visibleUserIds: [...new Set([...visibleUsers.value.map(x => x.id), ...unavailableRecipientIds.value])],
 			quoteId: quoteId.value,
 			reactionAcceptance: reactionAcceptance.value,
 			scheduledAt: scheduledAt.value,
@@ -1002,6 +1073,8 @@ function saveDraft() {
 }
 
 function deleteDraft() {
+	if (props.initialNote) return;
+
 	const draftData = JSON.parse(miLocalStorage.getItem('drafts') ?? '{}');
 
 	delete draftData[draftKey.value];
@@ -1009,35 +1082,44 @@ function deleteDraft() {
 	miLocalStorage.setItem('drafts', JSON.stringify(draftData));
 }
 
-async function saveServerDraft(options: {
-	isActuallyScheduled?: boolean;
-} = {}) {
-	return await misskeyApi(serverDraftId.value == null ? 'notes/drafts/create' : 'notes/drafts/update', {
-		...(serverDraftId.value == null ? {} : { draftId: serverDraftId.value }),
-		text: text.value,
-		cw: useCw.value ? cw.value || null : null,
-		disableRightClick: disableRightClick.value,
-		visibility: visibility.value,
-		localOnly: localOnly.value,
-		hashtag: hashtags.value,
-		fileIds: files.value.map(f => f.id),
-		poll: poll.value,
-		event: event.value,
-		visibleUserIds: visibleUsers.value.map(x => x.id),
-		renoteId: renoteTargetNote.value ? renoteTargetNote.value.id : quoteId.value ? quoteId.value : null,
-		replyId: replyTargetNote.value ? replyTargetNote.value.id : null,
-		channelId: targetChannel.value ? targetChannel.value.id : null,
-		reactionAcceptance: reactionAcceptance.value,
-		scheduledAt: scheduledAt.value,
-		isActuallyScheduled: options.isActuallyScheduled ?? false,
-		scheduledDelete: scheduledNoteDelete.value,
-		deliveryTargets: deliveryTargets.value,
-	}).then(() => {
-		if (scheduledAt.value != null && options.isActuallyScheduled === true) os.toast(i18n.ts.createSchedulePost, 'scheduled');
-		else os.toast(i18n.ts.noteDrafted, 'drafted');
-		clear();
-		emit('posted');
-	});
+async function saveServerDraft(accountId: string, token: string | undefined, isActuallyScheduled: boolean) {
+	const draft = serverDraft.value;
+	const draftId = draft?.accountId === accountId ? draft.id : null;
+	const endpoint = draftId == null ? 'notes/drafts/create' : 'notes/drafts/update';
+	try {
+		await misskeyApi(endpoint, {
+			...(draftId == null ? {} : { draftId }),
+			text: text.value,
+			cw: useCw.value ? cw.value || null : null,
+			disableRightClick: disableRightClick.value,
+			visibility: visibility.value,
+			localOnly: localOnly.value,
+			hashtag: hashtags.value,
+			fileIds: files.value.map(f => f.id),
+			poll: poll.value,
+			event: event.value,
+			visibleUserIds: visibleUsers.value.map(x => x.id),
+			renoteId: renoteTargetNote.value ? renoteTargetNote.value.id : quoteId.value ? quoteId.value : null,
+			replyId: replyTargetNote.value ? replyTargetNote.value.id : null,
+			channelId: targetChannel.value ? targetChannel.value.id : null,
+			reactionAcceptance: reactionAcceptance.value,
+			scheduledAt: scheduledAt.value,
+			isActuallyScheduled: isActuallyScheduled,
+			scheduledDelete: scheduledNoteDelete.value,
+			deliveryTargets: deliveryTargets.value,
+		}, token);
+	} catch (err) {
+		void os.apiErrorDialog(endpoint, err as Misskey.api.APIError);
+		return;
+	}
+
+	if (isActuallyScheduled) os.toast(i18n.ts.createSchedulePost, 'scheduled');
+	else os.toast(i18n.ts.noteDrafted, 'drafted');
+	clear();
+	await nextTick();
+	if (!props.instant) deleteDraft();
+	emit('posted');
+	if (isActuallyScheduled) sound.playMisskeySfx('noteSchedulePost');
 }
 
 function isAnnoying(text: string): boolean {
@@ -1048,16 +1130,40 @@ function isAnnoying(text: string): boolean {
 		text.includes('$[position');
 }
 
-async function uploadFiles() {
-	await uploader.upload();
+function getUploadAccount(): UploadAccount | null {
+	const token = getAttachmentAccountToken();
+	if (token === null) return null;
+	const account = postAccount.value ?? $i;
+	return { id: account.id, token, maxFileSizeMb: account.policies.maxFileSizeMb };
+}
 
-	for (const uploadedItem of uploader.items.value.filter(x => x.uploaded != null)) {
-		files.value.push(uploadedItem.uploaded!);
-		uploader.removeItem(uploadedItem);
+async function uploadFiles(account: UploadAccount): Promise<boolean> {
+	if (uploader.items.value.length === 0) return true;
+
+	try {
+		await uploader.upload(account);
+	} catch {
+		// uploadFile has already shown the upload error.
+		return false;
 	}
+	return uploader.items.value.length === 0;
 }
 
 async function post(ev?: MouseEvent) {
+	if (!canPost.value) return;
+	const account = getUploadAccount();
+	if (account === null) return;
+
+	posting.value = true;
+	try {
+		await submitPost(account, ev);
+	} finally {
+		posting.value = false;
+	}
+}
+
+async function submitPost(account: UploadAccount, ev?: MouseEvent) {
+	const { id: accountId, token } = account;
 	if (ev) {
 		const el = (ev.currentTarget ?? ev.target) as HTMLElement | null;
 
@@ -1071,24 +1177,11 @@ async function post(ev?: MouseEvent) {
 		}
 	}
 
-	if (scheduledAt.value != null) {
-		if (uploader.items.value.some(x => x.uploaded == null)) {
-			await uploadFiles();
-
-			// アップロード失敗したものがあったら中止
-			if (uploader.items.value.some(x => x.uploaded == null)) {
-				return;
-			}
-		}
-
-		await postAsScheduled();
-		clear();
+	const scheduled = scheduledAt.value != null;
+	if (scheduled || saveToDraft.value) {
+		if (await uploadFiles(account)) await saveServerDraft(accountId, token, scheduled);
 		return;
 	}
-
-	if (props.mock) return;
-
-	if (saveToDraft.value) return await saveServerDraft();
 
 	if (useCw.value && (cw.value == null || cw.value.trim() === '')) {
 		os.alert({
@@ -1157,14 +1250,7 @@ async function post(ev?: MouseEvent) {
 		}
 	}
 
-	if (uploader.items.value.some(x => x.uploaded == null)) {
-		await uploadFiles();
-
-		// アップロード失敗したものがあったら中止
-		if (uploader.items.value.some(x => x.uploaded == null)) {
-			return;
-		}
-	}
+	if (!(await uploadFiles(account))) return;
 
 	let postData = {
 		text: text.value === '' ? null : text.value,
@@ -1213,24 +1299,10 @@ async function post(ev?: MouseEvent) {
 		}
 	}
 
-	let token: string | undefined = undefined;
+	const draft = serverDraft.value;
+	const draftId = draft?.accountId === accountId ? draft.id : null;
 
-	if (postAccount.value) {
-		const storedAccounts = await getAccounts();
-		const storedAccount = storedAccounts.find(x => x.id === postAccount.value?.id);
-		if (storedAccount && storedAccount.token != null) {
-			token = storedAccount.token;
-		} else {
-			await os.alert({
-				type: 'error',
-				text: 'cannot find the token of the selected account.',
-			});
-			return;
-		}
-	}
-
-	posting.value = true;
-	misskeyApi(props.updateMode ? 'notes/update' : 'notes/create', postData, token).then((res) => {
+	const request = misskeyApi(props.updateMode ? 'notes/update' : 'notes/create', postData, token).then((res) => {
 		if (props.freezeAfterPosted) {
 			posted.value = true;
 		} else {
@@ -1255,7 +1327,6 @@ async function post(ev?: MouseEvent) {
 				const history = JSON.parse(miLocalStorage.getItem('hashtags') ?? '[]') as string[];
 				miLocalStorage.setItem('hashtags', JSON.stringify(unique(hashtags_.concat(history))));
 			}
-			posting.value = false;
 			postAccount.value = null;
 
 			incNotesCount();
@@ -1302,12 +1373,11 @@ async function post(ev?: MouseEvent) {
 				claimAchievement('postedAt0min0sec');
 			}
 
-			if (serverDraftId.value != null) {
-				misskeyApi('notes/drafts/delete', { draftId: serverDraftId.value });
+			if (draftId != null) {
+				misskeyApi('notes/drafts/delete', { draftId }, token);
 			}
 		});
 	}).catch(err => {
-		posting.value = false;
 		os.alert({
 			type: 'error',
 			text: `${err.message}\n${(err as any).id}`,
@@ -1317,16 +1387,7 @@ async function post(ev?: MouseEvent) {
 	if (props.updateMode) sound.playMisskeySfx('noteEdited');
 	showForm.value = false;
 	haptic();
-}
-
-async function postAsScheduled() {
-	if (props.mock) return;
-
-	await saveServerDraft({
-		isActuallyScheduled: true,
-	});
-
-	sound.playMisskeySfx('noteSchedulePost');
+	await request;
 }
 
 function cancel() {
@@ -1334,7 +1395,9 @@ function cancel() {
 }
 
 function insertMention() {
-	os.selectUser({ localOnly: localOnly.value, includeSelf: true }).then(user => {
+	if (posting.value) return;
+	selectPostUser({ localOnly: localOnly.value, includeSelf: true })?.then(user => {
+		if (!user) return;
 		if (textareaEl.value) insertTextAtCursor(textareaEl.value, '@' + Misskey.acct.toString(user) + ' ');
 	});
 }
@@ -1415,16 +1478,31 @@ async function openMfmCheatSheet() {
 	});
 }
 
-const postAccount = ref<Misskey.entities.UserDetailed | null>(null);
-
 async function openAccountMenu(ev: MouseEvent) {
-	if (props.mock) return;
+	if (props.mock || posting.value) return;
 
 	function showDraftsDialog(scheduled: boolean) {
+		if (posting.value || uploader.uploading.value) return;
+		const account = postAccount.value ?? $i;
+		const token = getPostAccountToken(postAccount.value?.id);
+		if (token === null) return;
+
 		const { dispose } = os.popup(defineAsyncComponent(() => import('@/components/MkNoteDraftsDialog.vue')), {
 			scheduled,
+			token,
+			noteDraftLimit: account.policies.noteDraftLimit,
 		}, {
 			restore: async (draft: Misskey.entities.NoteDraft) => {
+				if (posting.value || uploader.uploading.value || postAccountId.value !== account.id) return;
+				const revision = ++recipientsRevision;
+				posting.value = true;
+				const { recipients, unavailableIds } = await loadDraftRecipients(draft.visibleUserIds ?? [], token).finally(() => {
+					posting.value = false;
+				});
+				if (revision !== recipientsRevision) return;
+
+				draftRestoreVersion.value++;
+				targetChannel.value = draft.channel ?? null;
 				text.value = draft.text ?? '';
 				useCw.value = draft.cw != null;
 				cw.value = draft.cw ?? null;
@@ -1432,69 +1510,36 @@ async function openAccountMenu(ev: MouseEvent) {
 				visibility.value = draft.visibility;
 				localOnly.value = draft.localOnly ?? false;
 				files.value = draft.files ?? [];
+				attachmentAccountId.value = account.id;
+				uploader.reset();
+				visibleUsers.value = recipients;
+				unavailableRecipientIds.value = unavailableIds;
 				hashtags.value = draft.hashtag ?? '';
-				if (draft.deleteAt) {
-					scheduledNoteDelete.value = null;
-					nextTick(() => {
-						scheduledNoteDelete.value = {
-							deleteAt: draft.deleteAt ? (new Date(draft.deleteAt)).getTime() : null,
-							deleteAfter: null,
-						};
-					});
-				}
 				if (draft.hashtag) withHashtags.value = true;
-				if (draft.poll) {
-					// 投票を一時的に空にしないと反映されないため
-					poll.value = null;
-					nextTick(() => {
-						poll.value = {
-							choices: draft.poll!.choices,
-							multiple: draft.poll!.multiple,
-							expiresAt: draft.poll!.expiresAt ? (new Date(draft.poll!.expiresAt)).getTime() : null,
-							expiredAfter: null,
-						};
-					});
-				}
-				if (draft.event) {
-					event.value = null;
-					nextTick(() => {
-						const startValue = typeof draft.event!.start === 'string'
-							? (new Date(draft.event!.start)).getTime()
-							: draft.event!.start;
-						const endValue = typeof draft.event!.end === 'string'
-							? (new Date(draft.event!.end)).getTime()
-							: draft.event!.end;
-						event.value = {
-							title: draft.event!.title,
-							start: startValue,
-							end: endValue,
-							metadata: draft.event!.metadata,
-						};
-					});
-				}
-				if (draft.visibleUserIds) {
-					misskeyApi('users/show', { userIds: draft.visibleUserIds }).then(users => {
-						users.forEach(u => pushVisibleUser(u));
-					});
-				}
+				scheduledNoteDelete.value = draft.deleteAt ? {
+					deleteAt: new Date(draft.deleteAt).getTime(),
+					deleteAfter: null,
+				} : null;
+				poll.value = draft.poll ? {
+					choices: draft.poll.choices,
+					multiple: draft.poll.multiple,
+					expiresAt: draft.poll.expiresAt ? new Date(draft.poll.expiresAt).getTime() : null,
+					expiredAfter: draft.poll.expiredAfter ?? null,
+				} : null;
+				event.value = draft.event ? {
+					title: draft.event.title,
+					start: typeof draft.event.start === 'string' ? new Date(draft.event.start).getTime() : draft.event.start,
+					end: typeof draft.event.end === 'string' ? new Date(draft.event.end).getTime() : draft.event.end,
+					metadata: draft.event.metadata,
+				} : null;
 				quoteId.value = draft.renoteId ?? null;
 				renoteTargetNote.value = draft.renote;
 				replyTargetNote.value = draft.reply;
 				reactionAcceptance.value = draft.reactionAcceptance;
 				scheduledAt.value = draft.scheduledAt ?? null;
 				deliveryTargets.value = draft.deliveryTargets ? { mode: draft.deliveryTargets.mode, hosts: draft.deliveryTargets.hosts ?? [] } : null;
-				if (draft.channel) targetChannel.value = draft.channel as unknown as Misskey.entities.Channel;
 
-				visibleUsers.value = [];
-				draft.visibleUserIds?.forEach(uid => {
-					if (!visibleUsers.value.some(u => u.id === uid)) {
-						misskeyApi('users/show', { userId: uid }).then(user => {
-							pushVisibleUser(user);
-						});
-					}
-				});
-
-				serverDraftId.value = draft.id;
+				serverDraft.value = { id: draft.id, accountId: account.id };
 			},
 			cancel: () => {
 
@@ -1510,11 +1555,14 @@ async function openAccountMenu(ev: MouseEvent) {
 		includeCurrentAccount: true,
 		active: postAccount.value != null ? postAccount.value.id : $i.id,
 		onChoose: (account) => {
-			if (account.id === $i.id) {
-				postAccount.value = null;
-			} else {
-				postAccount.value = account;
+			if (posting.value || uploader.uploading.value || account.id === postAccountId.value) return;
+			if (hasAttachmentsFromAnotherAccount(account.id)) {
+				void os.alert({ type: 'warning', text: i18n.ts._postForm.detachFilesToChangeAccount });
+				return;
 			}
+			recipientsRevision++;
+			postAccount.value = account.id === $i.id ? null : account;
+			if (text.value || files.value.length > 0 || poll.value || event.value) saveDraft();
 		},
 	});
 
@@ -1536,12 +1584,12 @@ async function openAccountMenu(ev: MouseEvent) {
 }
 
 function showPerUploadItemMenu(item: UploaderItem, ev: PointerEvent) {
-	const menu = uploader.getMenu(item);
+	const menu = uploader.getMenu(item, getUploadAccount);
 	os.popupMenu(menu, ev.currentTarget ?? ev.target);
 }
 
 function showPerUploadItemMenuViaContextmenu(item: UploaderItem, ev: PointerEvent) {
-	const menu = uploader.getMenu(item);
+	const menu = uploader.getMenu(item, getUploadAccount);
 	os.contextMenu(menu, ev);
 }
 
@@ -1616,7 +1664,7 @@ function cancelScheduleDelete() {
 function showPostMenu(ev: MouseEvent) {
 	const menuItems: MenuItem[] = [];
 
-	if ($i.policies.noteDraftLimit > 0) {
+	if ((postAccount.value ?? $i).policies.noteDraftLimit > 0) {
 		menuItems.push({
 			type: 'switch',
 			text: i18n.ts._drafts.saveToDraft,
@@ -1692,29 +1740,52 @@ onMounted(() => {
 	if (cwInputEl.value) new Autocomplete(cwInputEl.value, cw);
 	if (hashtagsInputEl.value) new Autocomplete(hashtagsInputEl.value, hashtags);
 
-	nextTick(() => {
+	nextTick(async () => {
 		// 書きかけの投稿を復元
-		if (!props.instant && !props.mention && !props.specified && !props.mock) {
-			const draft = JSON.parse(miLocalStorage.getItem('drafts') ?? '{}')[draftKey.value];
-			if (draft) {
+		if (!props.initialNote && !props.instant && !props.mention && !props.specified && !props.mock) {
+			const draft = JSON.parse(miLocalStorage.getItem('drafts') ?? '{}')[draftKey.value] as StoredDrafts[string] | undefined;
+			if (draft != null) {
+				const restoredFiles = (draft.data.files ?? []).filter(Boolean);
+				const attachmentOwner = draft.data.attachmentAccountId ?? $i.id;
+				const storedAccountId = restoredFiles.length > 0 ? attachmentOwner : (draft.data.postAccountId ?? $i.id);
+				const revision = ++recipientsRevision;
+				let recipients: Awaited<ReturnType<typeof loadDraftRecipients>> | undefined;
+				posting.value = true;
+				try {
+					if (storedAccountId !== $i.id) {
+						const account = await getStoredPostAccount(storedAccountId);
+						if (revision !== recipientsRevision) return;
+						postAccount.value = account;
+					}
+					if (draft.data.visibleUserIds?.length) {
+						const token = getPostAccountToken(postAccount.value?.id);
+						if (postAccountId.value === storedAccountId && token !== null) {
+							recipients = await loadDraftRecipients(draft.data.visibleUserIds, token);
+						}
+					}
+				} finally {
+					posting.value = false;
+				}
+				if (revision !== recipientsRevision) return;
+
 				text.value = draft.data.text;
 				useCw.value = draft.data.useCw;
 				cw.value = draft.data.cw;
-				disableRightClick.value = draft.data.disableRightClick;
-				saveToDraft.value = draft.data.saveToDraft;
+				disableRightClick.value = draft.data.disableRightClick ?? false;
+				saveToDraft.value = draft.data.saveToDraft ?? false;
 				visibility.value = draft.data.visibility;
 				localOnly.value = draft.data.localOnly;
-				files.value = (draft.data.files || []).filter((draftFile: Misskey.entities.DriveFile | null) => draftFile != null);
+				files.value = restoredFiles;
+				attachmentAccountId.value = attachmentOwner;
+				if (draft.data.visibleUserIds?.length) {
+					visibleUsers.value = recipients?.recipients ?? [];
+					unavailableRecipientIds.value = recipients?.unavailableIds ?? draft.data.visibleUserIds;
+				}
 				if (draft.data.poll) {
 					poll.value = draft.data.poll;
 				}
 				if (draft.data.event) {
 					event.value = draft.data.event;
-				}
-				if (draft.data.visibleUserIds) {
-					misskeyApi('users/show', { userIds: draft.data.visibleUserIds }).then(users => {
-						users.forEach(u => pushVisibleUser(u));
-					});
 				}
 				quoteId.value = draft.data.quoteId;
 				reactionAcceptance.value = draft.data.reactionAcceptance;
@@ -1733,6 +1804,7 @@ onMounted(() => {
 			visibility.value = init.visibility;
 			localOnly.value = init.localOnly ?? false;
 			files.value = init.files ?? [];
+			attachmentAccountId.value = init.userId;
 			if (init.poll) {
 				poll.value = {
 					choices: init.poll.choices.map(x => x.text),
@@ -1756,7 +1828,9 @@ onMounted(() => {
 				};
 			}
 			if (init.visibleUserIds) {
+				const revision = recipientsRevision;
 				misskeyApi('users/show', { userIds: init.visibleUserIds }).then(users => {
+					if (recipientsRevision !== revision) return;
 					users.forEach(u => pushVisibleUser(u));
 				});
 			}

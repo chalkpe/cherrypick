@@ -113,6 +113,7 @@ import MkInfo from '@/components/MkInfo.vue';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { definePage } from '@/page.js';
 import MkFolder from '@/components/MkFolder.vue';
 import MkTextarea from '@/components/MkTextarea.vue';
@@ -200,7 +201,7 @@ async function del(announcement: (typeof announcements)['value'][number]) {
 	if (announcement.id == null) return;
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.deleteAreYouSure({ x: announcement.title }),
+		text: i18n.tsx.deleteAreYouSure({ x: mfmPlain(announcement.title) }),
 	});
 	if (canceled) return;
 	announcements.value = announcements.value.filter(x => x !== announcement);

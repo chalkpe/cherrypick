@@ -78,6 +78,7 @@ import MkButton from '@/components/MkButton.vue';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { definePage } from '@/page.js';
 import { useRouter } from '@/router.js';
 
@@ -127,7 +128,7 @@ function save() {
 async function del(): Promise<void> {
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.deleteAreYouSure({ x: webhook.name }),
+		text: i18n.tsx.deleteAreYouSure({ x: mfmPlain(webhook.name) }),
 	});
 	if (canceled) return;
 

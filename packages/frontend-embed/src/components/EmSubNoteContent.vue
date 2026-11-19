@@ -20,13 +20,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</div>
 		</div>
 	</div>
-	<button v-if="(isLong || isMFM || (note.files && note.files.length) > 0 || note.poll) && collapsed" :class="$style.fade" class="_button" @click="collapsed = false">
+	<button v-if="(isLong || isMFM || (note.files?.length ?? 0) > 0 || note.poll) && collapsed" :class="$style.fade" class="_button" @click="collapsed = false">
 		<span :class="$style.fadeLabel">
 			{{ i18n.ts.showMore }}
 			<span v-if="note.files && note.files.length > 0" :class="$style.label">({{ collapseLabel }})</span>
 		</span>
 	</button>
-	<button v-else-if="(isLong || isMFM || (note.files && note.files.length) > 0 || note.poll) && !collapsed" :class="$style.showLess" class="_button" @click="collapsed = true">
+	<button v-else-if="(isLong || isMFM || (note.files?.length ?? 0) > 0 || note.poll) && !collapsed" :class="$style.showLess" class="_button" @click="collapsed = true">
 		<span :class="$style.showLessLabel">{{ i18n.ts.showLess }}</span>
 	</button>
 	<EmReactionsViewer v-if="note.reactionAcceptance !== 'likeOnly'" ref="reactionsViewer" :maxNumber="16" :note="note">
@@ -37,7 +37,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<footer>
 		<a :href="`/notes/${note.id}`" target="_blank" rel="noopener" :class="[$style.noteFooterButton, $style.footerButtonLink]" class="_button">
 			<i class="ti ti-arrow-back-up"></i>
-			<p v-if="note.repliesCount > 0" :class="$style.noteFooterButtonCount">{{ number(note.repliesCount) }}</p>
+			<p v-if="note.repliesCount > 0" :class="$style.noteFooterButtonCount">{{ numberFormat.format(note.repliesCount) }}</p>
 		</a>
 		<a :href="`/notes/${note.id}`" target="_blank" rel="noopener" :class="[$style.noteFooterButton, $style.footerButtonLink]" class="_button">
 			<i class="ti ti-repeat"></i>
@@ -63,6 +63,7 @@ import { computed, ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { concat } from '@@/js/array.js';
 import { url } from '@@/js/config.js';
+import { numberFormat } from '@@/js/intl-const.js';
 import { shouldCollapsed, shouldMfmCollapsed } from '@@/js/collapsed.js';
 import EmMediaList from '@/components/EmMediaList.vue';
 import EmPoll from '@/components/EmPoll.vue';

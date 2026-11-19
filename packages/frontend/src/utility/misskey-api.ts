@@ -30,13 +30,14 @@ export function misskeyApi<
 
 	const promise = new Promise<_ResT>((resolve, reject) => {
 		// Append a credential
-		if ($i) data.i = $i.token;
-		if (token !== undefined) data.i = token;
+		const requestBody = { ...data };
+		if ($i) requestBody.i = $i.token;
+		if (token !== undefined) requestBody.i = token;
 
 		// Send request
 		window.fetch(`${apiUrl}/${endpoint}`, {
 			method: 'POST',
-			body: JSON.stringify(data),
+			body: JSON.stringify(requestBody),
 			credentials: 'omit',
 			cache: 'no-cache',
 			headers: {

@@ -41,6 +41,7 @@ describe('ClipService', () => {
 			{} as any,
 			{} as any,
 			globalEventService as any,
+			{} as any,
 		);
 	});
 

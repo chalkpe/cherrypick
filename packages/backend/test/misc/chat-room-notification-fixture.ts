@@ -186,7 +186,7 @@ export function notificationServiceOver(chat: ChatService): ChatRoomNotification
 			}
 			return null;
 		},
-		existsBy: async (_entity: unknown, where: { roomId: string; userId: string }) => (await dependencies.chatRoomMembershipsRepository.findBy({ roomId: where.roomId })).some(member => member.userId === where.userId),
+		existsBy: async (entity: unknown, where: { roomId: string; userId: string }) => entity === MiChatRoomMembership && (await dependencies.chatRoomMembershipsRepository.findBy({ roomId: where.roomId })).some(member => member.userId === where.userId),
 		findBy: async (entity: unknown, where: { roomId: string; id: { value: string[] } }) => {
 			if (entity === MiChatRoomMembership) return dependencies.chatRoomMembershipsRepository.findBy(where);
 			if (entity === MiUser) return (await Promise.all(where.id.value.map(id => dependencies.usersRepository.findOneBy({ id })))).filter(user => user != null).map(user => ({ ...user, username: user.username ?? user.id }));
@@ -214,7 +214,11 @@ export function notificationServiceOver(chat: ChatService): ChatRoomNotification
 		},
 	};
 	const service = Object.assign(Object.create(ChatRoomNotificationService.prototype), {
-		db: { manager, transaction: async <T>(run: (manager: unknown) => Promise<T>) => run(manager) },
+		db: {
+			manager,
+			createQueryRunner: () => ({ manager, release: async () => {} }),
+			transaction: async <T>(run: (manager: unknown) => Promise<T>) => run(manager),
+		},
 		settingsRepository: settings,
 		redis: fakeUnreadRedis(),
 		channels: {

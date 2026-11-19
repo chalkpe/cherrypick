@@ -40,6 +40,8 @@ import { ApImageService } from './ApImageService.js';
 import type { Resolver } from '../ApResolverService.js';
 import type { IObject, IPost } from '../type.js';
 
+const MAX_REMOTE_NOTE_ATTACHMENTS = 32;
+
 @Injectable()
 export class ApNoteService {
 	private logger: Logger;
@@ -129,6 +131,18 @@ export class ApNoteService {
 		return await this.apDbResolverService.getNoteFromApId(object);
 	}
 
+	private async resolveAttachments(note: IPost, actor: MiRemoteUser): Promise<MiDriveFile[]> {
+		const files: MiDriveFile[] = [];
+
+		for (const attach of toArray(note.attachment).slice(0, MAX_REMOTE_NOTE_ATTACHMENTS)) {
+			attach.sensitive ??= note.sensitive;
+			const file = await this.apImageService.resolveImage(actor, attach);
+			if (file) files.push(file);
+		}
+
+		return files;
+	}
+
 	/**
 	 * Noteを作成します。
 	 */
@@ -137,7 +151,7 @@ export class ApNoteService {
 		// eslint-disable-next-line no-param-reassign
 		if (resolver == null) resolver = await this.apResolverService.createResolver();
 
-		const object = await resolver.resolve(value);
+		const object = await resolver.resolveNote(value);
 
 		const entryUri = getApId(value);
 		const err = this.validateNote(object, entryUri, actor);
@@ -234,13 +248,7 @@ export class ApNoteService {
 		}
 
 		// 添付ファイル
-		const files: MiDriveFile[] = [];
-
-		for (const attach of toArray(note.attachment)) {
-			attach.sensitive ??= note.sensitive;
-			const file = await this.apImageService.resolveImage(actor, attach);
-			if (file) files.push(file);
-		}
+		const files = await this.resolveAttachments(note, actor);
 
 		// リプライ
 		const reply: MiNote | null = note.inReplyTo
@@ -278,7 +286,7 @@ export class ApNoteService {
 			> => {
 				if (!/^https?:/.test(uri)) return { status: 'permerror' };
 				try {
-					const res = await this.resolveNote(uri);
+					const res = await this.resolveNote(uri, { resolver });
 					if (res == null) return { status: 'permerror' };
 					return { status: 'ok', res };
 				} catch (e) {
@@ -405,13 +413,7 @@ export class ApNoteService {
 			throw new Error('actor has been suspended');
 		}
 
-		const files: MiDriveFile[] = [];
-
-		for (const attach of toArray(note.attachment)) {
-			attach.sensitive ??= note.sensitive;
-			const file = await this.apImageService.resolveImage(actor, attach);
-			if (file) files.push(file);
-		}
+		const files = await this.resolveAttachments(note, actor);
 
 		const cw = note.summary === '' ? null : note.summary;
 

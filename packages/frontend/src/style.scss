@@ -761,6 +761,30 @@ html[data-color-scheme=dark] ._woodenFrame {
 	100% { transform: perspective(128px) rotateY(360deg); }
 }
 
+._mfmContained {
+	// Jump and bounce rise by 16px. Leave room for the animation and focus ring.
+	--mfm-clip-padding: 20px;
+	overflow: clip;
+	overflow-clip-margin: var(--mfm-clip-padding);
+
+	@supports not (overflow-clip-margin: 20px) {
+		padding: var(--mfm-clip-padding);
+		margin: calc(-1 * var(--mfm-clip-padding));
+	}
+
+	.mfm-bounce-contained {
+		display: inline-grid;
+		// Reserve a quarter of the animated span's width on each side for scaleX(1.5).
+		grid-template-columns: minmax(0, 1fr) minmax(0, 4fr) minmax(0, 1fr);
+		max-inline-size: 100%;
+
+		> span {
+			grid-column: 2;
+			overflow-wrap: anywhere;
+		}
+	}
+}
+
 @keyframes mfm-jump {
 	0% { transform: translateY(0); }
 	25% { transform: translateY(-16px); }

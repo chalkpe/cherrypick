@@ -120,3 +120,13 @@ test.each([
 	expect(container.querySelector('video')).toBeNull();
 	expect(container.querySelector('.ti-video')).not.toBeNull();
 });
+
+test.each([true, false])('covered thumbnails have no image source (blurhash: %s)', (enableHighQualityImagePlaceholders) => {
+	preferState.enableHighQualityImagePlaceholders = enableHighQualityImagePlaceholders;
+	const file = { ...video, isSensitive: true };
+	const { container } = render(MkDriveFileThumbnail, {
+		props: { file, fit: 'cover', forceBlurhash: true }, global: { directives: { panel: {} } },
+	});
+
+	expect(container.querySelector('img[src], video[src]')).toBeNull();
+});

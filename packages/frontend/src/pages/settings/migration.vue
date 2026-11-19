@@ -68,6 +68,7 @@ import MkUserInfo from '@/components/MkUserInfo.vue';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { ensureSignin } from '@/i.js';
 import { unisonReload } from '@/utility/unison-reload.js';
 
@@ -96,7 +97,7 @@ async function move(): Promise<void> {
 	const account = moveToAccount.value;
 	const confirm = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx._accountMigration.migrationConfirm({ account }),
+		text: i18n.tsx._accountMigration.migrationConfirm({ account: mfmPlain(account) }),
 	});
 	if (confirm.canceled) return;
 	await os.apiWithDialog('i/move', {

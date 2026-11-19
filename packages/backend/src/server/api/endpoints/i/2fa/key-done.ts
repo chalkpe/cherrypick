@@ -14,11 +14,14 @@ import type { UserProfilesRepository, UserSecurityKeysRepository } from '@/model
 import { WebAuthnService } from '@/core/WebAuthnService.js';
 import { ApiError } from '@/server/api/error.js';
 import { UserAuthService } from '@/core/UserAuthService.js';
+import { accountReauthenticationLimit } from '@/server/api/reauthentication-limit.js';
 
 export const meta = {
 	requireCredential: true,
 
 	secure: true,
+
+	limit: accountReauthenticationLimit,
 
 	errors: {
 		incorrectPassword: {

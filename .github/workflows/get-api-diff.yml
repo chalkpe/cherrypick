@@ -28,7 +28,7 @@ jobs:
             use-merge-parent: false
 
     steps:
-    - uses: actions/checkout@v7.0.1
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         fetch-depth: 2
         submodules: true
@@ -36,9 +36,9 @@ jobs:
       if: matrix.use-merge-parent
       run: git checkout --detach HEAD^1
     - name: Setup pnpm
-      uses: pnpm/action-setup@v6.1.1
+      uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
     - name: Use Node.js
-      uses: actions/setup-node@v7.1.0
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version-file: '.node-version'
         cache: 'pnpm'
@@ -54,7 +54,7 @@ jobs:
     - name: Copy API.json
       run: cp packages/backend/built/api.json ${{ matrix.api-json-name }}
     - name: Upload Artifact
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
       with:
         name: api-artifact-${{ matrix.api-json-name }}
         path: ${{ matrix.api-json-name }}
@@ -67,7 +67,7 @@ jobs:
           PR_NUMBER: ${{ github.event.number }}
         run: |
           echo "$PR_NUMBER" > ./pr_number
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: api-artifact-pr-number
           path: pr_number

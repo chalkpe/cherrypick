@@ -108,6 +108,7 @@ import MkKeyValue from '@/components/MkKeyValue.vue';
 import MkFeatureBanner from '@/components/MkFeatureBanner.vue';
 import MkInfo from '@/components/MkInfo.vue';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { definePage } from '@/page.js';
 import { changePluginActive, configPlugin, pluginLogs, uninstallPlugin, reloadPlugin } from '@/plugin.js';
 import { prefer } from '@/preferences.js';
@@ -118,7 +119,7 @@ const plugins = prefer.r.plugins;
 async function uninstall(plugin: Plugin) {
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.removeAreYouSure({ x: plugin.name }),
+		text: i18n.tsx.removeAreYouSure({ x: mfmPlain(plugin.name) }),
 	});
 	if (canceled) return;
 

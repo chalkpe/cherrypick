@@ -8,6 +8,7 @@ import { defineAsyncComponent } from 'vue';
 import { selectDriveFolder } from './drive.js';
 import type { MenuItem } from '@/types/menu.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { copyToClipboard } from '@/utility/copy-to-clipboard.js';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
@@ -86,7 +87,7 @@ function addApp() {
 async function deleteFile(file: Misskey.entities.DriveFile) {
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.driveFileDeleteConfirm({ name: file.name }),
+		text: i18n.tsx.driveFileDeleteConfirm({ name: mfmPlain(file.name) }),
 	});
 	if (canceled) return;
 

@@ -4,7 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import * as mfm from 'mfm-js';
+import * as mfm from 'mfc-js';
 
 // 本物の os と misskeyApi を通し、サーバーへの要求の出口だけを差し替える。
 // os や misskeyApi をモックすると、資格情報を消してしまう引数の渡し方を見逃す
@@ -118,7 +118,8 @@ describe('sending invitations', () => {
 		expect(dialog.type).toBe('error');
 		expect(dialog.title).toBe(i18n.tsx._chat.inviteFailedUsers({ n: 3 }));
 		expect(dialog.text).not.toContain(i18n.tsx._chat.inviteSentUsers({ n: 0 }));
-		const lines = dialog.text!.split('\n');
+		const nodes = mfm.extract(mfm.parse(dialog.text!), node => node.type === 'text');
+		const lines = nodes.flatMap(node => node.type === 'text' ? [node.props.text] : []).join('').split('\n');
 		expect(lines).toHaveLength(2);
 		expect(lines.find(line => line.includes('Haru'))).toContain(i18n.ts._chat.alreadyMember);
 		const both = lines.find(line => line.includes('Sora'));

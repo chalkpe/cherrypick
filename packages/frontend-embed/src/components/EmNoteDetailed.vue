@@ -35,10 +35,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</span>
 			<span v-if="note.localOnly" style="margin-left: 0.5em;" :title="i18n.ts._visibility['disableFederation']"><i class="ti ti-rocket-off"></i></span>
 			<span :class="$style.renoteTime">
-				<button ref="renoteTime" class="_button">
-					<i class="ti ti-dots" :class="$style.renoteMenu" @mousedown.prevent="showRenoteMenu()"></i>
-				</button>
-				<EmTime :time="note.createdAt"/>
+				<EmA :to="notePage(note)">
+					<EmTime :time="note.createdAt"/>
+				</EmA>
 			</span>
 		</div>
 	</div>
@@ -93,7 +92,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</p>
 			<div v-show="appearNote.cw == null || showContent">
 				<span v-if="appearNote.isHidden" style="opacity: 0.5">({{ i18n.ts.private }})</span>
-				<EmA v-if="appearNote.replyId" :class="$style.noteReplyTarget" :to="`/notes/${appearNote.replyId}`"><i class="ti ti-arrow-back-up"></i></EmA>
+				<EmA v-if="appearNote.replyId" :class="$style.noteReplyTarget" :to="`/notes/${appearNote.replyId}`" :aria-label="i18n.ts.reply"><i class="ti ti-arrow-back-up"></i></EmA>
 				<EmMfm
 					v-if="appearNote.text"
 					:parsedNodes="parsed"
@@ -108,6 +107,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				</div>
 				<EmPoll v-if="appearNote.poll" ref="pollViewer" :noteId="appearNote.id" :poll="appearNote.poll" :readOnly="true" :class="$style.poll"/>
 				<div v-if="appearNote.renote" :class="$style.quote"><EmNoteSimple :note="appearNote.renote" :class="$style.quoteNote"/></div>
+				<EmA v-else-if="appearNote.isHidden && appearNote.renoteId" :to="`/notes/${appearNote.renoteId}`" :aria-label="i18n.ts.renote"><i class="ti ti-repeat"></i></EmA>
 				<button v-if="(isLong || isMFM) && collapsed" :class="$style.collapsed" class="_button" @click="collapsed = false">
 					<span :class="$style.collapsedLabel">{{ i18n.ts.showMore }}</span>
 				</button>
@@ -133,7 +133,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</EmReactionsViewer>
 			<a :href="`/notes/${appearNote.id}`" target="_blank" rel="noopener" :class="[$style.noteFooterButton, $style.footerButtonLink]" class="_button">
 				<i class="ti ti-arrow-back-up"></i>
-				<p v-if="appearNote.repliesCount > 0" :class="$style.noteFooterButtonCount">{{ number(appearNote.repliesCount) }}</p>
+				<p v-if="appearNote.repliesCount > 0" :class="$style.noteFooterButtonCount">{{ numberFormat.format(appearNote.repliesCount) }}</p>
 			</a>
 			<a :href="`/notes/${appearNote.id}`" target="_blank" rel="noopener" :class="[$style.noteFooterButton, $style.footerButtonLink]" class="_button">
 				<i class="ti ti-repeat"></i>
@@ -161,6 +161,7 @@ import * as mfm from 'mfc-js';
 import * as Misskey from 'cherrypick-js';
 import { shouldCollapsed, shouldMfmCollapsed } from '@@/js/collapsed.js';
 import { url } from '@@/js/config.js';
+import { numberFormat } from '@@/js/intl-const.js';
 import I18n from '@/components/I18n.vue';
 import EmMediaList from '@/components/EmMediaList.vue';
 import EmNoteSub from '@/components/EmNoteSub.vue';
@@ -286,10 +287,6 @@ const collapsed = ref(appearNote.value.cw == null && (isLong || (isMFM)));
 .renoteTime {
 	flex-shrink: 0;
 	color: inherit;
-}
-
-.renoteMenu {
-	margin-right: 4px;
 }
 
 .renote + .note {

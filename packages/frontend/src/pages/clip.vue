@@ -23,7 +23,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 				</div>
 			</div>
 
-			<MkNotesTimeline :paginator="paginator" :detail="true"/>
+			<MkNotesTimeline :paginator="paginator" :detail="true">
+				<template #hiddenNote="{ note }">
+					<div v-if="isOwned" :class="$style.hiddenNote">
+						<span>{{ i18n.ts._ffVisibility.private }}</span>
+						<MkButton @click="removeHiddenNote(note.id)">{{ i18n.ts.unclip }}</MkButton>
+					</div>
+				</template>
+			</MkNotesTimeline>
 		</div>
 	</div>
 </PageWithHeader>
@@ -38,6 +45,7 @@ import type { PageHeaderItem } from '@/types/page-header.js';
 import MkNotesTimeline from '@/components/MkNotesTimeline.vue';
 import { $i } from '@/i.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { definePage } from '@/page.js';
@@ -84,6 +92,13 @@ watch(() => props.clipId, async () => {
 });
 
 provide('currentClip', clip);
+
+async function removeHiddenNote(noteId: string) {
+	const clipId = props.clipId;
+	await os.apiWithDialog('clips/remove-note', { clipId, noteId });
+	if (props.clipId === clipId) paginator.removeItem(noteId);
+	clipsCache.delete();
+}
 
 function favorite() {
 	os.apiWithDialog('clips/favorite', {
@@ -187,7 +202,7 @@ const headerActions = computed<PageHeaderItem[] | null>(() => clip.value && isOw
 
 		const { canceled } = await os.confirm({
 			type: 'warning',
-			text: i18n.tsx.deleteAreYouSure({ x: clip.value.name }),
+			text: i18n.tsx.deleteAreYouSure({ x: mfmPlain(clip.value.name) }),
 		});
 		if (canceled) return;
 
@@ -206,6 +221,13 @@ definePage(() => ({
 </script>
 
 <style lang="scss" module>
+.hiddenNote {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 12px;
+}
 .description {
 	padding: 16px;
 }

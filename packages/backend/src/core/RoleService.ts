@@ -491,6 +491,13 @@ export class RoleService implements OnApplicationShutdown, OnModuleInit {
 	}
 
 	@bindThis
+	public async canManageUserCredentials(moderator: Pick<MiUser, 'id'>, target: Pick<MiUser, 'id'>): Promise<boolean> {
+		if (moderator.id === target.id) return true;
+		if (await this.isAdministrator(moderator)) return !await this.isAdministrator(target);
+		return !await this.isModerator(target);
+	}
+
+	@bindThis
 	public async isExplorable(role: { id: MiRole['id'] } | null): Promise<boolean> {
 		if (role == null) return false;
 		const check = await this.rolesRepository.findOneBy({ id: role.id });

@@ -13,11 +13,14 @@ import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { ApiError } from '@/server/api/error.js';
 import { UserAuthService } from '@/core/UserAuthService.js';
+import { accountReauthenticationLimit } from '@/server/api/reauthentication-limit.js';
 
 export const meta = {
 	requireCredential: true,
 
 	secure: true,
+
+	limit: accountReauthenticationLimit,
 
 	errors: {
 		incorrectPassword: {

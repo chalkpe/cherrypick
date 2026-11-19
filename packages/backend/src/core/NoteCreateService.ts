@@ -386,6 +386,7 @@ export class NoteCreateService implements OnApplicationShutdown {
 					// リノート作成のリクエストだが、対象チャンネルがリノート禁止だった場合
 					throw new IdentifiableError('7e435f4a-780d-4cfc-a15a-42519bd6fb67', 'Channel does not allow renote to external');
 				}
+				renote.channel = renoteChannel;
 			}
 		}
 
@@ -540,7 +541,10 @@ export class NoteCreateService implements OnApplicationShutdown {
 		if (data.renote) {
 			switch (data.renote.visibility) {
 				case 'public':
-					// public noteは無条件にrenote可能
+					if (data.visibility === 'public' && data.channel == null && data.renote.channelId != null) {
+						const channel = data.renote.channel ?? await this.channelsRepository.findOneBy({ id: data.renote.channelId });
+						if (channel?.isSensitive) data.visibility = 'home';
+					}
 					break;
 				case 'home':
 					// home noteはhome以下にrenote可能

@@ -27,7 +27,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</template>
 	<template v-else>
 		<MkKeyValue><template #key>{{ i18n.ts.name }}</template><template #value><Mfm :text="room.name" :plain="true" :author="room.owner"/></template></MkKeyValue>
-		<MkKeyValue><template #key>{{ i18n.ts.description }}</template><template #value><Mfm v-if="room.description" :text="room.description" :author="room.owner"/><template v-else>{{ i18n.ts.noDescription }}</template></template></MkKeyValue>
+		<MkKeyValue><template #key>{{ i18n.ts.description }}</template><template #value><Mfm v-if="room.description" class="_mfmContained" :containBounce="true" :class="$style.description" :text="room.description" :author="room.owner"/><template v-else>{{ i18n.ts.noDescription }}</template></template></MkKeyValue>
 	</template>
 
 	<MkSwitch v-if="isOwner" :modelValue="room.allowRecording" :disabled="room.isArchived" @update:modelValue="setAllowRecording">
@@ -102,6 +102,7 @@ import { chooseAvatar } from '@/utility/choose-avatar.js';
 import XDecorationEditor from '@/pages/settings/avatar-decoration.vue';
 import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import * as os from '@/os.js';
 import { ensureSignin } from '@/i.js';
 import MkInput from '@/components/MkInput.vue';
@@ -166,7 +167,7 @@ async function setArchived(isArchived: boolean) {
 	if (isArchived) {
 		const { canceled } = await os.confirm({
 			type: 'warning',
-			title: i18n.tsx._chat.archiveRoomConfirmTitle({ name: props.room.name }),
+			title: i18n.tsx._chat.archiveRoomConfirmTitle({ name: mfmPlain(props.room.name) }),
 			text: i18n.ts._chat.archiveRoomConfirmDescription,
 			room: props.room,
 		});
@@ -198,7 +199,7 @@ onBeforeUnmount(() => {
 async function del() {
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx._chat.deleteRoomConfirm({ name: props.room.name }),
+		text: i18n.tsx._chat.deleteRoomConfirm({ name: mfmPlain(props.room.name) }),
 		room: props.room,
 	});
 	if (canceled) return;
@@ -376,6 +377,10 @@ async function readAll() {
 </script>
 
 <style lang="scss" module>
+.description {
+	display: block;
+}
+
 .membership {
 	display: flex;
 }

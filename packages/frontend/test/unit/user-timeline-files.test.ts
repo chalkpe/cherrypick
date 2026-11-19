@@ -10,6 +10,7 @@ import type * as Misskey from 'cherrypick-js';
 import { preferState } from '../setup.unit.js';
 import XFiles from '@/pages/user/index.timeline.files.files.vue';
 import XFilesList from '@/pages/user/index.timeline.files.vue';
+import * as os from '@/os.js';
 
 vi.mock('@/utility/media-proxy.js', () => ({ getStaticImageUrl: (url: string) => `${url}?static` }));
 vi.mock('@/components/MkImgWithBlurhash.vue', () => ({
@@ -38,7 +39,7 @@ function renderFiles(file = remoteVideo) {
 const defaultPreferences = {
 	loadRawImages: false, disableShowingAnimatedImages: false,
 	showingAnimatedImages: 'always', dataSaver: { media: false },
-	nsfw: 'respect', nsfwOpenBehavior: 'click', enableHighQualityImagePlaceholders: true,
+	nsfw: 'respect', nsfwOpenBehavior: 'click', confirmWhenRevealingSensitiveMedia: false, enableHighQualityImagePlaceholders: true,
 };
 
 beforeEach(() => {
@@ -144,4 +145,47 @@ test('tiles keep their revealed state when a note is inserted before them', asyn
 	await nextTick();
 	expect(within(tile('a.png')).queryByText('Click to show')).toBeNull();
 	expect(within(tile('new.png')).queryByText('Click to show')).not.toBeNull();
+});
+
+test.each([true, false])('sensitive profile tiles load an image only after reveal (blurhash: %s)', async (enableHighQualityImagePlaceholders) => {
+	preferState.enableHighQualityImagePlaceholders = enableHighQualityImagePlaceholders;
+	const { container, getByText } = renderFiles({ ...video, type: 'image/png', isSensitive: true });
+
+	expect(container.querySelector('img[src]')).toBeNull();
+
+	await fireEvent.click(getByText('Click to show'));
+
+	expect(container.querySelector('img')?.getAttribute('src')).toBe(video.thumbnailUrl);
+});
+
+test.each(['click', 'dblclick', 'keyboard click'] as const)('sensitive profile reveal confirms once and honors cancel on %s', async activation => {
+	preferState.nsfwOpenBehavior = activation === 'click' ? 'click' : 'doubleClick';
+	preferState.confirmWhenRevealingSensitiveMedia = true;
+	const { container, getByRole } = renderFiles({ ...video, type: 'image/png', isSensitive: true });
+	const tile = getByRole('button', { name: /to show/i });
+	const dialogFocus = document.createElement('button');
+	container.append(dialogFocus);
+	const confirm = vi.spyOn(os, 'confirm').mockImplementationOnce(async () => {
+		dialogFocus.focus();
+		return { canceled: true };
+	}).mockResolvedValueOnce({ canceled: false });
+	const reveal = () => activation === 'dblclick' ? fireEvent.dblClick(tile)
+		: fireEvent.click(tile, { detail: activation === 'click' ? 1 : 0 });
+
+	if (activation === 'dblclick') {
+		await fireEvent.click(tile, { detail: 1 });
+		await fireEvent.click(tile, { detail: 2 });
+		expect(confirm).not.toHaveBeenCalled();
+	}
+	if (activation === 'keyboard click') tile.focus();
+	await reveal();
+	await nextTick();
+	expect(confirm).toHaveBeenCalledTimes(1);
+	expect(container.querySelector('img[src]')).toBeNull();
+	if (activation === 'keyboard click') expect(document.activeElement).toBe(tile);
+
+	await reveal();
+	await nextTick();
+	expect(confirm).toHaveBeenCalledTimes(2);
+	expect(container.querySelector('img')?.getAttribute('src')).toBe(video.thumbnailUrl);
 });

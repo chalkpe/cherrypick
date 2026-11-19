@@ -71,6 +71,7 @@ import MkInput from '@/components/MkInput.vue';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import MkTextarea from '@/components/MkTextarea.vue';
 import MkSwitch from '@/components/MkSwitch.vue';
 import MkRadios from '@/components/MkRadios.vue';
@@ -157,7 +158,7 @@ async function done() {
 async function del() {
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.removeAreYouSure({ x: title.value }),
+		text: i18n.tsx.removeAreYouSure({ x: mfmPlain(title.value) }),
 	});
 	if (canceled) return;
 

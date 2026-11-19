@@ -98,8 +98,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				.leftJoinAndSelect('reply.user', 'replyUser')
 				.leftJoinAndSelect('renote.user', 'renoteUser');
 
-			this.queryService.generateVisibilityQuery(query, me);
-			if (me == null) this.queryService.generateUgcVisibilityQueryForVisitor(query);
+			this.queryService.generateNoteContentVisibilityQuery(query, me);
 			this.queryService.generateBaseNoteFilteringQuery(query, me);
 
 			try {
@@ -154,7 +153,8 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			// Search notes
 			const notes = await query.limit(ps.limit).getMany();
 
-			return await this.noteEntityService.packMany(notes, me);
+			const packed = await this.noteEntityService.packMany(notes, me, { useCurrentFollowings: true });
+			return packed.filter(note => !note.isHidden);
 		});
 	}
 }

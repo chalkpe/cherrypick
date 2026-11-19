@@ -5,6 +5,7 @@
 
 import { detect } from 'tinyld';
 import * as mfm from 'mfc-js';
+import type { Note } from 'cherrypick-js/entities.js';
 
 export default function detectLanguage(text: string): string {
 	const nodes = mfm.parse(text);
@@ -13,6 +14,14 @@ export default function detectLanguage(text: string): string {
 	});
 	const purified = mfm.toString(filtered);
 
-	if (detect(purified) === '') return 'en';
 	return detect(purified);
+}
+
+export function isForeignNoteLanguage(note: Pick<Note, 'text' | 'poll'>, targetLang: string): boolean {
+	if (!note.text) return false;
+	const postLang = detectLanguage(note.text);
+	if (postLang !== '' && postLang !== targetLang) return true;
+	if (!note.poll) return false;
+	const pollLang = detectLanguage(note.poll.choices.map(choice => choice.text).join(' '));
+	return pollLang !== '' && pollLang !== targetLang;
 }

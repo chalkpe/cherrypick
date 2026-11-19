@@ -11,6 +11,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<XNavFolder
 					:class="[$style.navPathItem, { [$style.navCurrent]: folder == null }]"
 					:parentFolder="folder"
+					:readOnly="readOnly"
 					@click="cd(null)"
 					@upload="onUploadRequested"
 				/>
@@ -19,6 +20,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					<XNavFolder
 						:folder="f"
 						:parentFolder="folder"
+						:readOnly="readOnly"
 						:class="[$style.navPathItem]"
 						@click="cd(f)"
 						@upload="onUploadRequested"
@@ -27,7 +29,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<span v-if="folder != null" :class="[$style.navPathItem, $style.navSeparator]"><i class="ti ti-chevron-right"></i></span>
 				<span v-if="folder != null" :class="[$style.navPathItem, $style.navCurrent]">{{ folder.name }}</span>
 			</div>
-			<button class="_button" :class="$style.navMenu" @click="showMenu"><i class="ti ti-dots"></i></button>
+			<button v-if="!readOnly" class="_button" :class="$style.navMenu" @click="showMenu"><i class="ti ti-dots"></i></button>
 		</nav>
 	</template>
 
@@ -71,6 +73,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					v-anim="i"
 					:data-scroll-anchor="f.id"
 					:folder="f"
+					:readOnly="readOnly"
 					:selectMode="select === 'folder'"
 					:isSelected="selectedFolders.some(x => x.id === f.id)"
 					@chosen="chooseFolder"
@@ -105,6 +108,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							:data-scroll-anchor="file.id"
 							:file="file"
 							:folder="folder"
+							:readOnly="readOnly"
 							:isSelected="selectedFiles.some(x => x.id === file.id)"
 							:isDisabled="excludeSensitive && file.isSensitive"
 							@click="onFileClick($event, file)"
@@ -129,6 +133,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					:data-scroll-anchor="file.id"
 					:file="file"
 					:folder="folder"
+					:readOnly="readOnly"
 					:isSelected="selectedFiles.some(x => x.id === file.id)"
 					:isDisabled="excludeSensitive && file.isSensitive"
 					@click="onFileClick($event, file)"
@@ -200,6 +205,7 @@ const props = withDefaults(defineProps<{
 	excludeSensitive?: boolean;
 	select?: 'file' | 'folder' | null;
 	forceDisableInfiniteScroll?: boolean;
+	token?: string;
 }>(), {
 	initialFolder: null,
 	multiple: false,
@@ -244,11 +250,13 @@ watch([selectedFolders, isRootSelected], () => {
 });
 
 const fetching = ref(true);
+const readOnly = computed(() => props.token != null);
 
 const sortModeSelect = store.r.driveSortMode;
 const folderSortMode = computed(() => sortModeSelect.value === '+size' || sortModeSelect.value === '-size' ? '+createdAt' : sortModeSelect.value);
 
 const filesPaginator = markRaw(new Paginator('drive/files', {
+	token: props.token,
 	limit: 30,
 	canFetchDetection: 'limit',
 	olderCursorParams: last => ({ untilId: last.id, untilName: last.name, untilSize: last.size }),
@@ -259,6 +267,7 @@ const filesPaginator = markRaw(new Paginator('drive/files', {
 	}),
 }));
 const foldersPaginator = markRaw(new Paginator('drive/folders', {
+	token: props.token,
 	limit: 30,
 	canFetchDetection: 'limit',
 	olderCursorParams: last => ({ untilId: last.id, untilName: last.name }),
@@ -383,7 +392,7 @@ async function refreshFiles() {
 					...(last == null ? (sort === '-createdAt' ? { sinceId: '0' } : {}) : sort === '-createdAt'
 						? { sinceId: last.id }
 						: { untilId: last.id, untilName: last.name, untilSize: last.size }),
-				});
+				}, props.token);
 				items.push(...page);
 				more = page.length === limit;
 			}
@@ -422,7 +431,7 @@ async function refreshFolders() {
 					...(last == null ? (sort === '-createdAt' ? { sinceId: '0' } : {}) : sort === '-createdAt'
 						? { sinceId: last.id }
 						: { untilId: last.id, untilName: last.name }),
-				});
+				}, props.token);
 				items.push(...page);
 				more = page.length === limit;
 			}
@@ -504,6 +513,10 @@ function onFileDragstart(file: Misskey.entities.DriveFile, ev: DragEvent) {
 
 function onDragover(ev: DragEvent) {
 	if (!ev.dataTransfer) return;
+	if (readOnly.value) {
+		ev.dataTransfer.dropEffect = 'none';
+		return;
+	}
 
 	// ドラッグ元が自分自身の所有するアイテムだったら
 	if (isDragSource.value) {
@@ -538,7 +551,7 @@ function onDragover(ev: DragEvent) {
 }
 
 function onDragenter() {
-	if (!isDragSource.value) draghover.value = true;
+	if (!readOnly.value && !isDragSource.value) draghover.value = true;
 }
 
 function onDragleave() {
@@ -548,7 +561,7 @@ function onDragleave() {
 async function onDrop(ev: DragEvent): Promise<void | boolean> {
 	draghover.value = false;
 
-	if (!ev.dataTransfer) return;
+	if (readOnly.value || !ev.dataTransfer) return;
 
 	// ドロップされてきたものがファイルだったら
 	if (ev.dataTransfer.files.length > 0) {
@@ -698,7 +711,7 @@ function onFileClick(ev: PointerEvent, file: Misskey.entities.DriveFile) {
 	if (bulkBusy.value || driveDeletionBusy.value) return;
 	if (props.excludeSensitive && file.isSensitive) return;
 
-	if (ev.shiftKey) {
+	if (!readOnly.value && ev.shiftKey) {
 		isEditMode.value = true;
 	}
 
@@ -767,7 +780,7 @@ function cd(target?: Misskey.entities.DriveFolder | Misskey.entities.DriveFolder
 
 	return misskeyApi('drive/folders/show', {
 		folderId: target,
-	}).then(folderToMove => {
+	}, props.token).then(folderToMove => {
 		if (generation !== navigationGeneration) return;
 		pendingFolderId = null;
 		folder.value = folderToMove;
@@ -921,7 +934,7 @@ function showMenu(ev: PointerEvent) {
 }
 
 function onContextmenu(ev: PointerEvent) {
-	os.contextMenu(getMenu(), ev);
+	if (!readOnly.value) os.contextMenu(getMenu(), ev);
 }
 
 function onFileDeleted(id: string) {
@@ -946,16 +959,18 @@ function onFolderDeleted(id: string) {
 	if (refreshingFolders || (present && (fetching.value || loadingMoreFolders))) scheduleFoldersRefresh();
 }
 
-useGlobalEvent('driveFileCreated', file => { onFileCreated(file, true); });
-useGlobalEvent('driveFilesUpdated', onFilesUpdated);
-useGlobalEvent('driveFilesDeleted', files => { for (const file of files) onFileDeleted(file.id); });
-useGlobalEvent('driveFoldersUpdated', onFoldersUpdated);
-useGlobalEvent('driveFoldersDeleted', folders => { for (const item of folders) onFolderDeleted(item.id); });
+if (!readOnly.value) {
+	useGlobalEvent('driveFileCreated', file => { onFileCreated(file, true); });
+	useGlobalEvent('driveFilesUpdated', onFilesUpdated);
+	useGlobalEvent('driveFilesDeleted', files => { for (const file of files) onFileDeleted(file.id); });
+	useGlobalEvent('driveFoldersUpdated', onFoldersUpdated);
+	useGlobalEvent('driveFoldersDeleted', folders => { for (const item of folders) onFolderDeleted(item.id); });
+}
 
 let connection: Misskey.IChannelConnection<Misskey.Channels['drive']> | null = null;
 
 onMounted(() => {
-	if (store.s.realtimeMode) {
+	if (!readOnly.value && store.s.realtimeMode) {
 		connection = useStream().useChannel('drive');
 		connection.on('fileCreated', file => { onFileCreated(file); });
 		connection.on('fileUpdated', file => { onFilesUpdated([file]); });

@@ -108,7 +108,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 								:enableEmojiMenuReaction="!!$i"
 								class="_selectable"
 							/>
-							<div v-if="prefer.s.showTranslateButtonInNote && $i && (!prefer.s.useAutoTranslate || (!$i.policies.canUseAutoTranslate || (prefer.s.useAutoTranslate && (isLong || appearNote.cw != null || !showContent)))) && instance.translatorAvailable && $i.policies.canUseTranslator && appearNote.text && isForeignLanguage" style="padding: 5px 0; color: var(--MI_THEME-accent);">
+							<div v-if="prefer.s.showTranslateButtonInNote && $i && (!prefer.s.useAutoTranslate || !$i.policies.canUseAutoTranslate || (isLong || appearNote.cw != null || !showContent) || autoTranslationFailed) && instance.translatorAvailable && $i.policies.canUseTranslator && appearNote.text && isForeignLanguage" style="padding: 5px 0; color: var(--MI_THEME-accent);">
 								<button v-if="!(translating || translation)" ref="translateButton" class="_button" @click.stop="translate()">{{ i18n.ts.translateNote }}</button>
 								<button v-else class="_button" @click.stop="translation = null">{{ i18n.ts.close }}</button>
 							</div>
@@ -220,7 +220,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 						:enableEmojiMenuReaction="!!$i"
 						class="_selectable"
 					/>
-					<div v-if="prefer.s.showTranslateButtonInNote && $i && (!prefer.s.useAutoTranslate || (!$i.policies.canUseAutoTranslate || (prefer.s.useAutoTranslate && (isLong || appearNote.cw != null || !showContent)))) && instance.translatorAvailable && $i.policies.canUseTranslator && appearNote.text && isForeignLanguage" style="padding: 5px 0; color: var(--MI_THEME-accent);">
+					<div v-if="prefer.s.showTranslateButtonInNote && $i && (!prefer.s.useAutoTranslate || !$i.policies.canUseAutoTranslate || (isLong || appearNote.cw != null || !showContent) || autoTranslationFailed) && instance.translatorAvailable && $i.policies.canUseTranslator && appearNote.text && isForeignLanguage" style="padding: 5px 0; color: var(--MI_THEME-accent);">
 						<button v-if="!(translating || translation)" ref="translateButton" class="_button" @click.stop="translate()">{{ i18n.ts.translateNote }}</button>
 						<button v-else class="_button" @click.stop="translation = null">{{ i18n.ts.close }}</button>
 					</div>
@@ -454,7 +454,8 @@ import { miLocalStorage } from '@/local-storage.js';
 import { haptic, hapticConfirm } from '@/utility/haptic.js';
 import { store } from '@/store.js';
 import { scrollToVisibility } from '@/utility/scroll-to-visibility.js';
-import detectLanguage from '@/utility/detect-language.js';
+import { isForeignNoteLanguage } from '@/utility/detect-language.js';
+import { translateWithState } from '@/utility/translate-with-state.js';
 import MkInfo from '@/components/MkInfo.vue';
 
 const { showEl } = scrollToVisibility();
@@ -536,6 +537,7 @@ const hardMuted = ref(props.withHardMute && checkMute(appearNote, $i?.hardMutedW
 const showSoftWordMutedWord = computed(() => prefer.s.showSoftWordMutedWord);
 const translation = ref<Misskey.entities.NotesTranslateResponse | null>(null);
 const translating = ref(false);
+const autoTranslationFailed = ref(false);
 const canRenote = computed(() => ['public', 'home'].includes(appearNote.visibility) || (appearNote.visibility === 'followers' && appearNote.userId === $i?.id));
 const renoteCollapsed = ref(
 	isRenote && (
@@ -976,7 +978,7 @@ function onContextmenu(ev: PointerEvent): void {
 		ev.preventDefault();
 		react();
 	} else {
-		const { menu, cleanup } = getNoteMenu({ note: note, collapsed, translation, translating, viewTextSource, noNyaize, currentClip: currentClip?.value });
+		const { menu, cleanup } = getNoteMenu({ note: note, collapsed, translation, translating, autoTranslationFailed: autoTranslationFailed.value, viewTextSource, noNyaize, currentClip: currentClip?.value });
 		os.contextMenu(menu, ev).then(focus).finally(cleanup);
 	}
 }
@@ -988,7 +990,7 @@ function showMenu(): void {
 
 	haptic();
 
-	const { menu, cleanup } = getNoteMenu({ note: note, collapsed, translation, translating, viewTextSource, noNyaize, currentClip: currentClip?.value });
+	const { menu, cleanup } = getNoteMenu({ note: note, collapsed, translation, translating, autoTranslationFailed: autoTranslationFailed.value, viewTextSource, noNyaize, currentClip: currentClip?.value });
 	os.popupMenu(menu, menuButton.value).then(focus).finally(cleanup);
 }
 
@@ -1002,34 +1004,25 @@ async function clip(): Promise<void> {
 	os.popupMenu(await getNoteClipMenu({ note: note, currentClip: currentClip?.value }), clipButton.value).then(focus);
 }
 
-const isForeignLanguage: boolean = appearNote.text != null && (() => {
-	const targetLang = (miLocalStorage.getItem('lang') ?? navigator.language).slice(0, 2);
-	const postLang = detectLanguage(appearNote.text);
-	const choicesLang = appearNote.poll?.choices.map((choice) => choice.text).join(' ') ?? '';
-	const pollLang = detectLanguage(choicesLang);
-	return postLang !== '' && (postLang !== targetLang || pollLang !== targetLang);
-})();
+const isForeignLanguage = isForeignNoteLanguage(appearNote, (miLocalStorage.getItem('lang') ?? navigator.language).slice(0, 2));
 
-if (prefer.s.useAutoTranslate && instance.translatorAvailable && $i && $i.policies.canUseTranslator && $i.policies.canUseAutoTranslate && !isLong && (appearNote.cw == null || showContent.value) && appearNote.text && isForeignLanguage) translate();
+if (prefer.s.useAutoTranslate && instance.translatorAvailable && $i && $i.policies.canUseTranslator && $i.policies.canUseAutoTranslate && !isLong && (appearNote.cw == null || showContent.value) && isForeignLanguage) void translate(true);
 
-async function translate(): Promise<void> {
-	if (translation.value != null) return;
-	collapsed.value = false;
-	translating.value = true;
-
+async function translate(automatic = false): Promise<void> {
+	if (props.mock) return;
+	if (translation.value != null || translating.value) return;
 	haptic();
 
-	if (props.mock) {
-		return;
-	}
-
-	const res = await misskeyApi('notes/translate', {
+	const params = {
 		noteId: appearNote.id,
 		targetLang: miLocalStorage.getItem('lang') ?? navigator.language,
-	});
-	translating.value = false;
-	translation.value = res;
-
+	};
+	const translated = await translateWithState(translation, translating, () => automatic
+		? misskeyApi('notes/translate', params)
+		: os.apiWithDialog('notes/translate', params));
+	if (automatic) autoTranslationFailed.value = !translated;
+	if (!translated) return;
+	collapsed.value = false;
 	hapticConfirm();
 }
 

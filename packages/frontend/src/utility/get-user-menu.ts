@@ -10,6 +10,7 @@ import { host, url } from '@@/js/config.js';
 import type { Router } from '@/router.js';
 import type { MenuItem } from '@/types/menu.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { copyToClipboard } from '@/utility/copy-to-clipboard.js';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
@@ -22,6 +23,7 @@ import { prefer } from '@/preferences.js';
 import { getPluginHandlers } from '@/plugin.js';
 import { editNickname } from '@/utility/edit-nickname.js';
 import { popup } from '@/os.js';
+import { openExternalUrl } from '@/utility/open-external-url.js';
 
 export function getUserMenu(user: Misskey.entities.UserDetailed, router: Router = mainRouter) {
 	const meId = $i ? $i.id : null;
@@ -320,7 +322,7 @@ export function getUserMenu(user: Misskey.entities.UserDetailed, router: Router 
 			text: i18n.ts.showOnRemote,
 			action: () => {
 				if (user.url == null) return;
-				window.open(user.url, '_blank', 'noopener');
+				openExternalUrl(user.url);
 			},
 		});
 	} else {
@@ -463,7 +465,7 @@ export function getUserMenu(user: Misskey.entities.UserDetailed, router: Router 
 						text: r.name,
 						action: async () => {
 							const { canceled, result: period } = await os.select({
-								title: i18n.ts.period + ': ' + r.name,
+								title: i18n.ts.period + ': ' + mfmPlain(r.name),
 								items: [{
 									value: 'indefinitely', label: i18n.ts.indefinitely,
 								}, {

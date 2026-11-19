@@ -653,6 +653,16 @@ export class ChatService {
 		return message != null && await this.chatRoomNotificationService.shouldNotify(userId, message);
 	}
 
+	private async canNotifyRoomRecipient(userId: string, authorId: string | null): Promise<boolean> {
+		try {
+			return (await this.getChatAvailability(userId)).read
+				&& (authorId == null || !await this.chatRoomNotificationService.isBlockedByRecipientOnPrimary(userId, authorId));
+		} catch (error) {
+			Logger.warn(error, ChatService.name);
+			return false;
+		}
+	}
+
 	private scheduleRoomNotification(messageId: string, editRecipients?: string[]): void {
 		setTimeout(async () => {
 			if (editRecipients?.length === 0) return;
@@ -668,13 +678,19 @@ export class ChatService {
 			// 포장 사이에 삭제되었으면 보내지 않는다
 			const latest = await this.chatMessagesRepository.findOneBy({ id: messageId });
 			if (latest == null || latest.deletedAt != null) return;
+			const notifiedKey = `chatRoomNotified:${messageId}`;
 			for (const userId of recipients) {
 				// 생성·수정 타이머가 겹쳐도 같은 글은 한 번만 알린다
-				if (await this.redisClient.sadd(`chatRoomNotified:${messageId}`, userId) === 0) continue;
+				if (await this.redisClient.sadd(notifiedKey, userId) === 0) continue;
+				// 포장과 중복 확인을 기다리는 동안 역할이나 차단이 바뀔 수 있다.
+				if (!await this.canNotifyRoomRecipient(userId, latest.fromUserId)) {
+					await this.redisClient.srem(notifiedKey, userId);
+					continue;
+				}
 				this.globalEventService.publishMainStream(userId, 'newChatMessage', packed);
 				this.pushNotificationService.pushNotification(userId, 'newChatMessage', packed);
 			}
-			await this.redisClient.expire(`chatRoomNotified:${messageId}`, 60, 'NX');
+			await this.redisClient.expire(notifiedKey, 60, 'NX');
 		}, 3000);
 	}
 

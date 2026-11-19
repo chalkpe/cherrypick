@@ -24,6 +24,7 @@ import { themeManager, installTheme, handleThemeInstallError } from '@/theme.js'
 import { parseThemeCode } from '@@/js/theme-code.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { definePage } from '@/page.js';
 import { useRouter } from '@/router.js';
 
@@ -49,7 +50,7 @@ async function install(code: string): Promise<void> {
 		await installTheme(code);
 		os.alert({
 			type: 'success',
-			text: i18n.tsx._theme.installed({ name: theme.name }),
+			text: i18n.tsx._theme.installed({ name: mfmPlain(theme.name) }),
 		});
 		installThemeCode.value = null;
 		router.push('/settings/theme');

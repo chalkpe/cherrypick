@@ -56,7 +56,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				.limit(ps.limit)
 				.getMany();
 
-			return await this.userEntityService.packMany(users, me, { schema: 'UserDetailedNotMe' });
+			return await this.userEntityService.packMany(users, me, {
+				schema: 'UserDetailedNotMe',
+				resolveMovedTo: me != null,
+			});
 		});
 	}
 }

@@ -78,7 +78,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.noSuchUser);
 			}
 
-			if (await this.roleService.isAdministrator(user) && me.id !== user.id) {
+			if (!await this.roleService.canManageUserCredentials(me, user)) {
 				throw new ApiError(meta.errors.accessDenied);
 			}
 

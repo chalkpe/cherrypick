@@ -7,7 +7,7 @@ import { Inject, Injectable, Scope } from '@nestjs/common';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
 import type { GlobalEvents } from '@/core/GlobalEventService.js';
-import type { JsonObject } from '@/misc/json-value.js';
+import type { JsonObject, JsonValue } from '@/misc/json-value.js';
 import { ChatService } from '@/core/ChatService.js';
 import Channel, { type ChannelRequest } from '../channel.js';
 import { REQUEST } from '@nestjs/core';
@@ -137,14 +137,26 @@ export class ChatRoomChannel extends Channel {
 			const version = this.permissionVersion;
 			const allowed = await this.checkPermission();
 			// 制御イベントで古くなった判定は、最新の判定を待ち直す。
-			if (version === this.permissionVersion) {
-				if (!allowed || this.disposed || this.room == null) return false;
-				if (this.room.hasChannels || this.channelId != null) {
-					try { await this.chatService.resolveRoomChannel(this.room, this.channelId); } catch { this.dispose(); return false; }
+			if (version !== this.permissionVersion) continue;
+			if (!allowed || this.disposed || this.room == null) return false;
+			if (this.room.hasChannels || this.channelId != null) {
+				try {
+					await this.chatService.resolveRoomChannel(this.room, this.channelId);
+				} catch {
+					if (version !== this.permissionVersion) continue;
+					this.dispose();
+					return false;
 				}
-				this.initialized = true;
-				return true;
+				if (this.disposed || version !== this.permissionVersion) continue;
+				const availability = await this.chatService.getChatAvailability(this.user.id).catch(() => null);
+				if (this.disposed || version !== this.permissionVersion) continue;
+				if (!availability?.read) {
+					this.dispose();
+					return false;
+				}
 			}
+			this.initialized = true;
+			return true;
 		}
 		return false;
 	}
@@ -159,7 +171,9 @@ export class ChatRoomChannel extends Channel {
 		const promise = (async () => {
 			try {
 				const room = await this.chatRoomsRepository.findOneBy({ id: this.roomId });
-				const allowed = room != null && await this.chatService.hasPermissionToViewRoomTimeline(this.user!.id, room);
+				const allowed = room != null
+					&& await this.chatService.hasPermissionToViewRoomTimeline(this.user!.id, room)
+					&& (await this.chatService.getChatAvailability(this.user!.id)).read;
 				if (this.disposed || version !== this.permissionVersion) return false;
 				if (!allowed) {
 					this.dispose();
@@ -221,27 +235,27 @@ export class ChatRoomChannel extends Channel {
 		const version = this.permissionVersion;
 		if (!(await this.checkPermission())) return;
 		if (this.disposed || version !== this.permissionVersion) return;
-		if (this.room?.hasChannels && messageChannelId !== undefined) {
-			const selected = this.channelId ?? this.room.legacyChannelId;
-			if (selected == null || messageChannelId !== selected) {
-				if (data.type === 'message' && messageChannelId != null) this.send('channelMessage', { channelId: messageChannelId, messageId: data.body.id });
-				return;
-			}
-		}
-		if (data.type === 'message' || data.type === 'updated') {
+		const selected = this.channelId ?? this.room?.legacyChannelId;
+		let outgoing: { type: string; body: JsonValue } = data;
+		if (this.room?.hasChannels && messageChannelId !== undefined && (selected == null || messageChannelId !== selected)) {
+			if (data.type !== 'message' || messageChannelId == null) return;
+			outgoing = { type: 'channelMessage', body: { channelId: messageChannelId, messageId: data.body.id } };
+		} else if (data.type === 'message' || data.type === 'updated') {
 			const id = data.type === 'message' ? data.body.id : data.body.messageId;
 			const newMentions = data.type === 'updated' ? data.body.newMentionUserIds ?? [] : undefined;
 			const shouldNotify = (newMentions == null || newMentions.includes(this.user!.id)) && await this.chatService.shouldNotifyRoomMessage(this.user!.id, id).catch(() => false);
-			if (this.disposed || version !== this.permissionVersion) return;
 			if (data.type === 'updated') {
 				const { newMentionUserIds: _newMentionUserIds, ...body } = data.body;
-				this.send('updated', { ...body, shouldNotify });
+				outgoing = { type: 'updated', body: { ...body, shouldNotify } };
 			} else {
-				this.send('message', { ...data.body, shouldNotify });
+				outgoing = { type: 'message', body: { ...data.body, shouldNotify } };
 			}
-		} else {
-			this.send(data.type, data.body);
 		}
+		if (this.disposed || version !== this.permissionVersion) return;
+		// 역할은 방 권한의 캐시와 별도로, 본문을 준비한 뒤 검사한다.
+		const availability = await this.chatService.getChatAvailability(this.user!.id).catch(() => null);
+		if (this.disposed || version !== this.permissionVersion || !availability?.read) return;
+		this.send(outgoing);
 	}
 
 	@bindThis

@@ -10,11 +10,14 @@ import { Endpoint } from '@/server/api/endpoint-base.js';
 import type { UserProfilesRepository } from '@/models/_.js';
 import { DI } from '@/di-symbols.js';
 import { UserAuthService } from '@/core/UserAuthService.js';
+import { accountReauthenticationLimit } from '@/server/api/reauthentication-limit.js';
 
 export const meta = {
 	requireCredential: true,
 
 	secure: true,
+
+	limit: accountReauthenticationLimit,
 } as const;
 
 export const paramDef = {

@@ -12,11 +12,14 @@ import { DI } from '@/di-symbols.js';
 import { WebAuthnService } from '@/core/WebAuthnService.js';
 import { ApiError } from '@/server/api/error.js';
 import { UserAuthService } from '@/core/UserAuthService.js';
+import { accountReauthenticationLimit } from '@/server/api/reauthentication-limit.js';
 
 export const meta = {
 	requireCredential: true,
 
 	secure: true,
+
+	limit: accountReauthenticationLimit,
 
 	errors: {
 		userNotFound: {

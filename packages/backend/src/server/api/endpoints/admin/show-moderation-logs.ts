@@ -11,21 +11,25 @@ import { DI } from '@/di-symbols.js';
 import { ModerationLogEntityService } from '@/core/entities/ModerationLogEntityService.js';
 import { sqlLikeEscape } from '@/misc/sql-like-escape.js';
 import { REDACTED_META_KEYS } from '@/misc/redact-server-settings-log.js';
+import { SYSTEM_WEBHOOK_SECRET_KEY } from '@/misc/redact-system-webhook-log.js';
 import { ApiError } from '@/server/api/error.js';
 
 /**
- * expression (log.info から作った jsonb) から、log.info の side (before か after) がオブジェクトのときだけ、伏せる項目を除く。
- * #- はオブジェクトでない値 (配列・文字列・null など) の中を指すとエラーになり、そういう記録が一つでもあるとどの検索も失敗するので、
- * jsonb_typeof で確かめる。log.info がオブジェクトでなければ log.info -> side は NULL になり、何も除かない
+ * #-는 배열이나 문자열 안의 객체 키를 제거할 때 오류가 날 수 있어 대상 필드가 객체일 때만 적용한다.
  */
-function withoutRedactedKeys(expression: string, side: 'before' | 'after'): string {
-	const removed = REDACTED_META_KEYS.reduce((result, key) => `(${result} #- '{${side},${key}}'::text[])`, expression);
+function withoutRedactedKeys(expression: string, side: 'before' | 'after' | 'webhook', keys: readonly string[] = REDACTED_META_KEYS): string {
+	const removed = keys.reduce((result, key) => `(${result} #- '{${side},${key}}'::text[])`, expression);
 	return `CASE WHEN jsonb_typeof(log.info -> '${side}') = 'object' THEN ${removed} ELSE ${expression} END`;
 }
 
-// 伏せるようにする前に残されたサーバー設定の変更履歴から、認証情報を検索で一文字ずつ当てられないよう、検索する範囲から除く。
-// 他の種類のログの before / after は配列や文字列のこともあるので、サーバー設定の変更履歴 (meta か policies) に限る
-const SEARCHABLE_INFO = `CASE WHEN log.type = 'updateServerSettings' THEN ${withoutRedactedKeys(withoutRedactedKeys('log.info', 'before'), 'after')} ELSE log.info END`;
+// 예전에 기록된 서버 설정과 시스템 웹훅의 인증 정보도 검색 범위에서 제외한다.
+const WEBHOOK_REDACTED_KEYS = [SYSTEM_WEBHOOK_SECRET_KEY];
+const SEARCHABLE_INFO = `CASE
+	WHEN log.type = 'updateServerSettings' THEN ${withoutRedactedKeys(withoutRedactedKeys('log.info', 'before'), 'after')}
+	WHEN log.type = 'updateSystemWebhook' THEN ${withoutRedactedKeys(withoutRedactedKeys('log.info', 'before', WEBHOOK_REDACTED_KEYS), 'after', WEBHOOK_REDACTED_KEYS)}
+	WHEN log.type IN ('createSystemWebhook', 'deleteSystemWebhook') THEN ${withoutRedactedKeys('log.info', 'webhook', WEBHOOK_REDACTED_KEYS)}
+	ELSE log.info
+END`;
 
 export const meta = {
 	tags: ['admin'],

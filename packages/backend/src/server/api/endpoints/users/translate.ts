@@ -6,6 +6,7 @@
 import { URLSearchParams } from 'node:url';
 import fs from 'node:fs';
 import { Inject, Injectable } from '@nestjs/common';
+import ms from 'ms';
 import { translate } from '@vitalets/google-translate-api';
 import { TranslationServiceClient } from '@google-cloud/translate';
 import { Endpoint } from '@/server/api/endpoint-base.js';
@@ -22,6 +23,11 @@ export const meta = {
 
 	requireCredential: true,
 	kind: 'read:account',
+
+	limit: {
+		duration: ms('1minute'),
+		max: 30,
+	},
 
 	res: {
 		type: 'object',

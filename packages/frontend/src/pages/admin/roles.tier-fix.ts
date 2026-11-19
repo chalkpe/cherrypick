@@ -7,6 +7,7 @@ import type { LoweredRolePolicy, RoleTierCap, RoleTierFix, RoleTierRole } from '
 import { findLoweredRolePolicies, findRoleTierGroups, planRoleTierCaps, ZERO_IS_UNLIMITED } from '@/utility/role-tier.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import number from '@/filters/number.js';
 
 /** 권한 이름과 라벨 이름이 다른 항목 */
@@ -25,11 +26,7 @@ const POLICY_LABEL_KEYS: Record<string, string | undefined> = {
 };
 
 function roleNameText(name: string): string {
-	// MFM에는 이스케이프가 없으므로, 닫는 태그만 빼서 이름 전체가 일반 텍스트로 남게 한다.
-	// 한 번만 빼면 남은 조각이 이어져 닫는 태그가 다시 생기므로 없어질 때까지 뺀다.
-	let text = name;
-	while (text.includes('</plain>')) text = text.replaceAll('</plain>', '');
-	return `**<plain>${text}</plain>**`;
+	return `**${mfmPlain(name)}**`;
 }
 
 function durationText(sec: number): string {

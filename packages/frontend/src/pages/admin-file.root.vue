@@ -94,6 +94,7 @@ import MkInfo from '@/components/MkInfo.vue';
 import bytes from '@/filters/bytes.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { iAmAdmin, iAmModerator } from '@/i.js';
 import MkTabs from '@/components/MkTabs.vue';
 
@@ -111,7 +112,7 @@ const XChat = defineAsyncComponent(() => import('./admin-file.chat.vue'));
 async function del() {
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.removeAreYouSure({ x: props.file.name }),
+		text: i18n.tsx.removeAreYouSure({ x: mfmPlain(props.file.name) }),
 	});
 	if (canceled) return;
 

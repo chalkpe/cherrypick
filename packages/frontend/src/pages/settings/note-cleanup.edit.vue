@@ -66,6 +66,7 @@ import { canRevealCleanupError, cleanupErrorMessage, cleanupFailure, isCleanupBu
 import { childrenOf, cloneCondition, conditionAt, createCondition, groupPaths, incompletePaths, keywordLines, moveCondition, refreshCondition, removeCondition, replaceCondition, serverConditionPath } from '@/utility/note-cleanup-editor.js';
 import { cleanupRuleName } from '@/utility/note-cleanup-name.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { ensureSignin } from '@/i.js';
 import { definePage } from '@/page.js';
 import { useRouter } from '@/router.js';
@@ -294,7 +295,7 @@ async function toggleEnabled() {
 		: (enabling ? i18n.ts._noteCleanup.enableDelete : i18n.ts._noteCleanup.disableDelete);
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		title: enabling ? i18n.tsx._noteCleanup.enableConfirm({ name }) : i18n.tsx._noteCleanup.disableConfirm({ name }),
+		title: enabling ? i18n.tsx._noteCleanup.enableConfirm({ name: mfmPlain(name) }) : i18n.tsx._noteCleanup.disableConfirm({ name: mfmPlain(name) }),
 		text,
 		okText: enabling ? i18n.ts._noteCleanup.enable : i18n.ts._noteCleanup.disable,
 	});

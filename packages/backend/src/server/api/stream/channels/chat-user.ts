@@ -4,6 +4,7 @@
  */
 
 import { Inject, Injectable, Scope } from '@nestjs/common';
+import promiseLimit from 'promise-limit';
 import { bindThis } from '@/decorators.js';
 import type { GlobalEvents } from '@/core/GlobalEventService.js';
 import type { JsonObject } from '@/misc/json-value.js';
@@ -18,6 +19,8 @@ export class ChatUserChannel extends Channel {
 	public static requireCredential = true as const;
 	public static kind = 'read:chat';
 	private otherId: string;
+	private disposed = false;
+	private eventQueue = promiseLimit<void>(1);
 
 	constructor(
 		@Inject(REQUEST)
@@ -33,6 +36,8 @@ export class ChatUserChannel extends Channel {
 		if (typeof params.otherId !== 'string') return false;
 		if (!this.user) return false;
 		if (params.otherId === this.user.id) return false;
+		const availability = await this.chatService.getChatAvailability(this.user.id).catch(() => null);
+		if (this.disposed || !availability?.read) return false;
 
 		this.otherId = params.otherId;
 
@@ -42,8 +47,14 @@ export class ChatUserChannel extends Channel {
 	}
 
 	@bindThis
-	private async onEvent(data: GlobalEvents['chatUser']['payload']) {
-		this.send(data.type, data.body);
+	private onEvent(data: GlobalEvents['chatUser']['payload']) {
+		// 역할 조회가 기다리는 동안에도 생성·수정·삭제는 발행 순서대로 보낸다.
+		return this.eventQueue(async () => {
+			if (this.disposed) return;
+			const availability = await this.chatService.getChatAvailability(this.user!.id).catch(() => null);
+			if (this.disposed || !availability?.read) return;
+			this.send(data.type, data.body);
+		});
 	}
 
 	@bindThis
@@ -59,6 +70,7 @@ export class ChatUserChannel extends Channel {
 
 	@bindThis
 	public dispose() {
-		this.subscriber.off(`chatUserStream:${this.user!.id}-${this.otherId}`, this.onEvent);
+		this.disposed = true;
+		if (this.otherId != null) this.subscriber.off(`chatUserStream:${this.user!.id}-${this.otherId}`, this.onEvent);
 	}
 }

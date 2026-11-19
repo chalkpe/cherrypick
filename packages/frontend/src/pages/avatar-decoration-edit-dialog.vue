@@ -83,6 +83,7 @@ import MkFolder from '@/components/MkFolder.vue';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import MkSwitch from '@/components/MkSwitch.vue';
 import MkRolePreview from '@/components/MkRolePreview.vue';
 import MkTextarea from '@/components/MkTextarea.vue';
@@ -168,7 +169,7 @@ async function del() {
 
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.removeAreYouSure({ x: name.value }),
+		text: i18n.tsx.removeAreYouSure({ x: mfmPlain(name.value) }),
 	});
 	if (canceled) return;
 

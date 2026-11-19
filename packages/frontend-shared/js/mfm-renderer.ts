@@ -36,6 +36,7 @@ export type MfmBaseProps = {
 	rootScale?: number;
 	nyaize?: boolean | 'respect';
 	parsedNodes?: mfm.MfmNode[] | null;
+	containBounce?: boolean;
 };
 
 /** `supports` で有効にした場合のみ参照される props */
@@ -219,6 +220,11 @@ export function createMfmRenderer<P extends MfmBaseProps = MfmBaseProps>(config:
 							const speed = validTime(token.props.args.speed) ?? '0.75s';
 							const delay = validTime(token.props.args.delay) ?? '0s';
 							style = useAnim ? `animation: mfm-bounce ${speed} linear infinite; transform-origin: center bottom; animation-delay: ${delay};` : '';
+							if (useAnim && props.containBounce) {
+								return h('span', { class: 'mfm-bounce-contained' }, [
+									h('span', { style }, genEl(token.children, scale)),
+								]);
+							}
 							break;
 						}
 						case 'flip': {

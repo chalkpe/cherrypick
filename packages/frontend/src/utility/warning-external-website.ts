@@ -29,7 +29,11 @@ export async function warningExternalWebsite(ev: MouseEvent, url: string) {
 	const isTrustedByInstance = self || (urlObj != null && instance.trustedLinkUrlPatterns.some(expression => {
 		const r = isRegExp.exec(expression);
 		if (r) {
-			return new RegExp(r[1], r[2]).test(url);
+			try {
+				return new RegExp(r[1], r[2]).test(url);
+			} catch {
+				return false;
+			}
 		} else if (expression.includes(' ')) return expression.split(' ').every(keyword => url.includes(keyword));
 		else {
 			// 先頭の . と大文字小文字の違いは無視する

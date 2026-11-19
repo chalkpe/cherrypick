@@ -75,8 +75,6 @@ export class ApSignedRequestVerifierService {
 
 		if (keyId.length > MAX_KEY_ID_LENGTH) return this.reject('keyId length', keyId);
 
-		// ApDbResolverService の鍵キャッシュ (12 時間、鍵の更新で消えない) は使わない。
-		// 鍵が差し替わった直後から古い鍵を拒否し、未知の keyId でメモリを増やさないため。
 		const key = await this.userPublickeysRepository.findOneBy({ keyId });
 		if (key == null) return this.reject('key lookup', keyId);
 

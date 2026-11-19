@@ -8,6 +8,7 @@ import { acct, userName } from '@@/js/user.js';
 import { chatInviteErrorText } from './chat-errors.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 
 // ルームの人数の上限を超えないので、参加者はこれで全員読める。招待がこれより多いときは、送ったときにサーバーが断る
@@ -59,10 +60,7 @@ async function sendInvitations(roomId: string, invitees: Misskey.entities.UserLi
 // ダイアログの本文は MFM なので、名前の装飾やメンションとして読まれないようにする
 function describeUser(user: Misskey.entities.UserLite): string {
 	const account = `@${acct(user)}`;
-	let text = user.name ? `${userName(user)} (${account})` : account;
-	// A name can contain the closing tag, including pieces that form it after a replacement.
-	while (text.includes('</plain>')) text = text.replaceAll('</plain>', '');
-	return `<plain>${text}</plain>`;
+	return mfmPlain(user.name ? `${userName(user)} (${account})` : account);
 }
 
 function describeFailures(failures: InviteFailure[]): string[] {

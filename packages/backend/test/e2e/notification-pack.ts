@@ -116,6 +116,29 @@ describe('通知の取得', () => {
 			}
 		});
 
+		test('ログイン記録のストリームイベントは本人のセッションだけに届く', async () => {
+			const ownSignins: { ip: string; headers: Record<string, unknown> }[] = [];
+			const appEvents: string[] = [];
+			const ownSocket = await connectStream(alice, 'main', msg => {
+				if (msg.type === 'signin') ownSignins.push(msg.body);
+			});
+			const appSocket = await connectStream(appToken, 'main', msg => { appEvents.push(msg.type); });
+			try {
+				await signin();
+				const record = await waitUntil(async () => ownSignins[0]);
+				assert.ok(record);
+				assert.strictEqual(typeof record.ip, 'string');
+				assert.strictEqual(record.headers['content-type'], 'application/json');
+
+				await successfulApiCall({ endpoint: 'following/create', parameters: { userId: alice.id }, user: bob });
+				assert.ok(await waitUntil(async () => appEvents.includes('followed')));
+				assert.ok(!appEvents.includes('signin'));
+			} finally {
+				ownSocket.close();
+				appSocket.close();
+			}
+		});
+
 		test('ストリームでは、本人のセッションに ip が載り、アプリのトークンには載らない', async () => {
 			const own: any[] = [];
 			const app: any[] = [];

@@ -23,7 +23,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Download frontend diagnostics report
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: frontend-diagnostics
           path: ${{ runner.temp }}/frontend-diagnostics
@@ -33,7 +33,7 @@ jobs:
 
       - name: Resolve current pull request
         id: resolve-pr
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           PR_NUMBER_FILE: ${{ runner.temp }}/frontend-diagnostics/pr-number.txt
         with:
@@ -68,7 +68,7 @@ jobs:
 
       - name: Comment on pull request
         if: steps.resolve-pr.outputs.is-current == 'true'
-        uses: thollander/actions-comment-pull-request@v3
+        uses: thollander/actions-comment-pull-request@24bffb9b452ba05a4f3f77933840a6a841d1b32b # v3
         with:
           pr-number: ${{ steps.resolve-pr.outputs.pr-number }}
           comment-tag: frontend-diagnostics

@@ -16,6 +16,7 @@ import probeImageSize from 'probe-image-size';
 import { sharpBmp } from '@misskey-dev/sharp-read-bmp';
 import * as blurhash from 'blurhash';
 import { createTempDir } from '@/misc/create-temp.js';
+import { ffmpegLocalInputOptions } from '@/misc/ffmpeg-local-input.js';
 import { SensitiveMediaDetectionService } from '@/core/SensitiveMediaDetectionService.js';
 import { LoggerService } from '@/core/LoggerService.js';
 import type Logger from '@/logger.js';
@@ -211,6 +212,7 @@ export class FileInfoService {
 				const command = FFmpeg()
 					.input(source)
 					.inputOptions([
+						...ffmpegLocalInputOptions,
 						'-skip_frame', 'nokey', // 可能ならキーフレームのみを取得してほしいとする（そうなるとは限らない）
 						'-lowres', '3', // 元の画質でデコードする必要はないので 1/8 画質でデコードしてもよいとする（そうなるとは限らない）
 					])
@@ -369,7 +371,7 @@ export class FileInfoService {
 		sublogger.info(`Checking the video file. File path: ${path}`);
 		return new Promise((resolve) => {
 			try {
-				FFmpeg.ffprobe(path, (err, metadata) => {
+				FFmpeg.ffprobe(path, ffmpegLocalInputOptions, (err, metadata) => {
 					if (err) {
 						sublogger.warn(`Could not check the video file. Returns true. File path: ${path}`, err);
 						resolve(true);

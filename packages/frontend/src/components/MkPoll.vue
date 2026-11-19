@@ -15,6 +15,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</span>
 		</li>
 	</ul>
+	<button v-if="canTranslate && translationFailed" type="button" class="_button" :disabled="translating" @click.stop="translate()">{{ i18n.ts.translate }}</button>
 	<p v-if="!readOnly" :class="$style.info">
 		<span>{{ i18n.tsx._poll.totalVotes({ n: total }) }}</span>
 		<span> · </span>
@@ -36,8 +37,12 @@ import { pleaseLogin } from '@/utility/please-login.js';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { useLowresTime } from '@@/js/use-lowres-time.js';
 import { miLocalStorage } from '@/local-storage.js';
+import { translateWithState } from '@/utility/translate-with-state.js';
+import { $i } from '@/i.js';
+import { instance } from '@/instance.js';
 
 const props = defineProps<{
 	noteId: string;
@@ -52,6 +57,8 @@ const props = defineProps<{
 
 const translation = ref<Misskey.entities.NotesPollsTranslateResponse | null>(null);
 const translating = ref(false);
+const translationFailed = ref(false);
+const canTranslate = computed(() => instance.translatorAvailable && $i?.policies.canUseTranslator === true);
 
 const now = useLowresTime();
 
@@ -100,7 +107,7 @@ const vote = async (id: number) => {
 
 	const { canceled } = await os.confirm({
 		type: 'question',
-		text: i18n.tsx.voteConfirm({ choice: props.choices[id].text }),
+		text: i18n.tsx.voteConfirm({ choice: mfmPlain(props.choices[id].text) }),
 	});
 	if (canceled) return;
 
@@ -111,20 +118,19 @@ const vote = async (id: number) => {
 	if (!showResult.value) showResult.value = !props.multiple;
 };
 
-async function translate(): Promise<void> {
-	if (translation.value != null) return;
-	translating.value = true;
-
-	const res = await misskeyApi('notes/polls/translate', {
+async function translate(automatic = false): Promise<void> {
+	if (!canTranslate.value || translation.value != null || translating.value) return;
+	const params = {
 		noteId: props.noteId,
 		targetLang: miLocalStorage.getItem('lang') ?? navigator.language,
-	});
-	translating.value = false;
-	translation.value = res;
+	};
+	translationFailed.value = !await translateWithState(translation, translating, () => automatic
+		? misskeyApi('notes/polls/translate', params)
+		: os.apiWithDialog('notes/polls/translate', params));
 }
 
 onMounted(() => {
-	if (props.isTranslation) translate();
+	if (props.isTranslation) void translate(true);
 });
 </script>
 

@@ -77,6 +77,7 @@ import MkMediaList from '@/components/MkMediaList.vue';
 import MkKeyValue from '@/components/MkKeyValue.vue';
 import bytes from '@/filters/bytes.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { useRouter } from '@/router.js';
@@ -206,7 +207,7 @@ async function deleteFile() {
 
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.driveFileDeleteConfirm({ name: file.value.name }),
+		text: i18n.tsx.driveFileDeleteConfirm({ name: mfmPlain(file.value.name) }),
 	});
 	if (canceled) return;
 

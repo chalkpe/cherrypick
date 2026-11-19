@@ -10,8 +10,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<template #default="{ items: notes }">
 		<div :class="[$style.root, { [$style.noGap]: noGap, '_gaps': !noGap }]">
 			<template v-for="(note, i) in notes" :key="note.id">
+				<div v-if="note.isHidden && $slots.hiddenNote" :class="$style.note" :data-scroll-anchor="note.id">
+					<slot name="hiddenNote" :note="note"></slot>
+				</div>
 				<div
-					v-if="i > 0 && isSeparatorNeeded(paginator.items.value[i - 1].createdAt, note.createdAt)"
+					v-else-if="i > 0 && isSeparatorNeeded(paginator.items.value[i - 1].createdAt, note.createdAt)"
 					:data-scroll-anchor="note.id"
 					:class="{ '_gaps': !noGap }"
 				>
@@ -63,6 +66,10 @@ const props = withDefaults(defineProps<MkPaginationOptions & {
 	notification: false,
 	forceShowReplyTargetNote: false,
 });
+
+defineSlots<{
+	hiddenNote?: (props: { note: Misskey.entities.Note }) => unknown;
+}>();
 
 useGlobalEvent('noteDeleted', (noteId) => {
 	props.paginator.removeItem(noteId);

@@ -27,7 +27,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<Mfm
 					v-if="message.text"
 					ref="text"
-					class="_selectable"
+					class="_selectable _mfmContained"
+					:containBounce="true"
+					:class="$style.content"
 					:text="message.text"
 					:parsedNodes="referenceNodes"
 					:author="message.fromUser ?? undefined"
@@ -492,9 +494,7 @@ function getMenu(): MenuItem[] {
 }
 
 .content {
-	overflow: clip;
-	overflow-wrap: break-word;
-	word-break: break-word;
+	display: block;
 }
 
 .footer {

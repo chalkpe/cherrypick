@@ -41,6 +41,7 @@ import type {
 	UsersRepository,
 } from '@/models/_.js';
 import { bindThis } from '@/decorators.js';
+import { canViewFollowCount } from '@/misc/follow-visibility.js';
 import { RoleService } from '@/core/RoleService.js';
 import { ApPersonService } from '@/core/activitypub/models/ApPersonService.js';
 import { FederatedInstanceService } from '@/core/FederatedInstanceService.js';
@@ -415,6 +416,7 @@ export class UserEntityService implements OnModuleInit {
 		options?: {
 			schema?: S,
 			includeSecrets?: boolean,
+			resolveMovedTo?: boolean,
 			userProfile?: MiUserProfile,
 			userRelations?: Map<MiUser['id'], UserRelation>,
 			userMemos?: Map<MiUser['id'], string | null>,
@@ -469,15 +471,9 @@ export class UserEntityService implements OnModuleInit {
 			}
 		}
 
-		const followingCount = profile == null ? null :
-			(profile.followingVisibility === 'public') || isMe || iAmModerator ? user.followingCount :
-			(profile.followingVisibility === 'followers') && (relation && relation.isFollowing) ? user.followingCount :
-			null;
-
-		const followersCount = profile == null ? null :
-			(profile.followersVisibility === 'public') || isMe || iAmModerator ? user.followersCount :
-			(profile.followersVisibility === 'followers') && (relation && relation.isFollowing) ? user.followersCount :
-			null;
+		const followCountViewer = { isOwnerOrModerator: isMe || iAmModerator, isFollowing: relation?.isFollowing ?? false };
+		const followingCount = profile != null && canViewFollowCount(profile.followingVisibility, followCountViewer) ? user.followingCount : null;
+		const followersCount = profile != null && canViewFollowCount(profile.followersVisibility, followCountViewer) ? user.followersCount : null;
 
 		const isModerator = isMe && isDetailed ? this.roleService.isModerator(user) : undefined;
 		const isAdmin = isMe && isDetailed ? this.roleService.isAdministrator(user) : undefined;
@@ -550,7 +546,10 @@ export class UserEntityService implements OnModuleInit {
 			...(isDetailed ? {
 				url: profile!.url,
 				uri: user.uri,
-				movedTo: user.movedToUri ? this.apPersonService.resolvePerson(user.movedToUri).then(user => user.id).catch(() => null) : null,
+				movedTo: user.movedToUri
+					? (opts.resolveMovedTo === false ? this.apPersonService.fetchPerson(user.movedToUri) : this.apPersonService.resolvePerson(user.movedToUri))
+						.then(target => target?.id ?? null).catch(() => null)
+					: null,
 				alsoKnownAs: user.alsoKnownAs ?
 					Promise.all(toArray(user.alsoKnownAs).map(uri => this.apPersonService.fetchPerson(uri).then(user => user?.id).catch(() => null)))
 				.then(xs => xs.length === 0 ? null : xs.filter(x => x != null))
@@ -691,6 +690,7 @@ export class UserEntityService implements OnModuleInit {
 		options?: {
 			schema?: S,
 			includeSecrets?: boolean,
+			resolveMovedTo?: boolean,
 		},
 	): Promise<Packed<S>[]> {
 		// -- IDのみの要素を補完して完全なエンティティ一覧を作る

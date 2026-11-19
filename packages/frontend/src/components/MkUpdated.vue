@@ -58,15 +58,15 @@ const isBeta = version.includes('-beta') || version.includes('-alpha') || versio
 function whatIsNew() {
 	modal.value?.close();
 	if (isBeta) {
-		window.open(`https://github.com/misskey-dev/misskey/releases/tag/${version}`, '_blank');
+		window.open(`https://github.com/misskey-dev/misskey/releases/tag/${version}`, '_blank', 'noopener');
 	} else {
-		window.open(`https://misskey-hub.net/docs/releases/#_${version.replace(/\./g, '')}`, '_blank');
+		window.open(`https://misskey-hub.net/docs/releases/#_${version.replace(/\./g, '')}`, '_blank', 'noopener');
 	}
 }
 
 function whatIsNewCherryPick() {
 	// modal.value?.close();
-	window.open(`https://github.com/chalkpe/cherrypick/blob/develop/CHANGELOG_CHERRYPICK.md#${basedMisskeyVersion.replace(/\./g, '')}`, '_blank');
+	window.open(`https://github.com/chalkpe/cherrypick/blob/develop/CHANGELOG_CHERRYPICK.md#${basedMisskeyVersion.replace(/\./g, '')}`, '_blank', 'noopener');
 }
 
 const close = async () => {

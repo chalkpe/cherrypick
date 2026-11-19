@@ -41,6 +41,7 @@ import MkButton from '@/components/MkButton.vue';
 import { userPage, acct } from '@@/js/user.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { definePage } from '@/page.js';
 import { $i } from '@/i.js';
 import { Paginator } from '@/utility/paginator.js';
@@ -66,7 +67,7 @@ function accept(user: Misskey.entities.UserLite) {
 async function reject(user: Misskey.entities.UserLite) {
 	const { canceled } = await os.confirm({
 		type: 'question',
-		text: i18n.tsx.rejectFollowRequestConfirm({ name: user.name || user.username }),
+		text: i18n.tsx.rejectFollowRequestConfirm({ name: mfmPlain(user.name || user.username) }),
 	});
 
 	if (canceled) return;
@@ -79,7 +80,7 @@ async function reject(user: Misskey.entities.UserLite) {
 async function cancel(user: Misskey.entities.UserLite) {
 	const { canceled } = await os.confirm({
 		type: 'question',
-		text: i18n.tsx.cancelFollowRequestConfirm({ name: user.name || user.username }),
+		text: i18n.tsx.cancelFollowRequestConfirm({ name: mfmPlain(user.name || user.username) }),
 		okText: i18n.ts.yes,
 		cancelText: i18n.ts.no,
 	});

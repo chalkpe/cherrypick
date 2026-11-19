@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { afterEach, expect, test, vi } from 'vitest';
+import * as mfm from 'mfc-js';
 import type { Locale } from 'i18n';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/vue';
 import { Suspense, defineComponent, h, onMounted, watch } from 'vue';
@@ -189,7 +190,10 @@ test.each([
 	});
 	await fireEvent.click(view.getByRole('button', { name: button }));
 	expect(confirm).toHaveBeenCalledTimes(1);
-	expect(confirm.mock.calls[0][0]).toMatchObject({ title, text: body, okText: ok });
+	const dialog = confirm.mock.calls[0][0];
+	expect(dialog).toMatchObject({ text: body, okText: ok });
+	const titleNodes = mfm.extract(mfm.parse(String(dialog.title)), node => node.type === 'text');
+	expect(titleNodes.flatMap(node => node.type === 'text' ? [node.props.text] : []).join('')).toBe(title);
 	// 취소하면 아무 요청도 보내지 않는다.
 	await waitFor(() => expect(requests.filter(request => request.url.endsWith('/update'))).toHaveLength(0));
 	confirm.mockResolvedValue({ canceled: false });

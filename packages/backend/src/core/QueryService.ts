@@ -314,6 +314,54 @@ export class QueryService {
 		}
 	}
 
+	/** Apply current content visibility before searching or returning clip items. Requires the author's `user` join. */
+	public generateNoteContentVisibilityQuery(q: SelectQueryBuilder<any>, me: { id: MiUser['id'] } | null): void {
+		if (me == null && this.meta.ugcVisibilityForVisitor === 'none') {
+			q.andWhere('1=0');
+			return;
+		}
+
+		// shouldHideNoteByTime uses inclusive cutoffs, with nonpositive values relative to now.
+		const timestamp = this.idService.timestampSql('note.id');
+		const allowsByAge = (setting: string) => new Brackets(qb => qb
+			.where(`${setting} IS NULL`)
+			.orWhere(`${timestamp} > CASE WHEN ${setting} <= 0 THEN CAST(:noteVisibilityNow AS bigint) ELSE 0 END + CAST(${setting} AS bigint) * 1000`));
+		const isPublic = 'note.visibility IN (\'public\', \'home\')';
+		const publiclyVisible = new Brackets(qb => qb
+			.where(isPublic)
+			.andWhere(allowsByAge('user.makeNotesFollowersOnlyBefore')));
+		const visibleByAge = allowsByAge('user.makeNotesHiddenBefore');
+		q.setParameter('noteVisibilityNow', Date.now());
+
+		if (me == null) {
+			q.andWhere('user.requireSigninToViewContents = FALSE').andWhere(visibleByAge).andWhere(publiclyVisible);
+			if (this.meta.ugcVisibilityForVisitor === 'local') q.andWhere('user.host IS NULL');
+			return;
+		}
+
+		const following = this.followingsRepository.createQueryBuilder('contentFollowing')
+			.select('1')
+			.where('contentFollowing.followerId = :contentViewerId')
+			.andWhere('contentFollowing.followeeId = note.userId');
+		const isFollowerOrAddressed = new Brackets(qb => qb
+			.where('note.replyUserId = :contentViewerId')
+			.orWhere(':contentViewerIds <@ note.mentions')
+			.orWhere(`EXISTS (${following.getQuery()})`));
+		const visibleToViewer = new Brackets(qb => qb
+			.where(publiclyVisible)
+			.orWhere(new Brackets(qb => qb
+				.where('note.visibility = \'specified\'')
+				.andWhere(':contentViewerIds <@ note.visibleUserIds')))
+			.orWhere(new Brackets(qb => qb
+				.where('note.visibility IN (\'public\', \'home\', \'followers\')')
+				.andWhere(isFollowerOrAddressed))));
+
+		q.andWhere(new Brackets(qb => qb
+			.where('note.userId = :contentViewerId')
+			.orWhere(new Brackets(qb => qb.where(visibleByAge).andWhere(visibleToViewer)))))
+			.setParameters({ contentViewerId: me.id, contentViewerIds: [me.id] });
+	}
+
 	@bindThis
 	public generateMutedUserRenotesQueryForNotes(q: SelectQueryBuilder<any>, me: { id: MiUser['id'] }): void {
 		const mutingQuery = this.renoteMutingsRepository.createQueryBuilder('renote_muting')

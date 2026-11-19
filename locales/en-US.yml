@@ -3304,6 +3304,10 @@ _visibility:
 _postForm:
   quitInspiteOfThereAreUnuploadedFilesConfirm: "There are files that have not been uploaded, do you want to discard them and close the form?"
   uploaderTip: "The file has not yet been uploaded. From the file menu, you can rename, crop images, watermark and compress or uncompress the file. Files are automatically uploaded when you publish a note."
+  detachFilesToChangeAccount: "Remove the attached Drive files before switching accounts."
+  attachmentAccountMismatch: "Choose files from the posting account’s Drive, or switch to the account that owns the attached files."
+  unavailableDraftRecipients: "Some draft recipients could not be loaded ({count}). Remove them before posting or saving."
+  removeUnavailableDraftRecipients: "Remove unavailable recipients"
   signinRequiredPlaceholder: "You must be logged in to create a notes."
   replyPlaceholder: "Reply to this note..."
   quotePlaceholder: "Quote this note..."

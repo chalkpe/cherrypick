@@ -43,6 +43,7 @@ import { misskeyApi } from '@/utility/misskey-api.js';
 import MkModal from '@/components/MkModal.vue';
 import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { $i } from '@/i.js';
 import { updateCurrentAccount } from '@/accounts.js';
 
@@ -63,7 +64,7 @@ async function ok() {
 		const confirm = await os.confirm({
 			type: 'question',
 			title: i18n.ts._announcement.readConfirmTitle,
-			text: i18n.tsx._announcement.readConfirmText({ title: props.announcement.title }),
+			text: i18n.tsx._announcement.readConfirmText({ title: mfmPlain(props.announcement.title) }),
 		});
 		if (confirm.canceled) return;
 	}

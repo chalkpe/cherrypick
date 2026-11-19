@@ -45,6 +45,7 @@ import MkButton from '@/components/MkButton.vue';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { definePage } from '@/page.js';
 import MkTextarea from '@/components/MkTextarea.vue';
 import MkCodeEditor from '@/components/MkCodeEditor.vue';
@@ -460,7 +461,7 @@ async function del() {
 
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.deleteAreYouSure({ x: flash.value.title }),
+		text: i18n.tsx.deleteAreYouSure({ x: mfmPlain(flash.value.title) }),
 	});
 	if (canceled) return;
 

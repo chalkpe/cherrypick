@@ -103,6 +103,7 @@ import { arrangePayload, flattenArrangement, groupChannelsBySection } from './ch
 import type { ChannelArrangement, ChatChannel, ChatChannelSection } from './chat-channel-sections.js';
 import { ensureSignin } from '@/i.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { genId } from '@/utility/id.js';
 import { isTouchUsing } from '@/utility/touch.js';
@@ -395,7 +396,7 @@ async function reorderChannels(newList: ChatChannel[]) {
 async function remove(channel: ChatChannel) {
 	if (!canManage.value || busy.value || list.value.length <= 1) return;
 	const warning = props.room.legacyChannelId === channel.id ? `\n${i18n.ts._chat._channels.legacyDeleteWarning}` : '';
-	const { canceled } = await os.confirm({ type: 'warning', text: i18n.tsx._chat._channels.deleteConfirm({ name: channel.name }) + warning });
+	const { canceled } = await os.confirm({ type: 'warning', text: i18n.tsx._chat._channels.deleteConfirm({ name: mfmPlain(channel.name) }) + warning });
 	if (canceled || props.room.id !== channel.roomId || list.value.length <= 1) return;
 	await change(() => misskeyApi('chat/rooms/channels/delete', { channelId: channel.id }));
 }
@@ -403,7 +404,7 @@ async function remove(channel: ChatChannel) {
 async function removeSection(section: ChatChannelSection) {
 	if (!canManage.value || busy.value) return;
 	const notice = list.value.some(channel => channel.sectionId === section.id) ? `\n${i18n.ts._chat._channels.deleteSectionChannelsNotice}` : '';
-	const { canceled } = await os.confirm({ type: 'warning', text: i18n.tsx._chat._channels.deleteSectionConfirm({ name: section.name }) + notice });
+	const { canceled } = await os.confirm({ type: 'warning', text: i18n.tsx._chat._channels.deleteSectionConfirm({ name: mfmPlain(section.name) }) + notice });
 	if (canceled || props.room.id !== section.roomId) return;
 	await change(() => misskeyApi('chat/rooms/sections/delete', { sectionId: section.id }));
 }

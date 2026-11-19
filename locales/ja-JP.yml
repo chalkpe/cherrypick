@@ -3379,6 +3379,10 @@ _visibility:
 _postForm:
   quitInspiteOfThereAreUnuploadedFilesConfirm: "アップロードされていないファイルがありますが、破棄してフォームを閉じますか？"
   uploaderTip: "ファイルはまだアップロードされていません。ファイルのメニューから、リネームや画像のクロップ、ウォーターマークの付与、圧縮の有無などを設定できます。ファイルはノート投稿時に自動でアップロードされます。"
+  detachFilesToChangeAccount: "アカウントを切り替えるには、添付したドライブのファイルを先に取り外してください。"
+  attachmentAccountMismatch: "投稿するアカウントのドライブからファイルを選ぶか、添付ファイルを所有しているアカウントに切り替えてください。"
+  unavailableDraftRecipients: "下書きの宛先を{count}件読み込めませんでした。投稿や保存の前に取り除いてください。"
+  removeUnavailableDraftRecipients: "読み込めなかった宛先を取り除く"
   signinRequiredPlaceholder: "ノートを作成するにはログインが必要です。"
   replyPlaceholder: "このノートに返信..."
   quotePlaceholder: "このノートを引用..."

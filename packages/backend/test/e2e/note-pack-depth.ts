@@ -5,7 +5,7 @@
 
 import { beforeAll, describe, expect, test } from 'vitest';
 import type * as Misskey from 'cherrypick-js';
-import { api, post, react, signup } from '../utils.js';
+import { api, post, react, signup, uploadFile } from '../utils.js';
 
 // Counts every note object nested in reply/renote below (and including) the given note.
 function countNotes(note: any): number {
@@ -20,7 +20,7 @@ describe('Nested note packing', () => {
 		alice = await signup({ username: 'packdepth' });
 	}, 1000 * 60 * 2);
 
-	test('the number of nested notes grows with the chain length when reply and renote point at the same note', async () => {
+	test('keeps mixed reply and quote nesting bounded', async () => {
 		const length = 10;
 		let current = await post(alice, { text: 'chain root', visibility: 'public' });
 		for (let i = 1; i <= length; i++) {
@@ -31,9 +31,35 @@ describe('Nested note packing', () => {
 		expect(res.status).toBe(200);
 
 		const count = countNotes(res.body);
-		expect(count).toBeGreaterThanOrEqual(length);
-		expect(count).toBeLessThanOrEqual(5 * (length + 1));
+		expect(count).toBeLessThanOrEqual(16);
 	}, 1000 * 60 * 5);
+
+	test('keeps the quoted note and its quote preview, then stops nesting', async () => {
+		const file = await uploadFile(alice, { path: 'drive-delete.png' });
+		expect(file.status).toBe(200);
+		const original = await post(alice, { text: 'original' });
+		const preview = await post(alice, {
+			text: 'preview',
+			fileIds: [file.body!.id],
+			renoteId: original.id,
+		});
+		const quoted = await post(alice, { text: 'quoted', renoteId: preview.id });
+		const quote = await post(alice, { text: 'quote', renoteId: quoted.id });
+		const renote = await post(alice, { renoteId: quote.id });
+
+		const quoteResponse = await api('notes/show', { noteId: quote.id }, alice);
+		const renoteResponse = await api('notes/show', { noteId: renote.id }, alice);
+
+		expect(quoteResponse.status).toBe(200);
+		expect(renoteResponse.status).toBe(200);
+		for (const displayed of [quoteResponse.body, renoteResponse.body.renote]) {
+			expect(displayed?.renote?.id).toBe(quoted.id);
+			expect(displayed?.renote?.renote?.id).toBe(preview.id);
+			expect(displayed?.renote?.renote?.files?.map(attachment => attachment.id)).toEqual([file.body!.id]);
+			expect(displayed?.renote?.renote?.renoteId).toBe(original.id);
+			expect(displayed?.renote?.renote?.renote).toBeUndefined();
+		}
+	});
 
 	test('a reply target keeps its poll and myReaction', async () => {
 		const target = await post(alice, { text: 'poll target', poll: { choices: ['a', 'b'] } });

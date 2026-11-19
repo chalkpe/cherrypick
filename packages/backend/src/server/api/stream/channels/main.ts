@@ -54,6 +54,14 @@ export class MainChannel extends Channel {
 	private async onData(data: EventTypesToEventPayload<MainEventTypes>) {
 		if (this.disposed) return;
 		switch (data.type) {
+			case 'signin': {
+				if (this.connection.token != null) return;
+				break;
+			}
+			case 'newChatMessage': {
+				if (this.connection.token && !this.connection.token.permission.includes('read:chat')) return;
+				break;
+			}
 			case 'chatRoomVoiceState': {
 				if (this.connection.token && !this.connection.token.permission.includes('read:chat')) return;
 				const roomId = data.body.roomId;

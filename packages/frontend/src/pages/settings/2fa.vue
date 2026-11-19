@@ -95,6 +95,7 @@ import MkLink from '@/components/MkLink.vue';
 import * as os from '@/os.js';
 import { ensureSignin } from '@/i.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { updateCurrentAccount } from '@/accounts.js';
 
 const $i = ensureSignin();
@@ -161,7 +162,7 @@ async function unregisterKey(key: NonNullable<Misskey.entities.MeDetailedOnly['s
 	const confirm = await os.confirm({
 		type: 'question',
 		title: i18n.ts._2fa.removeKey,
-		text: i18n.tsx._2fa.removeKeyConfirm({ name: key.name }),
+		text: i18n.tsx._2fa.removeKeyConfirm({ name: mfmPlain(key.name) }),
 	});
 	if (confirm.canceled) return;
 

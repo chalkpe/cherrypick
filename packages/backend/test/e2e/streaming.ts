@@ -6,9 +6,9 @@
 process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
-import { describe, beforeAll, test } from 'vitest';
+import { describe, beforeAll, expect, test } from 'vitest';
 import { WebSocket } from 'ws';
-import { api, connectStream, createAppToken, initTestDb, port, post, signup, waitFire } from '../utils.js';
+import { api, connectStream, createAppToken, initTestDb, port, post, signup, successfulApiCall, userList, waitFire } from '../utils.js';
 import type * as misskey from 'cherrypick-js';
 import { MiFollowing } from '@/models/Following.js';
 
@@ -105,6 +105,37 @@ describe('Streaming', () => {
 		}, 1000 * 60 * 2);
 
 		describe('Events', () => {
+			test('new chat messages require the chat scope and ordinary account events still arrive', async () => {
+				const recipient = await signup({ username: 'chatstreamrecipient' });
+				assert.strictEqual((await api('i/update', { chatScope: 'everyone' }, recipient)).status, 200);
+				const accountToken = await createAppToken(recipient, ['read:account']);
+				const chatToken = await createAppToken(recipient, ['read:account', 'read:chat']);
+				const ownMessages: string[] = [];
+				const chatMessages: string[] = [];
+				const accountEvents: string[] = [];
+				const ownSocket = await connectStream(recipient, 'main', msg => {
+					if (msg.type === 'newChatMessage') ownMessages.push(msg.body.id);
+				});
+				const chatSocket = await connectStream({ token: chatToken }, 'main', msg => {
+					if (msg.type === 'newChatMessage') chatMessages.push(msg.body.id);
+				});
+				const accountSocket = await connectStream({ token: accountToken }, 'main', msg => { accountEvents.push(msg.type); });
+				try {
+					const sent = await api('chat/messages/create-to-user', { toUserId: recipient.id, text: 'hello' }, ayano);
+					assert.strictEqual(sent.status, 200, JSON.stringify(sent.body));
+					await expect.poll(() => [ownMessages, chatMessages], { timeout: 10_000 }).toEqual([[sent.body.id], [sent.body.id]]);
+
+					await post(ayano, { text: `hello @${recipient.username}` });
+					assert.strictEqual((await api('following/create', { userId: recipient.id }, ayano)).status, 200);
+					await expect.poll(() => accountEvents).toEqual(expect.arrayContaining(['mention', 'followed']));
+					expect(accountEvents).not.toContain('newChatMessage');
+				} finally {
+					ownSocket.close();
+					chatSocket.close();
+					accountSocket.close();
+				}
+			});
+
 			test('mention event', async () => {
 				const fired = await waitFire(
 					kyoko, 'main',	// kyoko:main
@@ -686,6 +717,20 @@ describe('Streaming', () => {
 		});
 
 		describe('UserList Timeline', () => {
+			test('publishes the removed user when simultaneous requests remove one membership', async () => {
+				const privateList = await userList(chitose, { name: 'Maple' });
+				const parameters = { listId: privateList.id, userId: ayano.id };
+				await successfulApiCall({ endpoint: 'users/lists/push', parameters, user: chitose });
+
+				const removed = await waitFire(chitose, 'userList', () => Promise.all([
+					successfulApiCall({ endpoint: 'users/lists/pull', parameters, user: chitose }),
+					successfulApiCall({ endpoint: 'users/lists/pull', parameters, user: chitose }),
+				]), msg => msg.type === 'userRemoved' && msg.body.id === ayano.id, { listId: privateList.id });
+				assert.strictEqual(removed, true);
+				const memberships = await successfulApiCall({ endpoint: 'users/lists/get-memberships', parameters: { listId: privateList.id }, user: chitose });
+				assert.deepStrictEqual(memberships, []);
+			});
+
 			test('リストに入れているユーザーの投稿が流れる', async () => {
 				const fired = await waitFire(
 					chitose, 'userList',

@@ -49,7 +49,7 @@ export type ChartSrc =
 import { onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue';
 import { Chart } from 'chart.js';
 import * as Misskey from 'cherrypick-js';
-import { misskeyApiGet } from '@/utility/misskey-api.js';
+import { misskeyApi, misskeyApiGet } from '@/utility/misskey-api.js';
 import { store } from '@/store.js';
 import { useChartTooltip } from '@/composables/use-chart-tooltip.js';
 import { chartVLine } from '@/utility/chart-vline.js';
@@ -781,7 +781,7 @@ const fetchPerUserFollowingChart = async (): Promise<typeof chartData> => {
 	const userId = props.args?.user?.id;
 	if (userId == null) return { series: [] };
 
-	const raw = await misskeyApiGet('charts/user/following', { userId: userId, limit: props.limit, span: props.span });
+	const raw = await misskeyApi('charts/user/following', { userId: userId, limit: props.limit, span: props.span });
 	return {
 		series: [{
 			name: 'Local',
@@ -799,7 +799,7 @@ const fetchPerUserFollowersChart = async (): Promise<typeof chartData> => {
 	const userId = props.args?.user?.id;
 	if (userId == null) return { series: [] };
 
-	const raw = await misskeyApiGet('charts/user/following', { userId: userId, limit: props.limit, span: props.span });
+	const raw = await misskeyApi('charts/user/following', { userId: userId, limit: props.limit, span: props.span });
 	return {
 		series: [{
 			name: 'Local',

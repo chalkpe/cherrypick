@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterEach, assert, beforeEach, describe, test, vi } from 'vitest';
+import { afterEach, assert, beforeEach, describe, test, vi, type MockInstance } from 'vitest';
 import { cleanup, fireEvent, render, waitFor, type RenderResult } from '@testing-library/vue';
 import { nextTick } from 'vue';
 import * as Misskey from 'cherrypick-js';
@@ -12,6 +12,8 @@ import { components } from '@/components/index.js';
 import { prefer } from '@/preferences.js';
 import { store } from '@/store.js';
 import * as os from '@/os.js';
+import * as accounts from '@/accounts.js';
+import { i18n } from '@/i18n.js';
 import * as sound from '@/utility/sound.js';
 
 const { fakeMe } = vi.hoisted(() => ({
@@ -55,9 +57,10 @@ vi.mock('@/utility/misskey-api.js', async (importOriginal) => ({
 vi.mock('@/utility/drive.js', async (importOriginal) => ({
 	...(await importOriginal<typeof import('@/utility/drive.js')>()),
 	chooseDriveFile: vi.fn(),
+	uploadFile: vi.fn(),
 }));
 
-const { chooseDriveFile } = await import('@/utility/drive.js');
+const { chooseDriveFile, uploadFile } = await import('@/utility/drive.js');
 const { misskeyApi } = await import('@/utility/misskey-api.js');
 const { default: MkPostForm } = await import('@/components/MkPostForm.vue');
 const { default: MkPostFormSimple } = await import('@/components/MkPostFormSimple.vue');
@@ -96,6 +99,15 @@ describe.each([
 		});
 	};
 
+	async function chooseAccountMenuItem(form: RenderResult, menu: MockInstance<typeof os.popupMenu>, text: string) {
+		menu.mockClear();
+		await fireEvent.click(form.container.querySelector('header button img')!.closest('button')!);
+		await waitFor(() => assert.isNotEmpty(menu.mock.calls));
+		const item = menu.mock.lastCall![0].find(item => item != null && 'text' in item && item.text === text);
+		if (item == null || !('action' in item) || !item.action) assert.fail(`The account menu offers ${text}`);
+		await item.action(new PointerEvent('click'));
+	}
+
 	afterEach(() => {
 		cleanup();
 		localStorage.clear();
@@ -108,7 +120,302 @@ describe.each([
 		vi.mocked(misskeyApi).mockReset();
 		vi.mocked(misskeyApi).mockImplementation(() => new Promise(() => {}));
 		vi.mocked(chooseDriveFile).mockReset();
+		vi.mocked(uploadFile).mockReset();
 		vi.restoreAllMocks();
+	});
+
+	async function chooseUploadMenuItem(form: RenderResult, menu: MockInstance<typeof os.popupMenu>, label: string, index = 0) {
+		await fireEvent.click(form.container.querySelectorAll('[class*="itemActionWrapper"] button')[index]);
+		const item = menu.mock.lastCall?.[0].find(item => item != null && 'text' in item && item.text === label);
+		if (item == null || !('action' in item) || !item.action) assert.fail(`The upload menu offers ${label}`);
+		void item.action(new PointerEvent('click'));
+	}
+
+	test('uses the selected account for a menu upload and holds the account until it finishes', async () => {
+		const alternate = { ...fakeMe, id: 'alternate', policies: { ...fakeMe.policies, maxFileSizeMb: 12 } } as unknown as Misskey.entities.MeDetailed;
+		vi.spyOn(accounts, 'getAccounts').mockReturnValue([{ host: 'local.test', id: alternate.id, username: alternate.username, token: 'selected-session' }]);
+		vi.spyOn(accounts, 'getAccountMenu').mockImplementation(async ({ onChoose }) => [{
+			type: 'button', text: 'Alternate', action: () => onChoose?.(alternate),
+		}]);
+		const menu = vi.spyOn(os, 'popupMenu').mockResolvedValue();
+		vi.spyOn(os, 'chooseFileFromPc').mockResolvedValue([new File(['contents'], 'attachment.txt', { type: 'text/plain' })]);
+		let finish!: (file: Misskey.entities.DriveFile) => void;
+		vi.mocked(uploadFile).mockReturnValue({ filePromise: new Promise(resolve => { finish = resolve; }), abort: vi.fn() });
+		const form = renderPostForm();
+		await fireEvent.click(form.container.querySelector('textarea')!);
+		await chooseAccountMenuItem(form, menu, 'Alternate');
+		await fireEvent.click(form.container.querySelector('.ti-photo-plus')!.closest('button')!);
+		await waitFor(() => assert.exists(form.container.querySelector('[class*="itemThumbnail"]')));
+		await chooseUploadMenuItem(form, menu, i18n.ts.upload);
+		assert.propertyVal(vi.mocked(uploadFile).mock.lastCall?.[1], 'token', 'selected-session');
+		assert.propertyVal(vi.mocked(uploadFile).mock.lastCall?.[1], 'maxFileSizeMb', 12);
+		assert.isTrue(form.container.querySelector('header button img')!.closest('button')!.disabled);
+		finish(driveFile);
+		await waitFor(() => assert.exists(form.container.querySelector(`[data-id="${driveFile.id}"]`)));
+		assert.isFalse(form.container.querySelector('header button img')!.closest('button')!.disabled);
+	});
+
+	test('skips a removed waiting item and uploads the remaining item in order', async () => {
+		const menu = vi.spyOn(os, 'popupMenu').mockResolvedValue();
+		vi.spyOn(os, 'chooseFileFromPc').mockResolvedValue(['first', 'removed', 'last'].map(name => new File(['contents'], name + '.txt', { type: 'text/plain' })));
+		let finish!: (file: Misskey.entities.DriveFile) => void;
+		vi.mocked(uploadFile).mockReturnValueOnce({ filePromise: new Promise(resolve => { finish = resolve; }), abort: vi.fn() });
+		vi.mocked(uploadFile).mockReturnValue({ filePromise: Promise.resolve({ ...driveFile, id: 'last-file' }), abort: vi.fn() });
+		const form = renderPostForm();
+		await fireEvent.click(form.container.querySelector('textarea')!);
+		await fireEvent.click(form.container.querySelector('.ti-photo-plus')!.closest('button')!);
+		await waitFor(() => assert.lengthOf(form.container.querySelectorAll('[class*="itemThumbnail"]'), 3));
+		await fireEvent.click(form.container.querySelector(submitSelector)!);
+		await waitFor(() => assert.lengthOf(vi.mocked(uploadFile).mock.calls, 1));
+		await chooseUploadMenuItem(form, menu, i18n.ts.remove, 1);
+		finish(driveFile);
+		await waitFor(() => {
+			const request = vi.mocked(misskeyApi).mock.calls.find(([endpoint]) => endpoint === 'notes/create');
+			assert.deepEqual(vi.mocked(uploadFile).mock.calls.map(([file]) => (file as File).name), ['first.txt', 'last.txt']);
+			assert.deepPropertyVal(request?.[1], 'fileIds', [driveFile.id, 'last-file']);
+		});
+	});
+
+	test('restores recipients and the draft ID under the selected account before resubmitting', async () => {
+		const alternate = { ...fakeMe, id: 'alternate', policies: { noteDraftLimit: 10, scheduledNoteLimit: 10 } } as unknown as Misskey.entities.MeDetailed;
+		vi.spyOn(accounts, 'getAccounts').mockReturnValue([{
+			host: 'local.test', id: alternate.id, username: alternate.username, token: 'selected-session',
+		}]);
+		vi.spyOn(accounts, 'getAccountMenu').mockImplementation(async ({ onChoose }) => [{
+			type: 'button', text: 'Alternate', action: () => onChoose?.(alternate),
+		}, {
+			type: 'button', text: 'Current', action: () => onChoose?.(fakeMe as unknown as Misskey.entities.MeDetailed),
+		}]);
+		const menu = vi.spyOn(os, 'popupMenu').mockResolvedValue();
+		const alert = vi.spyOn(os, 'alert').mockResolvedValue(undefined);
+		const form = renderPostForm();
+		const textarea = form.container.querySelector('textarea')!;
+		await fireEvent.click(textarea);
+		await fireEvent.update(textarea, 'Existing text');
+		await chooseAccountMenuItem(form, menu, 'Alternate');
+
+		vi.mocked(chooseDriveFile).mockResolvedValue([driveFile]);
+		await fireEvent.click(form.container.querySelector('.ti-cloud-download')!.closest('button')!);
+		assert.deepEqual(vi.mocked(chooseDriveFile).mock.lastCall, [{ multiple: true, token: 'selected-session' }]);
+		await waitFor(() => assert.exists(form.container.querySelector(`[data-id="${driveFile.id}"]`)));
+		await chooseAccountMenuItem(form, menu, 'Current');
+		assert.propertyVal(alert.mock.lastCall?.[0], 'text', i18n.ts._postForm.detachFilesToChangeAccount);
+		assert.strictEqual(textarea.value, 'Existing text');
+		assert.exists(form.container.querySelector(`[data-id="${driveFile.id}"]`));
+
+		const popup = vi.spyOn(os, 'popup').mockReturnValue({ dispose: () => {} });
+		await chooseAccountMenuItem(form, menu, i18n.ts._drafts.listScheduledNotes);
+		const restore = (popup.mock.lastCall?.[2] as unknown as {
+			restore: (draft: Misskey.entities.NoteDraft) => Promise<void>;
+		}).restore;
+		const draft = {
+			id: 'restored-draft', text: 'Restored text', files: [driveFile], visibility: 'specified',
+			visibleUserIds: ['recipient'], scheduledAt: Date.now() + 3_600_000,
+		} as Misskey.entities.NoteDraft;
+		let resolveRecipients!: (users: Misskey.entities.UserLite[]) => void;
+		const recipients = new Promise<Misskey.entities.UserLite[]>(resolve => { resolveRecipients = resolve; });
+		vi.mocked(misskeyApi).mockImplementation((endpoint, params) => endpoint === 'users/show' && params && 'userIds' in params ? recipients : new Promise(() => {}));
+		const restoration = restore(draft);
+		await nextTick();
+
+		const submit = form.container.querySelector<HTMLButtonElement>(submitSelector)!;
+		assert.isTrue(submit.disabled);
+		await fireEvent.click(submit);
+		assert.notExists(vi.mocked(misskeyApi).mock.calls.find(([endpoint]) => endpoint.startsWith('notes/drafts/')));
+		assert.strictEqual(textarea.value, 'Existing text');
+		assert.deepEqual(vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'users/show'), [
+			['users/show', { userIds: draft.visibleUserIds }, 'selected-session'],
+		]);
+
+		resolveRecipients([{ id: 'recipient', username: 'recipient', host: null } as Misskey.entities.UserLite]);
+		await restoration;
+		await nextTick();
+		assert.strictEqual(textarea.value, 'Restored text');
+		await fireEvent.click(submit);
+		const request = vi.mocked(misskeyApi).mock.calls.find(([endpoint]) => endpoint === 'notes/drafts/update');
+		assert.strictEqual(request?.[2], 'selected-session');
+		assert.propertyVal(request?.[1], 'draftId', draft.id);
+		assert.deepPropertyVal(request?.[1], 'visibleUserIds', draft.visibleUserIds);
+	});
+
+	test('opens a partial server draft and clears prior draft fields before saving', async () => {
+		fakeMe.noteVisibilityLimit = 'followers';
+		const alternate = { ...fakeMe, id: 'alternate', noteVisibilityLimit: 'none', policies: { scheduledNoteLimit: 10, noteDraftLimit: 10 } } as unknown as Misskey.entities.MeDetailed;
+		vi.spyOn(accounts, 'getAccounts').mockReturnValue([{ host: 'local.test', id: alternate.id, username: alternate.username, token: 'selected-session' }]);
+		vi.spyOn(accounts, 'getAccountMenu').mockImplementation(async ({ onChoose }) => [{
+			type: 'button', text: 'Alternate', action: () => onChoose?.(alternate),
+		}]);
+		const menu = vi.spyOn(os, 'popupMenu').mockResolvedValue();
+		const popup = vi.spyOn(os, 'popup').mockReturnValue({ dispose: () => {} });
+		const recipient = { id: 'recipient', username: 'recipient', host: null } as Misskey.entities.UserLite;
+		vi.mocked(misskeyApi).mockImplementation((endpoint, params) => endpoint === 'users/show' && params && 'userIds' in params
+			? Promise.resolve([recipient])
+			: new Promise(() => {}));
+		const form = renderPostForm();
+		const textarea = form.container.querySelector('textarea')!;
+		await fireEvent.click(textarea);
+		await chooseAccountMenuItem(form, menu, 'Alternate');
+		assert.exists(form.container.querySelector('button .ti-world'), 'the alternate account allows public notes');
+
+		await chooseAccountMenuItem(form, menu, i18n.ts._drafts.listScheduledNotes);
+		const restore = (popup.mock.lastCall?.[2] as unknown as {
+			restore: (draft: Misskey.entities.NoteDraft) => Promise<void>;
+		}).restore;
+		const when = Date.now() + 3_600_000;
+		const prior = {
+			id: 'prior', text: 'Prior draft', visibility: 'public', scheduledAt: when,
+			channel: { id: 'channel', name: 'Prior channel', color: '#aaa' },
+			deleteAt: new Date(when + 3_600_000).toISOString(),
+			poll: { choices: ['Prior choice', 'Second option'], multiple: false },
+			event: { title: 'Prior event', start: when, end: when + 30 * 60_000, metadata: {} },
+		} as unknown as Misskey.entities.NoteDraft;
+		await restore(prior);
+		await nextTick();
+		assert.exists(form.getByDisplayValue('Prior choice'));
+		assert.exists(form.getByDisplayValue('Prior event'));
+
+		const draft = {
+			id: 'restored-draft', text: 'Partial draft', files: [driveFile], visibility: 'specified',
+			visibleUserIds: [recipient.id, 'unavailable'], scheduledAt: when,
+		} as Misskey.entities.NoteDraft;
+		await restore(draft);
+		await nextTick();
+
+		assert.strictEqual(textarea.value, 'Partial draft');
+		assert.exists(form.container.querySelector(`[data-id="${driveFile.id}"]`));
+		assert.isNull(form.queryByDisplayValue('Prior choice'));
+		assert.isNull(form.queryByDisplayValue('Prior event'));
+		assert.isNull(form.queryByText('Prior channel'));
+		const submit = form.container.querySelector<HTMLButtonElement>(submitSelector)!;
+		assert.isTrue(submit.disabled);
+		assert.notExists(vi.mocked(misskeyApi).mock.calls.find(([endpoint]) => endpoint === 'notes/drafts/update'));
+
+		await fireEvent.click(form.getByRole('button', { name: i18n.ts._postForm.removeUnavailableDraftRecipients }));
+		await fireEvent.click(submit);
+		const request = vi.mocked(misskeyApi).mock.calls.find(([endpoint]) => endpoint === 'notes/drafts/update');
+		assert.strictEqual(request?.[2], 'selected-session');
+		assert.propertyVal(request?.[1], 'draftId', draft.id);
+		assert.propertyVal(request?.[1], 'visibility', 'specified');
+		assert.propertyVal(request?.[1], 'channelId', null);
+		assert.propertyVal(request?.[1], 'scheduledDelete', null);
+		assert.propertyVal(request?.[1], 'poll', null);
+		assert.propertyVal(request?.[1], 'event', null);
+		assert.deepPropertyVal(request?.[1], 'visibleUserIds', [recipient.id]);
+	});
+
+	test('opens a legacy local draft with its attachment account selected', async () => {
+		const alternate = { ...fakeMe, id: 'alternate' } as unknown as Misskey.entities.MeDetailed;
+		vi.spyOn(accounts, 'getAccounts').mockReturnValue([{ host: 'local.test', id: alternate.id, username: alternate.username, token: 'selected-session' }]);
+		vi.mocked(misskeyApi).mockImplementation(endpoint => endpoint === 'i' ? Promise.resolve(alternate) : new Promise(() => {}));
+		localStorage.setItem('drafts', JSON.stringify({
+			'note:me': { data: { text: 'Local draft', visibility: 'public', files: [driveFile], attachmentAccountId: alternate.id } },
+		}));
+		const form = renderPostForm();
+		const textarea = form.container.querySelector('textarea')!;
+		await waitFor(() => assert.strictEqual(textarea.value, 'Local draft'));
+		await fireEvent.click(textarea);
+		await fireEvent.click(form.container.querySelector(submitSelector)!);
+		await waitFor(() => {
+			const call = vi.mocked(misskeyApi).mock.calls.find(([endpoint]) => endpoint === 'notes/create');
+			assert.strictEqual(call?.[2], 'selected-session');
+			assert.deepPropertyVal(call?.[1], 'fileIds', [driveFile.id]);
+		});
+	});
+
+	test.each([false, true])('uses the selected account for server drafts (scheduled: %s)', async scheduled => {
+		fakeMe.policies.noteDraftLimit = 10;
+		fakeMe.policies.scheduledNoteLimit = 10;
+		try {
+			const alternate = { ...fakeMe, id: 'alternate' } as unknown as Misskey.entities.MeDetailed;
+			vi.spyOn(accounts, 'getAccounts').mockReturnValue([{
+				host: 'local.test', id: alternate.id, username: alternate.username, token: 'selected-session',
+			}]);
+			vi.spyOn(accounts, 'getAccountMenu').mockImplementation(async ({ onChoose }) => [{
+				type: 'button',
+				text: 'Alternate',
+				action: () => onChoose?.(alternate),
+			}]);
+			const menu = vi.spyOn(os, 'popupMenu').mockResolvedValue();
+			const apiError = vi.spyOn(os, 'apiErrorDialog').mockResolvedValue();
+			vi.spyOn(sound, 'playMisskeySfx').mockImplementation(() => {});
+			const chooseFromPc = vi.spyOn(os, 'chooseFileFromPc').mockResolvedValue([new File(['contents'], 'attachment.txt', { type: 'text/plain' })]);
+			let completeUpload!: (file: Misskey.entities.DriveFile) => void;
+			vi.mocked(uploadFile).mockImplementationOnce(() => ({
+				filePromise: Promise.reject(new Error('Upload failed')),
+				abort: vi.fn(),
+			})).mockReturnValue({
+				filePromise: new Promise(resolve => { completeUpload = resolve; }),
+				abort: vi.fn(),
+			});
+			const date = new Date(Date.now() + 3_600_000);
+			vi.spyOn(os, 'inputDatetime').mockResolvedValue({ canceled: false, result: date });
+			const form = renderPostForm();
+			const textarea = form.container.querySelector('textarea')!;
+			await fireEvent.click(textarea);
+			await fireEvent.update(textarea, 'Text for one account');
+			await fireEvent.click(form.container.querySelector('header button img')!.closest('button')!);
+			await waitFor(() => assert.isNotEmpty(menu.mock.calls));
+			const choose = menu.mock.lastCall![0].find(item => item != null && 'text' in item && item.text === 'Alternate');
+			if (choose == null || !('type' in choose) || choose.type !== 'button') assert.fail('the alternate account is available');
+			await choose.action(new PointerEvent('click'));
+			await fireEvent.click(form.container.querySelector('.ti-photo-plus')!.closest('button')!);
+			assert.strictEqual(chooseFromPc.mock.calls.length, 1);
+
+			const icon = scheduled ? '.ti-dots' : '.ti-caret-down-filled';
+			await fireEvent.click(form.container.querySelector(icon)!.closest('button')!);
+			const label = scheduled ? i18n.ts.schedulePost + '...' : i18n.ts._drafts.saveToDraft;
+			const option = menu.mock.lastCall![0].find(item => item != null && 'text' in item && item.text === label);
+			if (option != null && 'type' in option && option.type === 'switch') option.ref.value = true;
+			else if (option != null && 'action' in option) await option.action(new PointerEvent('click'));
+			else assert.fail('the server draft option is available');
+			await nextTick();
+
+			const submit = form.container.querySelector<HTMLButtonElement>(submitSelector)!;
+			await waitFor(() => assert.isFalse(submit.disabled));
+			await fireEvent.click(submit);
+			await waitFor(() => assert.isFalse(submit.disabled));
+			assert.strictEqual(textarea.value, 'Text for one account');
+			assert.exists(form.container.querySelector('[class*="itemThumbnail"]'));
+			assert.isUndefined(vi.mocked(misskeyApi).mock.calls.find(([endpoint]) => endpoint === 'notes/drafts/create'));
+
+			const draftError: Misskey.api.APIError = { message: 'Draft rejected', id: 'draft-error', code: 'DRAFT_REJECTED', kind: 'client', info: {} };
+			let rejectSave!: (err: typeof draftError) => void;
+			const save = new Promise<never>((_, reject) => { rejectSave = reject; });
+			vi.mocked(misskeyApi).mockImplementation(endpoint => endpoint === 'notes/drafts/create' ? save : new Promise(() => {}));
+			await fireEvent.click(submit);
+			assert.isTrue(submit.disabled, 'submission is locked during the upload');
+			assert.isUndefined(vi.mocked(misskeyApi).mock.calls.find(([endpoint]) => endpoint === 'notes/drafts/create'));
+			assert.propertyVal(vi.mocked(uploadFile).mock.lastCall?.[1], 'token', 'selected-session');
+
+			completeUpload(driveFile);
+			await waitFor(() => assert.isNotEmpty(vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'notes/drafts/create')));
+			await fireEvent.click(submit);
+
+			const requests = vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'notes/drafts/create');
+			assert.lengthOf(requests, 1, 'a pending save cannot be repeated');
+			const [request] = requests;
+			assert.strictEqual(request?.[2], 'selected-session');
+			assert.propertyVal(request?.[1], 'isActuallyScheduled', scheduled);
+			assert.deepPropertyVal(request?.[1], 'fileIds', [driveFile.id]);
+
+			rejectSave(draftError);
+			await waitFor(() => assert.isFalse(submit.disabled));
+			assert.deepEqual(apiError.mock.lastCall, ['notes/drafts/create', draftError]);
+			assert.strictEqual(textarea.value, 'Text for one account');
+			assert.exists(form.container.querySelector(`[data-id="${driveFile.id}"]`));
+			assert.propertyVal(JSON.parse(localStorage.getItem('drafts') ?? '{}')['note:me']?.data, 'postAccountId', alternate.id);
+
+			vi.mocked(misskeyApi).mockImplementation(async endpoint => endpoint === 'notes/drafts/create' ? undefined : new Promise(() => {}));
+			await fireEvent.click(submit);
+			await waitFor(() => {
+				assert.strictEqual(textarea.value, '');
+				assert.isUndefined(JSON.parse(localStorage.getItem('drafts') ?? '{}')['note:me']);
+			});
+			assert.lengthOf(vi.mocked(uploadFile).mock.calls, 2, 'an already uploaded file is reused when retrying the save');
+		} finally {
+			fakeMe.policies.noteDraftLimit = 0;
+			fakeMe.policies.scheduledNoteLimit = 0;
+		}
 	});
 
 	test('explicit reset clears the CW title even when keepCw is enabled', async () => {
@@ -229,6 +536,10 @@ describe.each([
 			if (endpoint === 'notes/update') return { updatedNote: {} };
 			return new Promise(() => {});
 		});
+		const localDraft = JSON.stringify({
+			'note:me': { data: { text: 'A different draft', files: [{ ...driveFile, id: 'other-file' }], attachmentAccountId: 'alternate' } },
+		});
+		localStorage.setItem('drafts', localDraft);
 		const initialNote = {
 			id: 'note-1',
 			createdAt: '1970-01-01T00:00:00.000Z',
@@ -237,7 +548,7 @@ describe.each([
 			cw: null,
 			visibility: 'home',
 			localOnly: false,
-			files: [],
+			files: [driveFile],
 			reactionAcceptance: null,
 		} as unknown as Misskey.entities.Note;
 		const form = render(component, {
@@ -265,6 +576,8 @@ describe.each([
 			const params = call![1] as Record<string, unknown>;
 			assert.strictEqual(params.noteId, 'note-1');
 			assert.strictEqual(params.text, 'Edited note');
+			assert.deepEqual(params.fileIds, [driveFile.id]);
+			assert.strictEqual(localStorage.getItem('drafts'), localDraft);
 			assert.isUndefined(params.visibility, 'visibility is omitted from the request body');
 			assert.isUndefined(params.localOnly, 'localOnly is omitted from the request body');
 			assert.isUndefined(params.deliveryTargets, 'deliveryTargets is omitted from the request body');

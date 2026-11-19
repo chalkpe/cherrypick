@@ -13,7 +13,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<!-- 공개하는 것은 그룹 이름·설명·아이콘·멤버 수뿐이다. 멤버·채널·그룹장은 보이지 않는다 -->
 			<div><MkAvatar v-if="previewAvatar" :room="previewAvatar" :class="$style.icon"/></div>
 			<div :class="$style.name"><Mfm :text="preview.name" :plain="true"/></div>
-			<div v-if="preview.description" :class="$style.description"><Mfm :text="preview.description"/></div>
+			<div v-if="preview.description" class="_mfmContained" :class="$style.description"><Mfm :text="preview.description" :containBounce="true"/></div>
 			<div :class="$style.members">{{ i18n.tsx._chat._inviteLink.membersCount({ n: preview.membersCount }) }}</div>
 			<div class="_buttonsCenter">
 				<MkButton v-if="preview.joinedRoomId != null" primary rounded @click="openRoom(preview.joinedRoomId)">

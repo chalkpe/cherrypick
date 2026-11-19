@@ -214,6 +214,7 @@ import { miLocalStorage } from '@/local-storage.js';
 import { editNickname } from '@/utility/edit-nickname.js';
 import { haptic, hapticConfirm } from '@/utility/haptic.js';
 import detectLanguage from '@/utility/detect-language.js';
+import { translateWithState } from '@/utility/translate-with-state.js';
 import { globalEvents } from '@/events.js';
 import { notesSearchAvailable, canSearchNonLocalNotes } from '@/utility/check-permissions.js';
 import { store } from '@/store.js';
@@ -327,25 +328,21 @@ async function updateMemo() {
 
 const isForeignLanguage: boolean = props.user.description != null && (() => {
 	const targetLang = (miLocalStorage.getItem('lang') ?? navigator.language).slice(0, 2);
-	const postLang = detectLanguage(props.user.description);
-	return postLang !== '' && postLang !== targetLang;
+	const postLang = detectLanguage(props.user.description) || 'en';
+	return postLang !== targetLang;
 })();
 
 async function translate(): Promise<void> {
-	if (translation.value != null) return;
+	if (translation.value != null || translating.value) return;
 	globalEvents.emit('showNoteContent', true);
-	translating.value = true;
 
 	haptic();
 
-	const res = await misskeyApi('users/translate', {
+	const translated = await translateWithState(translation, translating, () => os.apiWithDialog('users/translate', {
 		userId: props.user.id,
 		targetLang: miLocalStorage.getItem('lang') ?? navigator.language,
-	});
-	translating.value = false;
-	translation.value = res;
-
-	hapticConfirm();
+	}));
+	if (translated) hapticConfirm();
 }
 
 function resetTimer() {

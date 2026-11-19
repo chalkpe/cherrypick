@@ -58,7 +58,7 @@ jobs:
       # head は PR をマージした結果 (github.sha = refs/pull/<番号>/merge のコミット)、
       # base はその第1親を使う。PR ブランチが base に追従していなくても、PR 自身の差分だけを比較できる
       - name: Checkout base
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 2
@@ -73,19 +73,19 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout head
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           path: head
           submodules: true
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: head/package.json
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: head/.node-version
           cache: pnpm
@@ -130,7 +130,7 @@ jobs:
 
       - name: Upload bundle visualizer
         id: upload-bundle-visualizer
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: frontend-bundle-visualizer
           path: ${{ runner.temp }}/frontend-diagnostics/frontend-bundle-visualizer.html
@@ -158,7 +158,7 @@ jobs:
 
       - name: Upload browser base heap snapshot
         id: upload-browser-base-heap-snapshot
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: frontend-browser-base-heap-snapshot
           path: base-heap-snapshot.heapsnapshot
@@ -168,7 +168,7 @@ jobs:
 
       - name: Upload browser head heap snapshot
         id: upload-browser-head-heap-snapshot
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: frontend-browser-head-heap-snapshot
           path: head-heap-snapshot.heapsnapshot
@@ -189,7 +189,7 @@ jobs:
 
       - name: Upload browser detailed html
         id: upload-browser-detailed-html
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: frontend-browser-metrics-detailed-html
           path: ${{ runner.temp }}/frontend-diagnostics/frontend-browser-detailed-html.html
@@ -235,7 +235,7 @@ jobs:
           cat "$REPORT_DIR/frontend-diagnostics.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload frontend diagnostics report
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: frontend-diagnostics
           path: |

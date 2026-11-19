@@ -4,15 +4,20 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div :class="$style.root"><i class="ti ti-alert-triangle" style="margin-right: 8px;"></i>{{ i18n.ts.remoteUserCaution }}<a v-if="href" :class="$style.link" :href="href" rel="nofollow noopener" target="_blank">{{ i18n.ts.showOnRemote }}</a></div>
+<div :class="$style.root"><i class="ti ti-alert-triangle" style="margin-right: 8px;"></i>{{ i18n.ts.remoteUserCaution }}<a v-if="href" :class="$style.link" :href="href" rel="nofollow noopener" target="_blank" @click.stop="onRemoteClick" @auxclick.middle.stop="onRemoteClick">{{ i18n.ts.showOnRemote }}</a></div>
 </template>
 
 <script lang="ts" setup>
 import { i18n } from '@/i18n.js';
+import { warningExternalWebsite } from '@/utility/warning-external-website.js';
 
-defineProps<{
+const props = defineProps<{
 	href?: string;
 }>();
+
+function onRemoteClick(event: MouseEvent) {
+	if (props.href) warningExternalWebsite(event, props.href);
+}
 </script>
 
 <style lang="scss" module>

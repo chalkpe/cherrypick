@@ -555,6 +555,7 @@ export class ClientServerService {
 				const _user = await this.userEntityService.pack(user, null, {
 					schema: 'UserDetailed',
 					userProfile: profile,
+					resolveMovedTo: false,
 				});
 
 				return await HtmlTemplateService.replyHtml(reply, UserPage({
@@ -869,7 +870,7 @@ export class ClientServerService {
 
 			const _note = await this.noteEntityService.pack(note, null, { detail: true });
 
-			reply.header('Cache-Control', 'public, max-age=3600');
+			reply.header('Cache-Control', 'no-store');
 			return await HtmlTemplateService.replyHtml(reply, BaseEmbed({
 				title: this.meta.name ?? 'CherryPick',
 				...(await this.htmlTemplateService.getCommonData()),

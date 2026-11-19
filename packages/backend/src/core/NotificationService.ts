@@ -140,7 +140,7 @@ export class NotificationService implements OnApplicationShutdown {
 					return null;
 				}
 			} else if (recieveConfig?.type === 'list') {
-				const isMember = await this.userListService.membersCache.fetch(recieveConfig.userListId).then(members => members.has(notifierId));
+				const isMember = await this.userListService.isMember(recieveConfig.userListId, notifierId);
 				if (!isMember) {
 					return null;
 				}

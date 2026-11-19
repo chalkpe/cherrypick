@@ -119,6 +119,10 @@ export const meta = {
 				type: 'boolean',
 				optional: false, nullable: false,
 			},
+			canManageUserCredentials: {
+				type: 'boolean',
+				optional: false, nullable: false,
+			},
 			isSilenced: {
 				type: 'boolean',
 				optional: false, nullable: false,
@@ -267,6 +271,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				mutedInstances: profile.mutedInstances,
 				notificationRecieveConfig: profile.notificationRecieveConfig,
 				isModerator: isModerator,
+				canManageUserCredentials: await this.roleService.canManageUserCredentials(me, user),
 				isSilenced: isSilenced,
 				isSuspended: user.isSuspended,
 				isHibernated: user.isHibernated,

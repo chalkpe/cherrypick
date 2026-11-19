@@ -13,6 +13,8 @@ import { RemoteUserResolveService } from '@/core/RemoteUserResolveService.js';
 import { DI } from '@/di-symbols.js';
 import PerUserPvChart from '@/core/chart/charts/per-user-pv.js';
 import { RoleService } from '@/core/RoleService.js';
+import { UtilityService } from '@/core/UtilityService.js';
+import { canViewUserProfile } from '@/misc/user-profile-visibility.js';
 import { ApiError } from '../../error.js';
 import { ApiLoggerService } from '../../ApiLoggerService.js';
 import type { FindOptionsWhere } from 'typeorm';
@@ -114,6 +116,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private roleService: RoleService,
 		private perUserPvChart: PerUserPvChart,
 		private apiLoggerService: ApiLoggerService,
+		private utilityService: UtilityService,
 	) {
 		super(meta, paramDef, async (ps, me, _1, _2, _3, _4, ip) => {
 			// ログイン時にusers/showできなくなってしまう
@@ -149,7 +152,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					if (user != null) _users.push(user);
 				}
 
-				const _userMap = await this.userEntityService.packMany(_users, me, { schema: 'UserDetailed' })
+				const _userMap = await this.userEntityService.packMany(_users, me, { schema: 'UserDetailed', resolveMovedTo: me != null })
 					.then(users => new Map(users.map(u => [u.id, u])));
 				return _users.map(u => _userMap.get(u.id)!);
 			} else {
@@ -159,10 +162,17 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 						throw new ApiError(meta.errors.noSuchUser);
 					}
 
-					user = await this.remoteUserResolveService.resolveUser(ps.username, ps.host).catch(err => {
-						this.apiLoggerService.logger.warn(`failed to resolve remote user: ${err}`);
-						throw new ApiError(meta.errors.failedToResolveRemoteUser);
-					});
+					if (me == null) {
+						user = await this.usersRepository.findOneBy({
+							usernameLower: ps.username.toLowerCase(),
+							host: this.utilityService.isSelfHost(ps.host) ? IsNull() : this.utilityService.toPuny(ps.host),
+						});
+					} else {
+						user = await this.remoteUserResolveService.resolveUser(ps.username, ps.host).catch(err => {
+							this.apiLoggerService.logger.warn(`failed to resolve remote user: ${err}`);
+							throw new ApiError(meta.errors.failedToResolveRemoteUser);
+						});
+					}
 				} else {
 					const q: FindOptionsWhere<MiUser> = 'userId' in ps
 						? { id: ps.userId }
@@ -171,11 +181,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					user = await this.usersRepository.findOneBy(q);
 				}
 
-				if (user == null || (!isModerator && user.isSuspended)) {
-					throw new ApiError(meta.errors.noSuchUser);
-				}
-
-				if (this.serverSettings.ugcVisibilityForVisitor === 'local' && user.host != null && me == null) {
+				if (user == null || !canViewUserProfile(user, { signedIn: me != null, isModerator }, this.serverSettings.ugcVisibilityForVisitor)) {
 					throw new ApiError(meta.errors.noSuchUser);
 				}
 
@@ -189,6 +195,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 				return await this.userEntityService.pack(user, me, {
 					schema: 'UserDetailed',
+					resolveMovedTo: me != null,
 				});
 			}
 		});

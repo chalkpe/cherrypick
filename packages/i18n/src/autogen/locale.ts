@@ -12899,6 +12899,22 @@ export interface Locale extends ILocale {
          */
         "uploaderTip": string;
         /**
+         * アカウントを切り替えるには、添付したドライブのファイルを先に取り外してください。
+         */
+        "detachFilesToChangeAccount": string;
+        /**
+         * 投稿するアカウントのドライブからファイルを選ぶか、添付ファイルを所有しているアカウントに切り替えてください。
+         */
+        "attachmentAccountMismatch": string;
+        /**
+         * 下書きの宛先を{count}件読み込めませんでした。投稿や保存の前に取り除いてください。
+         */
+        "unavailableDraftRecipients": ParameterizedString<"count">;
+        /**
+         * 読み込めなかった宛先を取り除く
+         */
+        "removeUnavailableDraftRecipients": string;
+        /**
          * ノートを作成するにはログインが必要です。
          */
         "signinRequiredPlaceholder": string;

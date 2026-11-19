@@ -102,6 +102,7 @@ const emit = defineEmits<{
 const props = withDefaults(defineProps<{
 	includeSelf?: boolean;
 	localOnly?: boolean;
+	account?: { id: string; token: string; };
 	// 検索し直しても選んだ人を残し、何人でも選べるようにする
 	multiple?: boolean;
 	// 選べない人の ID とその理由。窓を待たせないよう、開いたあとで届いてよい
@@ -114,6 +115,7 @@ const props = withDefaults(defineProps<{
 });
 
 const computedLocalOnly = computed(() => props.localOnly || instance.federation === 'none');
+const apiToken = props.account == null ? [] as const : [props.account.token] as const;
 
 const username = ref('');
 const host = ref('');
@@ -151,7 +153,7 @@ watch(username, (value, previous) => {
 const canLookup = computed(() => !computedLocalOnly.value && !!searchQuery.value?.username && !!searchQuery.value.host && searchQuery.value.host !== '.');
 
 function canSelectUser(user: Misskey.entities.UserLite) {
-	return (!computedLocalOnly.value || user.host == null) && (props.includeSelf || user.id !== $i?.id);
+	return (!computedLocalOnly.value || user.host == null) && (props.includeSelf || user.id !== (props.account?.id ?? $i?.id));
 }
 
 const searching = computed(() => username.value !== '' || host.value !== '');
@@ -208,7 +210,7 @@ function search() {
 		...query,
 		limit: 10,
 		detail: false,
-	}).then(async _users => {
+	}, ...apiToken).then(async _users => {
 		if (currentRequestId !== requestId) return;
 		showUsers(_users.filter(canSelectUser));
 		await addExactLocalUser(query, currentRequestId);
@@ -233,7 +235,7 @@ async function addExactLocalUser(query: { username: string; host: string; }, cur
 	if (!isThisServer || name === '' || users.value.some(user => user.host == null && user.username.toLowerCase() === name)) return;
 
 	try {
-		const user = await misskeyApi('users/show', { username: query.username, host: null });
+		const user = await misskeyApi('users/show', { username: query.username, host: null }, ...apiToken);
 		if (currentRequestId === requestId) showUsers([user, ...users.value].filter(canSelectUser));
 	} catch {
 		// そのユーザー名の人はいない
@@ -248,7 +250,7 @@ async function lookup() {
 	lookingUp.value = true;
 	waitingForUsers.value = true;
 	try {
-		const user = await misskeyApi('users/show', query);
+		const user = await misskeyApi('users/show', query, ...apiToken);
 		if (currentRequestId === requestId) showUsers([user].filter(canSelectUser));
 	} catch {
 		if (currentRequestId === requestId) showUsers([]);
@@ -295,7 +297,7 @@ function cancel() {
 onMounted(() => {
 	misskeyApi('users/show', {
 		userIds: store.s.recentlyUsedUsers,
-	}).then(foundUsers => {
+	}, ...apiToken).then(foundUsers => {
 		recentUsers.value = foundUsers;
 	});
 

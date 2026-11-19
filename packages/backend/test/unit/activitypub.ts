@@ -17,6 +17,7 @@ import type { IActor, IApDocument, ICollection, IObject, IPost } from '@/core/ac
 import type { MiRemoteUser } from '@/models/User.js';
 import type { MiDriveFile } from '@/models/DriveFile.js';
 import { ApImageService } from '@/core/activitypub/models/ApImageService.js';
+import { ApDbResolverService } from '@/core/activitypub/ApDbResolverService.js';
 import { ApNoteService } from '@/core/activitypub/models/ApNoteService.js';
 import { ApPersonService } from '@/core/activitypub/models/ApPersonService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
@@ -99,6 +100,7 @@ describe('ActivityPub', () => {
 	let userProfilesRepository: UserProfilesRepository;
 	let notesRepository: NotesRepository;
 	let imageService: ApImageService;
+	let apDbResolverService: ApDbResolverService;
 	let noteService: ApNoteService;
 	let personService: ApPersonService;
 	let rendererService: ApRendererService;
@@ -155,6 +157,7 @@ describe('ActivityPub', () => {
 		notesRepository = app.get(DI.notesRepository);
 
 		noteService = app.get<ApNoteService>(ApNoteService);
+		apDbResolverService = app.get(ApDbResolverService);
 		personService = app.get<ApPersonService>(ApPersonService);
 		rendererService = app.get<ApRendererService>(ApRendererService);
 		apResolverService = app.get<ApResolverService>(ApResolverService);
@@ -203,6 +206,84 @@ describe('ActivityPub', () => {
 			assert.deepStrictEqual(note?.uri, post.id);
 			assert.deepStrictEqual(note.visibility, 'public');
 			assert.deepStrictEqual(note.text, post.content);
+		});
+	});
+
+	describe('Actor public key updates', () => {
+		async function createActorWithKey() {
+			const actor = createRandomActor();
+			const publicKey = { id: `${actor.id}#main-key`, owner: actor.id, publicKeyPem: 'original public key' };
+			const actorWithKey = { ...actor, publicKey };
+			resolver.register(actor.id, actorWithKey);
+			await personService.createPerson(actor.id, resolver);
+			return actorWithKey;
+		}
+
+		async function expectPublicKey(actorId: string, keyId: string, pem: string) {
+			const fromKeyId = await apDbResolverService.getAuthUserFromKeyId(keyId);
+			const fromActorId = await apDbResolverService.getAuthUserFromApId(actorId);
+			assert.strictEqual(fromKeyId?.key.keyPem, pem);
+			assert.strictEqual(fromActorId?.key?.keyId, keyId);
+			assert.strictEqual(fromActorId.key.keyPem, pem);
+		}
+
+		async function updateActorKey(actor: NonTransientIActor, publicKey: NonNullable<IActor['publicKey']>) {
+			const updated: IActor = { ...actor, publicKey };
+			await personService.updatePerson(actor.id, resolver, updated);
+		}
+
+		test('refreshes both lookups after replacing the key with the same ID', async () => {
+			const actor = await createActorWithKey();
+			await expectPublicKey(actor.id, actor.publicKey.id, actor.publicKey.publicKeyPem);
+			const publicKey = { ...actor.publicKey, publicKeyPem: 'replacement public key' };
+
+			await updateActorKey(actor, publicKey);
+
+			await expectPublicKey(actor.id, publicKey.id, publicKey.publicKeyPem);
+		});
+
+		test('refreshes the actor lookup and removes the previous key ID after an ID change', async () => {
+			const actor = await createActorWithKey();
+			await expectPublicKey(actor.id, actor.publicKey.id, actor.publicKey.publicKeyPem);
+			const publicKey = { ...actor.publicKey, id: `${actor.id}#next-key`, publicKeyPem: 'replacement public key' };
+			assert.strictEqual(await apDbResolverService.getAuthUserFromKeyId(publicKey.id), null);
+
+			await updateActorKey(actor, publicKey);
+
+			assert.strictEqual(await apDbResolverService.getAuthUserFromKeyId(actor.publicKey.id), null);
+			await expectPublicKey(actor.id, publicKey.id, publicKey.publicKeyPem);
+		});
+
+		test('preserves both actors’ keys when a key ID update fails', async () => {
+			const actor = await createActorWithKey();
+			const otherActor = await createActorWithKey();
+			await expectPublicKey(actor.id, actor.publicKey.id, actor.publicKey.publicKeyPem);
+			await expectPublicKey(otherActor.id, otherActor.publicKey.id, otherActor.publicKey.publicKeyPem);
+			const publicKey = { ...actor.publicKey, id: otherActor.publicKey.id, publicKeyPem: 'replacement public key' };
+
+			await assert.rejects(updateActorKey(actor, publicKey), { code: '23505' });
+
+			await expectPublicKey(actor.id, actor.publicKey.id, actor.publicKey.publicKeyPem);
+			await expectPublicKey(otherActor.id, otherActor.publicKey.id, otherActor.publicKey.publicKeyPem);
+		});
+
+		test('returns one current key after overlapping updates of one actor', async () => {
+			const actor = await createActorWithKey();
+			const replacements = ['#key-a', '#key-b'].map(fragment => ({
+				...actor.publicKey,
+				id: actor.id + fragment,
+				publicKeyPem: `replacement ${fragment}`,
+			}));
+
+			await Promise.all(replacements.map(publicKey => updateActorKey(actor, publicKey)));
+
+			const current = (await apDbResolverService.getAuthUserFromApId(actor.id))?.key;
+			const winner = replacements.find(key => key.id === current?.keyId);
+			const loser = replacements.find(key => key.id !== current?.keyId);
+			assert.ok(winner && loser);
+			await expectPublicKey(actor.id, winner.id, winner.publicKeyPem);
+			assert.strictEqual(await apDbResolverService.getAuthUserFromKeyId(loser.id), null);
+			assert.strictEqual(await apDbResolverService.getAuthUserFromKeyId(actor.publicKey.id), null);
 		});
 	});
 
@@ -457,6 +538,38 @@ describe('ActivityPub', () => {
 			const note = await noteService.createNote(firstNote.id as string, undefined, resolver);
 			assert.strictEqual(note?.uri, firstNote.id);
 		});
+
+		test('stores a featured note quoting a fetched item outside the pin limit', async () => {
+			const actor = createRandomActor();
+			actor.featured = `${actor.id}/collections/featured`;
+			resolver.register(actor.id, actor);
+			const user = await personService.createPerson(actor.id, resolver);
+			const notes = createRandomNotes(actor, 6).map(note => ({ ...note, '@context': actor['@context'] }));
+			const quoted = notes[5];
+			const pin = { ...notes[0], quoteUrl: quoted.id };
+			const featuredNotes = [pin, ...notes.slice(1)];
+			const collection: ICollection = {
+				...createRandomFeaturedCollection(actor, 0),
+				items: featuredNotes.map(note => note.id),
+				totalItems: featuredNotes.length,
+			};
+			const objects = new Map<string, IObject>(featuredNotes.map(note => [note.id, note]));
+			objects.set(actor.featured, collection);
+			const fetch = vi.spyOn(httpRequestService, 'getActivityJson').mockImplementation(async url => {
+				const object = objects.get(url);
+				assert.ok(object);
+				return object;
+			});
+			const realResolver = await apResolverService.createResolver();
+
+			await personService.updateFeatured(user.id, realResolver);
+
+			const stored = await notesRepository.findOneByOrFail({ uri: pin.id });
+			const storedQuote = await notesRepository.findOneByOrFail({ uri: quoted.id });
+			assert.strictEqual(stored.renoteId, storedQuote.id);
+			assert.strictEqual(fetch.mock.calls.filter(([url]) => url === quoted.id).length, 1);
+			await assert.rejects(realResolver.resolveNote(quoted.id), { id: '0dc86cf6-7cd6-4e56-b1e6-5903d62d7ea5' });
+		});
 	});
 
 	describe('Reply chain', () => {
@@ -536,6 +649,113 @@ describe('ActivityPub', () => {
 			);
 			assert.strictEqual(await notesRepository.findOneBy({ uri: parent.id }), null);
 			assert.strictEqual(await notesRepository.findOneBy({ uri: reply.id }), null);
+		});
+	});
+
+	describe('Quote lookup', () => {
+		async function quoteFixture() {
+			const actor = createRandomActor();
+			resolver.register(actor.id, actor);
+			const user = await personService.createPerson(actor.id, resolver);
+			const quoted = { ...createRandomNote(actor), '@context': 'https://www.w3.org/ns/activitystreams' };
+			const note = { ...createRandomNote(actor), quoteUrl: quoted.id };
+			const realResolver = await apResolverService.createResolver();
+			return { user, note, quoted, realResolver };
+		}
+
+		test('stores a quote fetched by the supplied Resolver', async () => {
+			const { user, note, quoted, realResolver } = await quoteFixture();
+			const fetch = vi.spyOn(httpRequestService, 'getActivityJson').mockResolvedValue(quoted);
+
+			try {
+				const stored = await noteService.createNote(note, user, realResolver, true);
+				const storedQuote = await notesRepository.findOneByOrFail({ uri: quoted.id });
+
+				assert.strictEqual(stored?.renoteId, storedQuote.id);
+				assert.ok(realResolver.getHistory().includes(quoted.id));
+			} finally {
+				fetch.mockRestore();
+			}
+		});
+
+		test('stores a parent and reply quoting the same deleted note after one lookup', async () => {
+			const { user, note, quoted, realResolver } = await quoteFixture();
+			const parent = { ...note, '@context': quoted['@context'] };
+			const reply = { ...note, id: `${note.id}-reply`, inReplyTo: parent.id };
+			const fetch = vi.spyOn(httpRequestService, 'getActivityJson').mockImplementation(async url => {
+				if (url === parent.id) return parent;
+				assert.strictEqual(url, quoted.id);
+				throw new StatusError('Not Found', 404);
+			});
+
+			const storedReply = await noteService.createNote(reply, user, realResolver, true);
+
+			const storedParent = await notesRepository.findOneByOrFail({ uri: parent.id });
+			assert.ok(storedReply);
+			assert.strictEqual(storedReply.replyId, storedParent.id);
+			assert.strictEqual(storedReply.renoteId, null);
+			assert.strictEqual(storedParent.renoteId, null);
+			assert.deepStrictEqual(fetch.mock.calls.map(([url]) => url), [parent.id, quoted.id]);
+		});
+
+		test('applies the same lookup limit to the parent and its quote', async () => {
+			const { user, note, quoted, realResolver } = await quoteFixture();
+			const parent = { ...note, '@context': quoted['@context'] };
+			const reply = { ...note, id: `${note.id}-reply`, inReplyTo: parent.id, quoteUrl: undefined };
+			const fetch = vi.spyOn(httpRequestService, 'getActivityJson').mockImplementation(async url => ({ ...parent, id: url }));
+
+			const limit = realResolver.getRecursionLimit();
+			for (let i = 0; i < limit; i++) {
+				await realResolver.resolve(`${parent.id}-fixture-${i}`);
+			}
+			fetch.mockClear();
+
+			await assert.rejects(noteService.createNote(reply, user, realResolver, true), /^Error: quote resolve failed$/);
+
+			assert.deepStrictEqual(fetch.mock.calls.map(([url]) => url), [parent.id]);
+			assert.strictEqual(realResolver.getHistory().length, limit + 1);
+			assert.strictEqual(await notesRepository.findOneBy({ uri: reply.id }), null);
+			assert.strictEqual(await notesRepository.findOneBy({ uri: parent.id }), null);
+		});
+	});
+
+	describe('Note attachments', () => {
+		async function attachmentFixture() {
+			const actor = createRandomActor();
+			resolver.register(actor.id, actor);
+			const user = await personService.createPerson(actor.id, resolver);
+			const attachment: IApDocument[] = Array.from({ length: 33 }, (_, index) => ({
+				type: 'Document',
+				mediaType: 'image/png',
+				url: `${actor.id}/files/${index}.png`,
+				sensitive: index === 0 ? false : undefined,
+			}));
+			const note = { ...createRandomNote(actor), sensitive: true, attachment };
+			return { user, note, attachment };
+		}
+
+		test('resolves up to 32 attachments in order when creating a note', async () => {
+			const { user, note, attachment } = await attachmentFixture();
+			const resolveImage = vi.spyOn(imageService, 'resolveImage').mockResolvedValue(null);
+
+			assert.ok(await noteService.createNote(note, user, resolver, true));
+
+			assert.deepStrictEqual(resolveImage.mock.calls.map(([, document]) => document), attachment.slice(0, 32));
+			assert.strictEqual(attachment[0].sensitive, false);
+			assert.strictEqual(attachment[31].sensitive, true);
+			assert.strictEqual(attachment[32].sensitive, undefined);
+		});
+
+		test('resolves up to 32 attachments in order when updating a note', async () => {
+			const { user, note, attachment } = await attachmentFixture();
+			const stored = await noteService.createNote({ ...note, attachment: [] }, user, resolver, true);
+			assert.ok(stored);
+			const resolveImage = vi.spyOn(imageService, 'resolveImage').mockResolvedValue(null);
+
+			const updated = await noteService.updateNote({ ...note, content: 'Updated note' }, stored, resolver, true);
+
+			assert.strictEqual(updated?.text, 'Updated note');
+			assert.deepStrictEqual(resolveImage.mock.calls.map(([, document]) => document), attachment.slice(0, 32));
 		});
 	});
 

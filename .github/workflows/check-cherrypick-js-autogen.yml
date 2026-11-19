@@ -18,18 +18,18 @@ jobs:
     if: ${{ github.event.pull_request.mergeable == null || github.event.pull_request.mergeable == true }}
     steps:
       - name: checkout
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
           persist-credentials: false
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
 
       - name: setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
 
       - name: setup node
         id: setup-node
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: '.node-version'
           cache: pnpm
@@ -53,7 +53,7 @@ jobs:
 
       # packages/cherrypick-js/generator/built/autogen
       - name: Upload Generated
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: generated-cherrypick-js
           path: packages/cherrypick-js/generator/built/autogen
@@ -65,14 +65,14 @@ jobs:
     if: ${{ github.event.pull_request.mergeable == null || github.event.pull_request.mergeable == true }}
     steps:
       - name: checkout
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
           persist-credentials: false
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
 
       - name: Upload From Merged
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: actual-cherrypick-js
           path: packages/cherrypick-js/src/autogen
@@ -84,13 +84,13 @@ jobs:
       contents: read
     steps:
       - name: download generated-cherrypick-js
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: generated-cherrypick-js
           path: cherrypick-js-generated
 
       - name: download actual-cherrypick-js
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: actual-cherrypick-js
           path: cherrypick-js-actual
@@ -120,7 +120,7 @@ jobs:
           echo "$CHANGES" > result/changes
 
       - name: Upload result
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: cherrypick-js-autogen-result
           path: result

@@ -7,6 +7,7 @@ import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ChatService } from '@/core/ChatService.js';
 import { ChatRoomChannel } from '@/server/api/stream/channels/chat-room.js';
+import { ChatUserChannel } from '@/server/api/stream/channels/chat-user.js';
 import type { ChatRoomsRepository } from '@/models/_.js';
 import type { ChannelRequest } from '@/server/api/stream/channel.js';
 
@@ -36,19 +37,79 @@ function fixture(userId = 'member', read = vi.fn(async (..._args: unknown[]) => 
 	Object.defineProperty(permissions, 'isRoomMember', { value: isMember });
 	const permission = vi.fn(permissions.hasPermissionToViewRoomTimeline.bind(permissions));
 	const shouldNotify = vi.fn(async () => false);
-	const channel = new ChatRoomChannel({
+	const getChatAvailability = vi.fn(async () => ({ read: true, write: true }));
+	const resolveRoomChannel = vi.fn(async (_room, channelId) => channelId ?? room.legacyChannelId);
+	const request = {
 		id: 'channel-1',
 		connection: { user: { id: userId }, subscriber, sendMessageToWs: send },
-	} as unknown as ChannelRequest, rooms as unknown as ChatRoomsRepository, {
+	} as unknown as ChannelRequest;
+	const chat = {
+		getChatAvailability,
 		hasPermissionToViewRoomTimeline: permission,
 		shouldNotifyRoomMessage: shouldNotify,
 		readRoomChatMessage: read,
-		resolveRoomChannel: vi.fn(async (_room, channelId) => channelId ?? room.legacyChannelId),
+		resolveRoomChannel,
 		findMessageById: vi.fn(async () => ({ toRoomChannelId: room.hasChannels ? 'other' : null })),
-	} as unknown as ChatService);
-	const publish = (data: unknown) => Promise.all(subscriber.listeners(stream).map(listener => listener(data)));
-	return { channel, room, rooms, permission, isMember, isModerator, subscriber, send, publish, shouldNotify, read };
+	} as unknown as ChatService;
+	const channel = new ChatRoomChannel(request, rooms as unknown as ChatRoomsRepository, chat);
+	const publish = (data: unknown, name = stream) => Promise.all(subscriber.listeners(name).map(listener => listener(data)));
+	return { channel, request, chat, getChatAvailability, resolveRoomChannel, room, rooms, permission, isMember, isModerator, subscriber, send, publish, shouldNotify, read };
 }
+
+describe('ChatUserChannel delivery order', () => {
+	const directStream = 'chatUserStream:member-other';
+	const message = { type: 'message', body: { id: 'message-1', text: 'hello' } };
+	const updated = { type: 'updated', body: { messageId: 'message-1', text: 'updated' } };
+
+	test('delivers create, update and delete in publication order while the first role lookup waits', async () => {
+		const f = fixture();
+		const channel = new ChatUserChannel(f.request, f.chat);
+		expect(await channel.init({ otherId: 'other' })).toBe(true);
+
+		const permission = deferred<{ read: boolean; write: boolean }>();
+		f.getChatAvailability.mockReturnValueOnce(permission.promise);
+		const events = [
+			f.publish(message, directStream),
+			f.publish(updated, directStream),
+			f.publish(event, directStream),
+		];
+		await new Promise<void>(resolve => setImmediate(resolve));
+		const sentWhileWaiting = f.send.mock.calls.length;
+		permission.resolve({ read: true, write: true });
+		await Promise.all(events);
+
+		expect(f.send.mock.calls.map(([, payload]) => payload.type)).toEqual(['message', 'updated', 'deleted']);
+		expect(sentWhileWaiting).toBe(0);
+	});
+
+	test('drops a failed role lookup and still delivers the next event on the same subscription', async () => {
+		const f = fixture();
+		const channel = new ChatUserChannel(f.request, f.chat);
+		expect(await channel.init({ otherId: 'other' })).toBe(true);
+
+		f.getChatAvailability.mockRejectedValueOnce(new Error('role lookup unavailable'));
+		await Promise.all([f.publish(message, directStream), f.publish(event, directStream)]);
+
+		expect(f.send).toHaveBeenCalledExactlyOnceWith('channel', { id: 'channel-1', ...event });
+	});
+
+	test('drops waiting events after disposal', async () => {
+		const f = fixture();
+		const channel = new ChatUserChannel(f.request, f.chat);
+		expect(await channel.init({ otherId: 'other' })).toBe(true);
+
+		const permission = deferred<{ read: boolean; write: boolean }>();
+		f.getChatAvailability.mockReturnValueOnce(permission.promise);
+		const pending = f.publish(message, directStream);
+		const waiting = f.publish(updated, directStream);
+		channel.dispose();
+		permission.resolve({ read: true, write: true });
+		await Promise.all([pending, waiting]);
+
+		expect(f.send).not.toHaveBeenCalled();
+		expect(f.getChatAvailability).toHaveBeenCalledTimes(2);
+	});
+});
 
 describe('수신자별 알림과 읽음 경계', () => {
 	test.each([false, true])('메시지에 수신자의 소리 허용 %s를 전달한다', async allowed => {
@@ -82,6 +143,36 @@ describe('수신자별 알림과 읽음 경계', () => {
 });
 
 describe('ChatRoomChannel access lifetime', () => {
+	test('a failed final role lookup suppresses one event and leaves the room subscribed', async () => {
+		const f = fixture();
+		expect(await f.channel.init({ roomId: 'r1' })).toBe(true);
+
+		f.getChatAvailability.mockRejectedValueOnce(new Error('role lookup unavailable'));
+		await f.publish(event);
+		expect(f.send).not.toHaveBeenCalled();
+
+		await f.publish({ ...event, body: 'message-2' });
+		expect(f.send).toHaveBeenCalledExactlyOnceWith('channel', { id: 'channel-1', type: 'deleted', body: 'message-2' });
+	});
+
+	test.each(['chatRoom', 'chatUser'])('an existing %s subscription checks the current chat read policy', async name => {
+		const f = fixture();
+		const direct = name === 'chatUser';
+		const channel = direct ? new ChatUserChannel(f.request, f.chat) : f.channel;
+		const streamName = direct ? 'chatUserStream:member-other' : stream;
+		const message = { type: 'message', body: { id: 'm1', text: 'hello' } };
+		expect(await channel.init(direct ? { otherId: 'other' } : { roomId: 'r1' })).toBe(true);
+
+		f.getChatAvailability.mockResolvedValue({ read: true, write: false });
+		await f.publish(message, streamName);
+		expect(f.send).toHaveBeenCalledWith('channel', expect.objectContaining({ type: 'message' }));
+
+		f.send.mockClear();
+		f.getChatAvailability.mockResolvedValue({ read: false, write: false });
+		await f.publish(message, streamName);
+		expect(f.send).not.toHaveBeenCalled();
+	});
+
 	test('a removed member receives one termination notice, then no room events', async () => {
 		const f = fixture();
 		expect(await f.channel.init({ roomId: 'r1' })).toBe(true);
@@ -201,14 +292,54 @@ describe('ChatRoomChannel access lifetime', () => {
 	test('room deletion during initialization neither grants access nor sends a notification', async () => {
 		const f = fixture();
 		const check = deferred<boolean>();
-		f.permission.mockReturnValue(check.promise);
+		const reachedPermission = deferred<void>();
+		f.permission.mockImplementationOnce(() => {
+			reachedPermission.resolve();
+			return check.promise;
+		});
 		const pending = f.channel.init({ roomId: 'r1' });
-		await Promise.resolve();
+		await reachedPermission.promise;
 		f.rooms.findOneBy.mockResolvedValue(null);
 		await f.publish(deleted);
 		check.resolve(true);
 		expect(await pending).toBe(false);
 		expect(f.send).not.toHaveBeenCalled();
+		expect(f.subscriber.listenerCount(stream)).toBe(0);
+	});
+
+	test('a channel lookup that completes after room deletion does not approve the subscription', async () => {
+		const f = fixture();
+		f.room.hasChannels = true;
+		const lookup = deferred<string>();
+		const reachedLookup = deferred<void>();
+		f.resolveRoomChannel.mockImplementationOnce(() => {
+			reachedLookup.resolve();
+			return lookup.promise;
+		});
+		const pending = f.channel.init({ roomId: 'r1' });
+		await reachedLookup.promise;
+		await f.publish(deleted);
+		lookup.resolve('general');
+
+		expect(await pending).toBe(false);
+		expect(f.subscriber.listenerCount(stream)).toBe(0);
+	});
+
+	test('a channel change during lookup retries with the current room', async () => {
+		const f = fixture();
+		f.room.hasChannels = true;
+		const lookup = deferred<string>();
+		const reachedLookup = deferred<void>();
+		f.resolveRoomChannel.mockImplementationOnce(() => {
+			reachedLookup.resolve();
+			return lookup.promise;
+		}).mockRejectedValue(new Error('channel no longer exists'));
+		const pending = f.channel.init({ roomId: 'r1', channelId: 'general' });
+		await reachedLookup.promise;
+		await f.publish({ type: 'channelsUpdated', body: {} });
+		lookup.resolve('general');
+
+		expect(await pending).toBe(false);
 		expect(f.subscriber.listenerCount(stream)).toBe(0);
 	});
 
@@ -267,9 +398,13 @@ describe('ChatRoomChannel access lifetime', () => {
 	test('a leave during initialization invalidates the initial permission lookup', async () => {
 		const f = fixture();
 		const old = deferred<boolean>();
-		f.permission.mockReturnValueOnce(old.promise).mockResolvedValue(false);
+		const reachedOld = deferred<void>();
+		f.permission.mockImplementationOnce(() => {
+			reachedOld.resolve();
+			return old.promise;
+		}).mockResolvedValue(false);
 		const pending = f.channel.init({ roomId: 'r1' });
-		await Promise.resolve();
+		await reachedOld.promise;
 		await f.publish(left);
 		old.resolve(true);
 		expect(await pending).toBe(false);
@@ -284,15 +419,23 @@ describe('ChatRoomChannel access lifetime', () => {
 		f.isModerator.mockResolvedValue(true);
 		const old = deferred<boolean>();
 		const current = deferred<boolean>();
-		f.permission.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+		const reachedOld = deferred<void>();
+		const reachedCurrent = deferred<void>();
+		f.permission.mockImplementationOnce(() => {
+			reachedOld.resolve();
+			return old.promise;
+		}).mockImplementationOnce(() => {
+			reachedCurrent.resolve();
+			return current.promise;
+		});
 		let initialized = false;
 		const pending = f.channel.init({ roomId: 'r1' }).then(allowed => {
 			initialized = true;
 			return allowed;
 		});
-		await Promise.resolve();
+		await reachedOld.promise;
 		const control = f.publish(left);
-		await Promise.resolve();
+		await reachedCurrent.promise;
 		expect(f.permission).toHaveBeenCalledTimes(2);
 
 		if (order === 'current-first') {
@@ -328,15 +471,26 @@ describe('ChatRoomChannel access lifetime', () => {
 		expect(f.subscriber.listenerCount(stream)).toBe(0);
 	});
 
-	test.each(['room', 'permission'] as const)('a %s lookup error fails closed without a rejected event handler', async dependency => {
+	test.each(['room', 'permission', 'role'] as const)('a %s lookup error during room permission refresh closes the subscription safely', async dependency => {
 		vi.useFakeTimers({ now: 1_000_000, toFake: ['Date'] });
 		const f = fixture();
 		await f.channel.init({ roomId: 'r1' });
 		vi.setSystemTime(1_060_000);
-		(dependency === 'room' ? f.rooms.findOneBy : f.permission).mockRejectedValue(new Error('unavailable'));
+		const lookup = {
+			room: f.rooms.findOneBy,
+			permission: f.permission,
+			role: f.getChatAvailability,
+		}[dependency];
+		lookup.mockRejectedValueOnce(new Error('unavailable'));
+
 		await expect(f.publish(event)).resolves.toBeDefined();
 		expect(f.send).not.toHaveBeenCalled();
 		expect(f.subscriber.listenerCount(stream)).toBe(0);
+
+		const retry = new ChatRoomChannel(f.request, f.rooms as unknown as ChatRoomsRepository, f.chat);
+		expect(await retry.init({ roomId: 'r1' })).toBe(true);
+		await f.publish(event);
+		expect(f.send).toHaveBeenCalledExactlyOnceWith('channel', { id: 'channel-1', ...event });
 	});
 });
 

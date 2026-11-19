@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
 import { Test, TestingModule } from '@nestjs/testing';
-import type { Index, Meilisearch } from 'meilisearch';
+import { Index, type Meilisearch } from 'meilisearch';
 import { type Config, loadConfig } from '@/config.js';
 import { GlobalModule } from '@/GlobalModule.js';
 import { CoreModule } from '@/core/CoreModule.js';
@@ -78,6 +78,7 @@ describe('SearchService', () => {
 		}
 
 		const app = await builder.compile();
+		await app.init();
 
 		app.enableShutdownHooks();
 
@@ -201,13 +202,30 @@ describe('SearchService', () => {
 		getCtx: () => TestContext,
 		{
 			supportsFollowersVisibility,
-			sinceIdOrder,
 		}: {
 			supportsFollowersVisibility: boolean;
-			sinceIdOrder: 'asc' | 'desc';
 		},
 	) {
 		describe('searchNote', () => {
+			test('excludes hidden matches and fills the page with visible results', async () => {
+				const ctx = getCtx();
+				const cutoff = Math.ceil(Date.now() / 1000);
+				const author = await createUser(ctx, { makeNotesHiddenBefore: cutoff });
+				const membersOnly = await createUser(ctx, { requireSigninToViewContents: true });
+				const viewer = await createUser(ctx);
+				const visibleNote = await createNote(ctx, viewer, {}, Date.now() - 3_000);
+				const memberNote = await createNote(ctx, membersOnly, {}, Date.now() - 2_000);
+				const hiddenNote = await createNote(ctx, author, {}, Date.now() - 1_000);
+
+				const visitor = await ctx.service.searchNote('hello', null, {}, { limit: 1 });
+				const member = await ctx.service.searchNote('hello', viewer, {}, { limit: 1 });
+				const owner = await ctx.service.searchNote('hello', author, {}, { limit: 1 });
+
+				expect(visitor.map(note => note.id)).toEqual([visibleNote.id]);
+				expect(member.map(note => note.id)).toEqual([memberNote.id]);
+				expect(owner.map(note => note.id)).toEqual([hiddenNote.id]);
+			});
+
 			test('filters notes by visibility (followers only visible to followers)', async () => {
 				const ctx = getCtx();
 				const me = await createUser(ctx, { username: 'me', usernameLower: 'me', host: null });
@@ -226,6 +244,20 @@ describe('SearchService', () => {
 					? [followersNote.id, publicNote.id]
 					: [publicNote.id];
 				expect(afterFollow.map(note => note.id).sort()).toEqual(expectedIds.sort());
+			});
+
+			test('checks the database follow for age-restricted search matches', async () => {
+				const ctx = getCtx();
+				const viewer = await createUser(ctx);
+				const author = await createUser(ctx, { makeNotesFollowersOnlyBefore: 0 });
+				const note = await createNote(ctx, author);
+				await createFollowing(ctx, viewer, author);
+				expect(await ctx.cacheService.userFollowingsCache.fetch(viewer.id)).toHaveProperty(author.id);
+				expect((await ctx.service.searchNote('hello', viewer, {}, { limit: 1 })).map(result => result.id)).toEqual([note.id]);
+
+				await ctx.followingsRepository.delete({ followerId: viewer.id, followeeId: author.id });
+
+				expect(await ctx.service.searchNote('hello', viewer, {}, { limit: 1 })).toEqual([]);
 			});
 
 			test('filters out suspended users via base note filtering', async () => {
@@ -459,6 +491,29 @@ describe('SearchService', () => {
 			});
 
 			describe('pagination', () => {
+				test('uses exclusive ID cursors and inclusive time bounds within the same millisecond', async () => {
+					const ctx = getCtx();
+					const author = await createUser(ctx);
+					const timestamp = Date.now() - 1_000;
+					const older = await createNote(ctx, author, {}, timestamp - 1);
+					const notes = await Promise.all(Array.from({ length: 4 }, () => createNote(ctx, author, {}, timestamp)));
+					const newer = await createNote(ctx, author, {}, timestamp + 1);
+					const [first, second, third, last] = notes.map(note => note.id).sort();
+					const range = { rangeStartAt: timestamp, rangeEndAt: timestamp };
+
+					const past = await ctx.service.searchNote('hello', null, range, { untilId: last, limit: 2 });
+					const future = await ctx.service.searchNote('hello', null, range, { sinceId: first, limit: 2 });
+					const between = await ctx.service.searchNote('hello', null, range, { sinceId: first, untilId: last, limit: 10 });
+					const all = await ctx.service.searchNote('hello', null, range, { limit: 10 });
+
+					expect(past.map(note => note.id)).toEqual([third, second]);
+					expect(future.map(note => note.id)).toEqual([second, third]);
+					expect(between.map(note => note.id)).toEqual([third, second]);
+					expect(all.map(note => note.id)).toEqual([last, third, second, first]);
+					expect((await ctx.service.searchNote('hello', null, {}, { limit: 10, untilDate: timestamp })).map(note => note.id)).toEqual([older.id]);
+					expect((await ctx.service.searchNote('hello', null, {}, { limit: 10, sinceDate: timestamp })).map(note => note.id)).toEqual([newer.id]);
+				});
+
 				test('paginates with sinceId', async () => {
 					const ctx = getCtx();
 					const me = await createUser(ctx, { username: 'me', usernameLower: 'me', host: null });
@@ -474,10 +529,7 @@ describe('SearchService', () => {
 
 					const result = await ctx.service.searchNote('hello', me, {}, { limit: 10, sinceId: note1.id });
 
-					const expected = sinceIdOrder === 'asc'
-						? [note2.id, note3.id]
-						: [note3.id, note2.id];
-					expect(result.map(note => note.id)).toEqual(expected);
+					expect(result.map(note => note.id)).toEqual([note2.id, note3.id]);
 				});
 
 				test('paginates with untilId', async () => {
@@ -536,7 +588,7 @@ describe('SearchService', () => {
 			await cleanupContext(ctx);
 		});
 
-		defineSearchNoteTests(() => ctx, { supportsFollowersVisibility: true, sinceIdOrder: 'asc' });
+		defineSearchNoteTests(() => ctx, { supportsFollowersVisibility: true });
 	});
 
 	describe('meilisearch', () => {
@@ -603,6 +655,95 @@ describe('SearchService', () => {
 			await meilisearch.tasks.waitForTask(clearTask.taskUid);
 		});
 
-		defineSearchNoteTests(() => ctx, { supportsFollowersVisibility: false, sinceIdOrder: 'desc' });
+		test('applies the ID settings to existing indexed documents on first search', async () => {
+			const author = await createUser(ctx);
+			const note = await createNote(ctx, author);
+			expect(await meilisearchIndex.getSortableAttributes()).toEqual(['createdAt']);
+
+			const found = await ctx.service.searchNote('hello', null, {}, { limit: 1 });
+
+			expect(found.map(result => result.id)).toEqual([note.id]);
+			expect(await meilisearchIndex.getSortableAttributes()).toContain('id');
+			expect(await meilisearchIndex.getFilterableAttributes()).toContain('id');
+		});
+
+		test('restores required index settings when a running search encounters a settings error', async () => {
+			const author = await createUser(ctx);
+			const note = await createNote(ctx, author);
+			const search = () => ctx.service.searchNote('hello', null, { host: '.' }, { limit: 1 });
+			expect((await search()).map(result => result.id)).toEqual([note.id]);
+
+			for (const settings of [
+				{ sortableAttributes: ['createdAt'] },
+				{ filterableAttributes: ['createdAt'] },
+				{ rankingRules: ['words'] },
+			]) {
+				expect((await meilisearchIndex.updateSettings(settings).waitTask()).status).toBe('succeeded');
+				expect((await search()).map(result => result.id)).toEqual([note.id]);
+			}
+		});
+
+		test('continues past a full hidden batch when earlier documents are removed', async () => {
+			const visibleAuthor = await createUser(ctx);
+			const hiddenAuthor = await createUser(ctx, { requireSigninToViewContents: true });
+			const now = Date.now();
+			const visible = await createNote(ctx, visibleAuthor, {}, now - 2000);
+			await Promise.all(Array.from({ length: 32 }, () => createNote(ctx, hiddenAuthor, {}, now - 1000)));
+
+			const search = meilisearchIndex.search.bind(meilisearchIndex);
+			const spy = vi.spyOn(Index.prototype, 'search').mockImplementationOnce(async (...args) => {
+				const result = await search(...args);
+				expect(result.hits).toHaveLength(32);
+				await meilisearchIndex.deleteDocument(result.hits[0].id).waitTask();
+				return result;
+			});
+			try {
+				const found = await ctx.service.searchNote('hello', null, {}, { limit: 1 });
+				expect(found.map(result => result.id)).toEqual([visible.id]);
+				expect(spy).toHaveBeenCalledTimes(2);
+			} finally {
+				spy.mockRestore();
+			}
+		});
+
+		test('includes a repeated hit at most once', async () => {
+			const author = await createUser(ctx);
+			const note = await createNote(ctx, author);
+			const search = meilisearchIndex.search.bind(meilisearchIndex);
+			const spy = vi.spyOn(Index.prototype, 'search').mockImplementationOnce(async (...args) => {
+				const result = await search(...args);
+				return { ...result, hits: [...result.hits, ...result.hits] };
+			});
+			try {
+				const found = await ctx.service.searchNote('hello', null, {}, { limit: 10 });
+				expect(found.map(result => result.id)).toEqual([note.id]);
+			} finally {
+				spy.mockRestore();
+			}
+		});
+
+		test('returns an underfilled page after the configured candidate budget', async () => {
+			const author = await createUser(ctx);
+			const time = Date.now() - 1000;
+			const { maxTotalHits } = await meilisearchIndex.getPagination();
+			const visible = await createNote(ctx, author, {}, time - 1);
+			// Seed search candidates whose source rows have already disappeared.
+			const stale = Array.from({ length: maxTotalHits! }, () => ({
+				id: ctx.idService.gen(time), createdAt: time, userId: author.id, userHost: null, text: 'hello',
+			}));
+			await meilisearchIndex.addDocuments(stale).waitTask();
+			const search = vi.spyOn(Index.prototype, 'search');
+			try {
+				const found = await ctx.service.searchNote('hello', null, {}, { limit: 1 });
+				expect(found).toEqual([]);
+				expect(search.mock.calls.reduce((total, [, params]) => total + (params?.limit ?? 0), 0)).toBe(maxTotalHits);
+				const next = await ctx.service.searchNote('hello', null, {}, { untilId: stale[0].id, limit: 1 });
+				expect(next.map(result => result.id)).toEqual([visible.id]);
+			} finally {
+				search.mockRestore();
+			}
+		});
+
+		defineSearchNoteTests(() => ctx, { supportsFollowersVisibility: false });
 	});
 });

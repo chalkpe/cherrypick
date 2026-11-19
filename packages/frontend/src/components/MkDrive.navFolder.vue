@@ -29,6 +29,7 @@ import * as os from '@/os.js';
 const props = defineProps<{
 	folder?: Misskey.entities.DriveFolder;
 	parentFolder: Misskey.entities.DriveFolder | null;
+	readOnly?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -38,7 +39,7 @@ const emit = defineEmits<{
 const draghover = ref(false);
 
 function onDragover(ev: DragEvent) {
-	if (!ev.dataTransfer) return;
+	if (props.readOnly || !ev.dataTransfer) return;
 
 	// このフォルダがルートかつカレントディレクトリならドロップ禁止
 	if (props.folder == null && props.parentFolder == null) {
@@ -71,6 +72,7 @@ function onDragover(ev: DragEvent) {
 }
 
 function onDragenter() {
+	if (props.readOnly) return;
 	if (props.folder || props.parentFolder) draghover.value = true;
 }
 
@@ -79,6 +81,7 @@ function onDragleave() {
 }
 
 async function onDrop(ev: DragEvent) {
+	if (props.readOnly) return;
 	draghover.value = false;
 
 	if (!ev.dataTransfer) return;

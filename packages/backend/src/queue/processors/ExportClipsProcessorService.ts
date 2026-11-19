@@ -19,7 +19,6 @@ import { bindThis } from '@/decorators.js';
 import { IdService } from '@/core/IdService.js';
 import { NotificationService } from '@/core/NotificationService.js';
 import { QueryService } from '@/core/QueryService.js';
-import { shouldHideNoteByTime } from '@/misc/should-hide-note-by-time.js';
 import { QueueLoggerService } from '../QueueLoggerService.js';
 import type * as Bull from 'bullmq';
 import type { DbJobDataWithUser } from '../types.js';
@@ -144,8 +143,8 @@ export class ExportClipsProcessorService {
 
 		while (true) {
 			const query = this.clipNotesRepository.createQueryBuilder('clipNote')
-				.leftJoinAndSelect('clipNote.note', 'note')
-				.leftJoinAndSelect('note.user', 'user')
+				.innerJoinAndSelect('clipNote.note', 'note')
+				.innerJoinAndSelect('note.user', 'user')
 				.where('clipNote.clipId = :clipId', { clipId })
 				.orderBy('clipNote.id', 'ASC')
 				.take(100);
@@ -154,7 +153,7 @@ export class ExportClipsProcessorService {
 				query.andWhere('clipNote.id > :cursor', { cursor });
 			}
 
-			this.queryService.generateVisibilityQuery(query, { id: userId });
+			this.queryService.generateNoteContentVisibilityQuery(query, { id: userId });
 
 			const clipNotes = await query.getMany() as (MiClipNote & { note: MiNote & { user: MiUser } })[];
 
@@ -165,11 +164,6 @@ export class ExportClipsProcessorService {
 			cursor = clipNotes.at(-1)?.id ?? null;
 
 			for (const clipNote of clipNotes) {
-				const noteCreatedAt = this.idService.parse(clipNote.note.id).date;
-				if (shouldHideNoteByTime(clipNote.note.user.makeNotesHiddenBefore, noteCreatedAt)) {
-					continue;
-				}
-
 				let poll: MiPoll | undefined;
 				if (clipNote.note.hasPoll) {
 					poll = await this.pollsRepository.findOneByOrFail({ noteId: clipNote.note.id });

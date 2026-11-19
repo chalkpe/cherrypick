@@ -11,6 +11,7 @@ import { bindThis } from '@/decorators.js';
 import { isDuplicateKeyValueError } from '@/misc/is-duplicate-key-value-error.js';
 import { RoleService } from '@/core/RoleService.js';
 import { IdService } from '@/core/IdService.js';
+import { QueryService } from '@/core/QueryService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import type { MiLocalUser } from '@/models/User.js';
 
@@ -40,6 +41,7 @@ export class ClipService {
 		private roleService: RoleService,
 		private idService: IdService,
 		private globalEventService: GlobalEventService,
+		private queryService: QueryService,
 	) {
 	}
 
@@ -147,6 +149,14 @@ export class ClipService {
 		});
 		if (currentCount >= (await this.roleService.getUserPolicies(me.id)).noteEachClipsLimit) {
 			throw new ClipService.TooManyClipNotesError();
+		}
+
+		const noteQuery = this.notesRepository.createQueryBuilder('note')
+			.innerJoin('note.user', 'user')
+			.where('note.id = :noteId', { noteId });
+		this.queryService.generateNoteContentVisibilityQuery(noteQuery, me);
+		if (!await noteQuery.getExists()) {
+			throw new ClipService.NoSuchNoteError();
 		}
 
 		try {

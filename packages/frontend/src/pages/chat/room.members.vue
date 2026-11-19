@@ -66,6 +66,7 @@ import { computed, onMounted, ref } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import MkButton from '@/components/MkButton.vue';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import MkUserCardMini from '@/components/MkUserCardMini.vue';
 import { userPage } from '@@/js/user.js';
@@ -114,7 +115,7 @@ async function kickMember(membership: Misskey.entities.ChatRoomMembership) {
 	try {
 		const { canceled } = await os.confirm({
 			type: 'warning',
-			text: i18n.tsx._chat.kickMemberConfirm({ name: membership.user?.name || membership.user?.username || membership.userId, room: props.room.name }),
+			text: i18n.tsx._chat.kickMemberConfirm({ name: mfmPlain(membership.user?.name || membership.user?.username || membership.userId), room: mfmPlain(props.room.name) }),
 			room: props.room,
 		});
 		if (canceled) return;
@@ -136,7 +137,7 @@ async function pardon(ban: Misskey.entities.ChatRoomBan) {
 	try {
 		const { canceled } = await os.confirm({
 			type: 'warning',
-			text: i18n.tsx._chat.pardonConfirm({ name: ban.user.name || ban.user.username }),
+			text: i18n.tsx._chat.pardonConfirm({ name: mfmPlain(ban.user.name || ban.user.username) }),
 		});
 		if (canceled) return;
 		await os.apiWithDialog('chat/rooms/bans/delete', { roomId: props.room.id, userId: ban.userId }, undefined, chatBanDeleteErrors);
@@ -151,7 +152,7 @@ async function pardon(ban: Misskey.entities.ChatRoomBan) {
 async function cancelInvitation(invitation: Misskey.entities.ChatRoomInvitation) {
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx._chat.invitationCancelAreYouSure({ x: invitation.user.name || invitation.user.username }),
+		text: i18n.tsx._chat.invitationCancelAreYouSure({ x: mfmPlain(invitation.user.name || invitation.user.username) }),
 	});
 	if (canceled) return;
 

@@ -18,6 +18,7 @@ vi.mock('@/components/MkButton.vue', () => ({ default: { template: '<button><slo
 
 import Management from '@/pages/chat/room.channels.manage.vue';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 
 const room = { id: 'r', name: 'Group', ownerId: 'owner', isArchived: false, hasChannels: false, legacyChannelId: 'c1' } as Misskey.entities.ChatRoom;
 const channels = [{ id: 'c1', roomId: 'r', name: 'same', isLegacy: true, sectionId: null }, { id: 'c2', roomId: 'r', name: 'same', isLegacy: false, sectionId: null }];
@@ -204,7 +205,7 @@ test('renames a section and deletes it after confirmation', async () => {
 	await waitFor(() => expect((within(sectionRowOf(view.container, 's1')).getByRole('button', { name: i18n.ts.delete }) as HTMLButtonElement).disabled).toBe(false));
 	await fireEvent.click(within(sectionRowOf(view.container, 's1')).getByRole('button', { name: i18n.ts.delete }));
 	await waitFor(() => expect(mocks.confirm).toHaveBeenCalled());
-	expect(mocks.confirm.mock.lastCall![0].text).toBe(`${i18n.tsx._chat._channels.deleteSectionConfirm({ name: '운영' })}\n${i18n.ts._chat._channels.deleteSectionChannelsNotice}`);
+	expect(mocks.confirm.mock.lastCall![0].text).toBe(`${i18n.tsx._chat._channels.deleteSectionConfirm({ name: mfmPlain('운영') })}\n${i18n.ts._chat._channels.deleteSectionChannelsNotice}`);
 	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/sections/delete', { sectionId: 's1' }));
 });
 
@@ -342,11 +343,11 @@ test('섹션 삭제 확인은 채널이 든 섹션에만 안의 채널 이동 �
 
 	await fireEvent.click(within(sectionRowOf(view.container, 's1')).getByRole('button', { name: i18n.ts.delete }));
 	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/sections/delete', { sectionId: 's1' }));
-	expect(mocks.confirm.mock.lastCall![0].text).toBe(`${i18n.tsx._chat._channels.deleteSectionConfirm({ name: '운영' })}\n${i18n.ts._chat._channels.deleteSectionChannelsNotice}`);
+	expect(mocks.confirm.mock.lastCall![0].text).toBe(`${i18n.tsx._chat._channels.deleteSectionConfirm({ name: mfmPlain('운영') })}\n${i18n.ts._chat._channels.deleteSectionChannelsNotice}`);
 
 	await fireEvent.click(within(sectionRowOf(view.container, 's2')).getByRole('button', { name: i18n.ts.delete }));
 	await waitFor(() => expect(mocks.api).toHaveBeenCalledWith('chat/rooms/sections/delete', { sectionId: 's2' }));
-	expect(mocks.confirm.mock.lastCall![0].text).toBe(i18n.tsx._chat._channels.deleteSectionConfirm({ name: '행사' }));
+	expect(mocks.confirm.mock.lastCall![0].text).toBe(i18n.tsx._chat._channels.deleteSectionConfirm({ name: mfmPlain('행사') }));
 });
 
 test('섹션 머리글을 빈 섹션의 채널 놓기 영역에 놓으면 무시하고 요청하지 않는다', async () => {

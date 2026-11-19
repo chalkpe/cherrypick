@@ -94,9 +94,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<div class="_gaps">
 					<MkSwitch v-model="suspended" @update:modelValue="toggleSuspend">{{ i18n.ts.suspend }}</MkSwitch>
 
-					<div>
-						<MkButton v-if="user.host == null" inline style="margin-right: 8px;" @click="resetPassword"><i class="ti ti-key"></i> {{ i18n.ts.resetPassword }}</MkButton>
-						<MkButton v-if="user.host == null" inline @click="unsetMfa"><i class="ti ti-shield"></i> {{ i18n.ts.unsetMfa }}</MkButton>
+					<div v-if="user.host == null && info.canManageUserCredentials">
+						<MkButton inline style="margin-right: 8px;" @click="resetPassword"><i class="ti ti-key"></i> {{ i18n.ts.resetPassword }}</MkButton>
+						<MkButton inline @click="unsetMfa"><i class="ti ti-shield"></i> {{ i18n.ts.unsetMfa }}</MkButton>
 					</div>
 
 					<MkFolder>
@@ -227,6 +227,7 @@ import { misskeyApi } from '@/utility/misskey-api.js';
 import { acct } from '@@/js/user.js';
 import { definePage } from '@/page.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { useMkSelect } from '@/composables/use-mkselect.js';
 import { ensureSignin, iAmAdmin, iAmModerator } from '@/i.js';
 import MkRolePreview from '@/components/MkRolePreview.vue';
@@ -437,7 +438,7 @@ async function deleteAccount() {
 	if (confirm.canceled) return;
 
 	const typed = await os.inputText({
-		text: i18n.tsx.typeToConfirm({ x: user.value?.username }),
+		text: i18n.tsx.typeToConfirm({ x: mfmPlain(user.value?.username ?? '') }),
 	});
 	if (typed.canceled) return;
 
@@ -463,7 +464,7 @@ async function assignRole() {
 	if (canceled || roleId == null) return;
 
 	const { canceled: canceled2, result: period } = await os.select({
-		title: i18n.ts.period + ': ' + roles.find(r => r.id === roleId)!.name,
+		title: i18n.ts.period + ': ' + mfmPlain(roles.find(r => r.id === roleId)!.name),
 		items: [{
 			value: 'indefinitely', label: i18n.ts.indefinitely,
 		}, {

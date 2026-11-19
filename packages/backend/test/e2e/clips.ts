@@ -672,7 +672,7 @@ describe('クリップ', () => {
 
 		const sampleNotes = (): Misskey.entities.Note[] => [
 			aliceNote, aliceHomeNote, aliceFollowersNote, aliceSpecifiedNote,
-			bobNote, bobHomeNote, bobFollowersNote, bobSpecifiedNote,
+			bobNote, bobHomeNote,
 		];
 
 		const addNote = async (parameters: Misskey.entities.ClipsAddNoteRequest, request: Partial<ApiRequest<'clips/add-note'>> = {}): Promise<void> => {
@@ -716,10 +716,21 @@ describe('クリップ', () => {
 			assert.strictEqual(res.lastClippedAt, res.lastClippedAt ? new Date(res.lastClippedAt).toISOString() : null);
 			assert.deepStrictEqual((await notes({ clipId: aliceClip.id })).map(x => x.id), [aliceNote.id]);
 
-			// 他人の非公開ノートも突っ込める
 			await addNote({ clipId: aliceClip.id, noteId: bobHomeNote.id });
-			await addNote({ clipId: aliceClip.id, noteId: bobFollowersNote.id });
-			await addNote({ clipId: aliceClip.id, noteId: bobSpecifiedNote.id });
+		});
+
+		test('rejects adding another user’s note when it is outside the viewer’s audience', async () => {
+			for (const note of [bobFollowersNote, bobSpecifiedNote]) {
+				await failedApiCall({
+					endpoint: 'clips/add-note',
+					parameters: { clipId: aliceClip.id, noteId: note.id },
+					user: alice,
+				}, {
+					status: 400,
+					code: 'NO_SUCH_NOTE',
+					id: 'fc8c0b49-c7a3-4664-a0a6-b418d386bb8b',
+				});
+			}
 		});
 
 		test('として同じノートを二回紐づけることはできない', async () => {
@@ -887,15 +898,9 @@ describe('クリップ', () => {
 
 			const res = await notes({ clipId: aliceClip.id });
 
-			// 自分のノートは非公開でも入れられるし、見える
-			// 他人の非公開ノートは入れられるけど、除外される
-			const expects = [
-				aliceNote, aliceHomeNote, aliceFollowersNote, aliceSpecifiedNote,
-				bobNote, bobHomeNote,
-			];
 			assert.deepStrictEqual(
 				res.sort(compareBy(s => s.id)).map(x => x.id),
-				expects.sort(compareBy(s => s.id)).map(x => x.id));
+				noteList.sort(compareBy(s => s.id)).map(x => x.id));
 		});
 
 		test('を始端IDとlimitで取得できる。', async () => {

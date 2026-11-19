@@ -42,6 +42,7 @@ import { $i } from '@/i.js';
 import { mainRouter } from '@/router.js';
 import { definePage } from '@/page.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { prefer } from '@/preferences.js';
 import { userPage } from '@@/js/user.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
@@ -82,7 +83,7 @@ async function removeUser(user: Misskey.entities.User) {
 	const currentGroup = group.value;
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx._group.banishConfirm({ name: user.name || user.username, group: currentGroup.name }),
+		text: i18n.tsx._group.banishConfirm({ name: mfmPlain(user.name || user.username), group: mfmPlain(currentGroup.name) }),
 	});
 	if (canceled) return;
 
@@ -127,7 +128,7 @@ async function deleteGroup() {
 	const currentGroup = group.value;
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.removeAreYouSure({ x: currentGroup.name }),
+		text: i18n.tsx.removeAreYouSure({ x: mfmPlain(currentGroup.name) }),
 	});
 	if (canceled) return;
 

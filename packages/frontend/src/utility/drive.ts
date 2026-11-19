@@ -41,6 +41,8 @@ function parseUploadResponse(response: string) {
 export function uploadFile(file: File | Blob, options: {
 	name?: string;
 	folderId?: string | null;
+	token?: string;
+	maxFileSizeMb?: number;
 	isSensitive?: boolean;
 	caption?: string | null;
 	onProgress?: (ctx: { total: number; loaded: number; }) => void;
@@ -69,7 +71,7 @@ export function uploadFile(file: File | Blob, options: {
 		//	return reject();
 		//}
 
-		if ((file.size > instance.maxFileSize) || (file.size > ($i.policies.maxFileSizeMb * 1024 * 1024))) {
+		if ((file.size > instance.maxFileSize) || (file.size > ((options.maxFileSizeMb ?? $i.policies.maxFileSizeMb) * 1024 * 1024))) {
 			os.alert({
 				type: 'error',
 				title: i18n.ts.failedToUpload,
@@ -145,7 +147,7 @@ export function uploadFile(file: File | Blob, options: {
 				return;
 			}
 
-			globalEvents.emit('driveFileCreated', driveFile);
+			if (options.token == null) globalEvents.emit('driveFileCreated', driveFile);
 			resolve(driveFile);
 		}) as (ev: ProgressEvent<EventTarget>) => void;
 
@@ -167,7 +169,7 @@ export function uploadFile(file: File | Blob, options: {
 		}
 
 		const formData = new FormData();
-		formData.append('i', $i.token);
+		formData.append('i', options.token ?? $i.token);
 		formData.append('force', 'true');
 		formData.append('file', file);
 		formData.append('name', options.name ?? (file instanceof File ? file.name : 'untitled'));
@@ -209,12 +211,14 @@ export function chooseFileFromPcAndUpload(
 export function chooseDriveFile(options: {
 	multiple?: boolean;
 	excludeSensitive?: boolean;
+	token?: string;
 } = {}): Promise<Misskey.entities.DriveFile[]> {
 	return new Promise((resolve, rej) => {
 		let dispose: () => void;
 		os.popupAsyncWithDialog(import('@/components/MkDriveFileSelectDialog.vue').then(x => x.default), {
 			multiple: options.multiple ?? false,
 			excludeSensitive: options.excludeSensitive ?? false,
+			token: options.token,
 		}, {
 			done: files => {
 				if (files) {

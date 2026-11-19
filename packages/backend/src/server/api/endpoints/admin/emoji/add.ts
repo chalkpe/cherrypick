@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { IsNull } from 'typeorm';
 import { Inject, Injectable } from '@nestjs/common';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import type { DriveFilesRepository } from '@/models/_.js';
@@ -83,7 +84,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private emojiEntityService: EmojiEntityService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
-			const driveFile = await this.driveFilesRepository.findOneBy({ id: ps.fileId });
+			const driveFile = await this.driveFilesRepository.findOneBy([
+				{ id: ps.fileId, userId: me.id },
+				{ id: ps.fileId, userId: IsNull() },
+			]);
 			if (driveFile == null) throw new ApiError(meta.errors.noSuchFile);
 			const isDuplicate = await this.customEmojiService.checkDuplicate(ps.name);
 			if (isDuplicate) throw new ApiError(meta.errors.duplicateName);

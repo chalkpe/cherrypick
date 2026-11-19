@@ -3,10 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { IsNull } from 'typeorm';
-import { Inject, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { Endpoint } from '@/server/api/endpoint-base.js';
-import { DI } from '@/di-symbols.js';
 import { AvatarDecorationService } from '@/core/AvatarDecorationService.js';
 import { RoleService } from '@/core/RoleService.js';
 
@@ -71,7 +69,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private roleService: RoleService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
-			const decorations = await this.avatarDecorationService.getAll(true);
+			const decorations = await this.avatarDecorationService.getAll();
 			const allRoles = await this.roleService.getRoles();
 			const visibleRoles = me == null ? allRoles.filter(role => role.isPublic) : allRoles;
 

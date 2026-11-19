@@ -78,6 +78,7 @@ import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { definePage } from '@/page.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import MkFolder from '@/components/MkFolder.vue';
 import MkSwitch from '@/components/MkSwitch.vue';
 import MkTextarea from '@/components/MkTextarea.vue';
@@ -179,7 +180,7 @@ async function archive() {
 
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		title: i18n.tsx.channelArchiveConfirmTitle({ name: name.value }),
+		title: i18n.tsx.channelArchiveConfirmTitle({ name: mfmPlain(name.value) }),
 		text: i18n.ts.channelArchiveConfirmDescription,
 	});
 	if (canceled) return;

@@ -49,6 +49,7 @@ import MkDraggable from '@/components/MkDraggable.vue';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { prefer } from '@/preferences.js';
 import { DI } from '@/di.js';
 import { globalEvents } from '@/events.js';
@@ -58,6 +59,7 @@ import { isPreviewable, getType } from '@/utility/lightbox.js';
 const props = withDefaults(defineProps<{
 	modelValue: Misskey.entities.DriveFile[];
 	detachMediaFn?: (id: string) => void;
+	getAccountToken?: () => string | null | undefined;
 	max?: number;
 }>(), { max: 16 });
 
@@ -84,20 +86,22 @@ function detachMedia(id: string) {
 
 async function detachAndDeleteMedia(file: Misskey.entities.DriveFile) {
 	if (mock) return;
+	const token = props.getAccountToken?.();
+	if (token === null) return;
 
 	detachMedia(file.id);
 
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.driveFileDeleteConfirm({ name: file.name }),
+		text: i18n.tsx.driveFileDeleteConfirm({ name: mfmPlain(file.name) }),
 	});
 	if (canceled) return;
 
 	await os.apiWithDialog('drive/files/delete', {
 		fileId: file.id,
-	});
+	}, token);
 
-	globalEvents.emit('driveFilesDeleted', [file]);
+	if (token == null) globalEvents.emit('driveFilesDeleted', [file]);
 }
 
 function toggleSensitive(file: Misskey.entities.DriveFile) {
@@ -105,17 +109,21 @@ function toggleSensitive(file: Misskey.entities.DriveFile) {
 		emit('changeSensitive', file, !file.isSensitive);
 		return;
 	}
+	const token = props.getAccountToken?.();
+	if (token === null) return;
 
 	misskeyApi('drive/files/update', {
 		fileId: file.id,
 		isSensitive: !file.isSensitive,
-	}).then(() => {
+	}, token).then(() => {
 		emit('changeSensitive', file, !file.isSensitive);
 	});
 }
 
 async function rename(file: Misskey.entities.DriveFile) {
 	if (mock) return;
+	const token = props.getAccountToken?.();
+	if (token === null) return;
 
 	const { canceled, result } = await os.inputText({
 		title: i18n.ts.enterFileName,
@@ -126,7 +134,7 @@ async function rename(file: Misskey.entities.DriveFile) {
 	misskeyApi('drive/files/update', {
 		fileId: file.id,
 		name: result,
-	}).then(() => {
+	}, token).then(() => {
 		emit('changeName', file, result);
 		file.name = result;
 	});
@@ -134,6 +142,8 @@ async function rename(file: Misskey.entities.DriveFile) {
 
 async function describe(file: Misskey.entities.DriveFile) {
 	if (mock) return;
+	const token = props.getAccountToken?.();
+	if (token === null) return;
 
 	const { dispose } = await os.popupAsyncWithDialog(import('@/components/MkFileCaptionEditWindow.vue').then(x => x.default), {
 		default: file.comment !== null ? file.comment : '',
@@ -144,7 +154,7 @@ async function describe(file: Misskey.entities.DriveFile) {
 			misskeyApi('drive/files/update', {
 				fileId: file.id,
 				comment: comment,
-			}).then(() => {
+			}, token).then(() => {
 				file.comment = comment;
 			});
 		},

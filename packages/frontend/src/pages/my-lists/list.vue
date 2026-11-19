@@ -59,6 +59,7 @@ import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { definePage } from '@/page.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { userPage } from '@@/js/user.js';
 import MkUserCardMini from '@/components/MkUserCardMini.vue';
 import MkSwitch from '@/components/MkSwitch.vue';
@@ -123,7 +124,7 @@ async function removeUser(item: Misskey.entities.UsersListsGetMembershipsRespons
 		action: async () => {
 			if (!list.value) return;
 			const listId = list.value.id;
-			misskeyApi('users/lists/pull', {
+			await os.apiWithDialog('users/lists/pull', {
 				listId,
 				userId: item.userId,
 			}).then(() => {
@@ -133,7 +134,7 @@ async function removeUser(item: Misskey.entities.UsersListsGetMembershipsRespons
 				}
 				membershipsPaginator.removeItem(item.id);
 				userListsCache.delete();
-			});
+			}).catch(() => { /* apiWithDialog already displays the error. */ });
 		},
 	}], ev.currentTarget ?? ev.target);
 }
@@ -166,7 +167,7 @@ async function deleteList() {
 	if (!list.value) return;
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.removeAreYouSure({ x: list.value.name }),
+		text: i18n.tsx.removeAreYouSure({ x: mfmPlain(list.value.name) }),
 	});
 	if (canceled) return;
 

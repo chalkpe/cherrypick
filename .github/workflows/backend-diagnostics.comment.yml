@@ -17,12 +17,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6.1.1
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - name: Use Node.js
-        uses: actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: '.node-version'
           cache: 'pnpm'
@@ -30,7 +30,7 @@ jobs:
         run: pnpm --filter diagnostics-backend... install --frozen-lockfile
 
       - name: Download artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: memory-artifact-*
           path: artifacts
@@ -42,10 +42,21 @@ jobs:
         run: ls -lh artifacts/
       - name: Load PR Number
         id: load-pr-num
-        run: echo "pr-number=$(cat artifacts/pr_number)" >> "$GITHUB_OUTPUT"
+        shell: python
+        run: |
+          import os
+          import re
+          from pathlib import Path
+
+          match = re.fullmatch(rb'([1-9][0-9]*)\n?', Path('artifacts/pr_number').read_bytes())
+          if match is None:
+              raise SystemExit('Invalid PR number in artifact.')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'ab') as output:
+              output.write(b'pr-number=' + match[1] + b'\n')
       - name: Find heap snapshot artifacts
         id: find-heap-snapshot-artifacts
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -75,13 +86,13 @@ jobs:
           "$GITHUB_WORKSPACE/artifacts/memory-base.json"
           "$GITHUB_WORKSPACE/artifacts/memory-head.json"
           "$GITHUB_WORKSPACE/output.md"
-      - uses: thollander/actions-comment-pull-request@v3
+      - uses: thollander/actions-comment-pull-request@24bffb9b452ba05a4f3f77933840a6a841d1b32b # v3
         with:
           pr-number: ${{ steps.load-pr-num.outputs.pr-number }}
           comment-tag: show_memory_diff
           file-path: ./output.md
       - name: Tell error to PR
-        uses: thollander/actions-comment-pull-request@v3
+        uses: thollander/actions-comment-pull-request@24bffb9b452ba05a4f3f77933840a6a841d1b32b # v3
         if: failure() && steps.load-pr-num.outputs.pr-number
         with:
           pr-number: ${{ steps.load-pr-num.outputs.pr-number }}

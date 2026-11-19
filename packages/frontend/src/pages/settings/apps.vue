@@ -55,6 +55,7 @@ import MkPagination from '@/components/MkPagination.vue';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { definePage } from '@/page.js';
 import MkKeyValue from '@/components/MkKeyValue.vue';
 import MkButton from '@/components/MkButton.vue';
@@ -72,7 +73,7 @@ const paginator = markRaw(new Paginator('i/apps', {
 async function revoke(token: Misskey.entities.IAppsResponse[number]) {
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.removeAreYouSure({ x: token.name ?? '' }),
+		text: i18n.tsx.removeAreYouSure({ x: mfmPlain(token.name ?? '') }),
 	});
 	if (canceled) return;
 

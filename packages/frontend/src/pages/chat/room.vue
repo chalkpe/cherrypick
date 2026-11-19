@@ -186,6 +186,7 @@ import { useStream } from '@/stream.js';
 import { chatUnreadEventsActive, chatUnreadSubscriptionGap, beginChatUnreadRecheck, restoreChatUnreadGapIfUnchanged } from '@/chat-unread-subscription.js';
 import * as sound from '@/utility/sound.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { ensureSignin } from '@/i.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { definePage } from '@/page.js';
@@ -509,7 +510,7 @@ async function initialize() {
 			const r = await misskeyApi('chat/rooms/show', { roomId: props.roomId });
 			if (!current()) return;
 			if (r.invitationExists) {
-				const { canceled } = await os.confirm({ type: 'question', title: r.name, room: r, text: i18n.ts._chat.youAreNotAMemberOfThisRoomButInvited + '\n' + i18n.ts._chat.doYouAcceptInvitation });
+				const { canceled } = await os.confirm({ type: 'question', title: mfmPlain(r.name), room: r, text: i18n.ts._chat.youAreNotAMemberOfThisRoomButInvited + '\n' + i18n.ts._chat.doYouAcceptInvitation });
 				if (!current()) return;
 				if (canceled) { router.push('/chat'); return; }
 				try {
@@ -1107,7 +1108,7 @@ async function leaveRoom() {
 
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx._chat.leaveRoomConfirm({ name: room.value.name }),
+		text: i18n.tsx._chat.leaveRoomConfirm({ name: mfmPlain(room.value.name) }),
 		room: room.value,
 	});
 	if (canceled) return;

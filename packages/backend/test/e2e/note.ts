@@ -43,6 +43,29 @@ describe('Note', () => {
 		assert.strictEqual(res.body.createdNote.text, post.text);
 	});
 
+	test('caps renotes and quotes from a sensitive channel at home outside channels', async () => {
+		const { body: channel } = await api('channels/create', {
+			name: 'Sensitive channel',
+			isSensitive: true,
+			allowRenoteToExternal: true,
+		}, root);
+		const original = await post(root, { channelId: channel.id, text: 'channel note' });
+
+		const renote = await post(alice, { renoteId: original.id, visibility: 'public' });
+		const quote = await post(bob, { renoteId: original.id, visibility: 'public', text: 'quote' });
+		const followers = await post(alice, { renoteId: original.id, visibility: 'followers', text: 'followers quote' });
+		const inChannel = await post(bob, { channelId: channel.id, renoteId: original.id, text: 'channel quote' });
+		const ordinaryNote = await post(root, { text: 'ordinary note', localOnly: true });
+		const ordinaryRenote = await post(alice, { renoteId: ordinaryNote.id, visibility: 'public' });
+
+		assert.strictEqual(renote.visibility, 'home');
+		assert.strictEqual(quote.visibility, 'home');
+		assert.strictEqual(followers.visibility, 'followers');
+		assert.strictEqual(inChannel.visibility, 'public');
+		assert.strictEqual(inChannel.localOnly, true);
+		assert.strictEqual(ordinaryRenote.visibility, 'public');
+	});
+
 	test('ファイルを添付できる', async () => {
 		const file = await uploadUrl(alice, 'https://raw.githubusercontent.com/kokonect-link/cherrypick/develop/packages/backend/test/resources/192.jpg');
 

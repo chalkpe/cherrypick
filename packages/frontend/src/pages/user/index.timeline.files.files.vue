@@ -5,34 +5,25 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <template>
 <div v-if="files.length > 0" :class="[$style.root, $style.visible]">
-	<div v-if="!showingFiles.includes(files[0].id)" :key="note.id + files[0].id" :class="$style.img" @click="onClick($event, files[0])" @dblclick="onDblClick(files[0])">
+	<div v-if="!showingFiles.includes(files[0].id)" :key="note.id + files[0].id" :class="$style.img">
 		<MkImgWithBlurhash
 			v-if="isThumbnailAvailable && prefer.s.enableHighQualityImagePlaceholders"
 			:hash="files[0].blurhash"
-			:src="url"
-			:alt="files[0].comment ?? undefined"
+			alt=""
 			:title="files[0].name"
 			:class="$style.sensitiveImg"
 			:cover="true"
 			:forceBlurhash="true"
 		/>
-		<img
-			v-else-if="isThumbnailAvailable && files[0].thumbnailUrl != null"
-			:src="url ?? undefined"
-			:alt="files[0].name"
-			:title="files[0].name"
-			:class="$style.thumbnail"
-			style="object-fit: cover;"
-		/>
-		<div :class="$style.sensitive">
-			<div>
-				<div v-if="files[0].isSensitive" style="display: block;"><i class="ti ti-eye-exclamation"></i> {{ i18n.ts.sensitive }}{{ prefer.s.dataSaver.media ? ` (${i18n.ts.image}${files[0].size ? ' ' + bytes(files[0].size) : ''})` : '' }}</div>
-				<div v-else style="display: block;"><i class="ti ti-photo"></i> {{ prefer.s.dataSaver.media && files[0].size ? bytes(files[0].size) : i18n.ts.image }}</div>
-				<div>{{ i18n.ts.clickToShow }}</div>
-			</div>
-		</div>
+		<button ref="hiddenTile" type="button" class="_button" :class="$style.sensitive" @click.stop="onClick($event, files[0])" @dblclick.stop="prefer.s.nsfwOpenBehavior === 'doubleClick' && reveal(files[0])">
+			<span>
+				<span v-if="files[0].isSensitive"><i class="ti ti-eye-exclamation" aria-hidden="true"></i> {{ i18n.ts.sensitive }}{{ prefer.s.dataSaver.media ? ` (${i18n.ts.image}${files[0].size ? ' ' + bytes(files[0].size) : ''})` : '' }}</span>
+				<span v-else><i class="ti ti-photo" aria-hidden="true"></i> {{ prefer.s.dataSaver.media && files[0].size ? bytes(files[0].size) : i18n.ts.image }}</span>
+				<span>{{ prefer.s.nsfwOpenBehavior === 'doubleClick' ? i18n.ts.doubleClickToShow : i18n.ts.clickToShow }}</span>
+			</span>
+		</button>
 	</div>
-	<MkA v-else :class="[$style.img, { [$style.multipleImg]: files.length > 1 }]" :to="notePage(note)">
+	<MkA v-else ref="shownTile" :class="[$style.img, { [$style.multipleImg]: files.length > 1 }]" :to="notePage(note)">
 		<video
 			v-if="isVideoPreviewAvailable"
 			ref="videoEl"
@@ -85,7 +76,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import * as os from '@/os.js';
 import bytes from '@/filters/bytes.js';
@@ -97,6 +88,7 @@ import { prefer } from '@/preferences.js';
 import { i18n } from '@/i18n.js';
 import MkRippleEffect from '@/components/MkRippleEffect.vue';
 import { useVideoPreview } from '@/composables/use-video-preview.js';
+import { canRevealFile } from '@/utility/sensitive-file.js';
 
 const props = defineProps<{
 	user: Misskey.entities.User;
@@ -105,6 +97,9 @@ const props = defineProps<{
 
 const showingFiles = ref<string[]>([]);
 const files = computed(() => props.note.files ?? []);
+const hiddenTile = useTemplateRef<HTMLButtonElement>('hiddenTile');
+const shownTile = useTemplateRef('shownTile');
+let revealing = false;
 
 const is = computed(() => {
 	if (files.value[0].type.startsWith('image/')) return 'image';
@@ -155,25 +150,37 @@ const url = computed(() => is.value === 'video'
 		: files.value[0].thumbnailUrl,
 );
 
-async function onClick(ev: MouseEvent, image: Misskey.entities.DriveFile) {
-	if (!showingFiles.value.includes(image.id)) {
-		ev.stopPropagation();
-		if (image.isSensitive && prefer.s.confirmWhenRevealingSensitiveMedia) {
-			const { canceled } = await os.confirm({
-				type: 'question',
-				text: i18n.ts.sensitiveMediaRevealConfirm,
-			});
-			if (canceled) return;
-			showingFiles.value.push(image.id);
-		}
+function onClick(ev: MouseEvent, image: Misskey.entities.DriveFile) {
+	if (prefer.s.nsfwOpenBehavior === 'doubleClick' && ev.detail !== 0) {
+		const { dispose } = os.popup(MkRippleEffect, { x: ev.clientX, y: ev.clientY }, { end: () => dispose() });
+		return;
 	}
-
-	if (prefer.s.nsfwOpenBehavior === 'doubleClick') os.popup(MkRippleEffect, { x: ev.clientX, y: ev.clientY }, {});
-	if (prefer.s.nsfwOpenBehavior === 'click') showingFiles.value.push(image.id);
+	void reveal(image);
 }
 
-async function onDblClick(image: Misskey.entities.DriveFile) {
-	if (!showingFiles.value.includes(image.id) && prefer.s.nsfwOpenBehavior === 'doubleClick') showingFiles.value.push(image.id);
+async function reveal(image: Misskey.entities.DriveFile) {
+	if (revealing || showingFiles.value.includes(image.id)) return;
+	revealing = true;
+	const tile = hiddenTile.value;
+	const focused = window.document.activeElement === tile;
+	try {
+		const allowed = await canRevealFile(image);
+		if (files.value[0]?.id !== image.id) return;
+		if (!allowed) {
+			if (focused) {
+				await nextTick();
+				if (hiddenTile.value === tile) tile?.focus({ preventScroll: true });
+			}
+			return;
+		}
+		showingFiles.value.push(image.id);
+		if (focused) {
+			await nextTick();
+			shownTile.value?.$el?.focus();
+		}
+	} finally {
+		revealing = false;
+	}
 }
 
 watch(() => props.note, () => {
@@ -252,7 +259,7 @@ onUnmounted(() => {
 	filter: brightness(0.7);
 }
 
-.sensitive {
+.sensitive:global(._button) {
 	position: absolute;
 	top: 0;
 	left: 0;
@@ -262,9 +269,15 @@ onUnmounted(() => {
 	place-items: center;
 	font-size: 0.8em;
 	color: #fff;
+	background: rgb(0 0 0 / 65%);
 	cursor: pointer;
+
+	&:focus-visible {
+		outline: 2px solid var(--MI_THEME-accent);
+		outline-offset: -3px;
+	}
 }
-.sensitive > div{
+.sensitive > span {
 	display: flex;
 	flex-direction: column;
 	align-items: center;

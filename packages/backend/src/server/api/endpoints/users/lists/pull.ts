@@ -4,6 +4,7 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
+import ms from 'ms';
 import type { UserListsRepository } from '@/models/_.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { GetterService } from '@/server/api/GetterService.js';
@@ -21,6 +22,11 @@ export const meta = {
 	kind: 'write:account',
 
 	description: 'Remove a user from a list.',
+
+	limit: {
+		duration: ms('1minute'),
+		max: 60,
+	},
 
 	errors: {
 		noSuchList: {

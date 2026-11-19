@@ -60,6 +60,12 @@ const mimeTypeMap = {
 	'image/png': 'png',
 } as const;
 
+export type UploadAccount = {
+	id: string;
+	token?: string;
+	maxFileSizeMb: number;
+};
+
 export type UploaderItem = {
 	id: string;
 	name: string;
@@ -119,7 +125,7 @@ export function useUploader(options: {
 	const $i = ensureSignin();
 
 	const events = new EventEmitter<{
-		'itemUploaded': (ctx: { item: UploaderItem; }) => void;
+		'itemUploaded': (ctx: { item: UploaderItem; accountId: string; }) => void;
 	}>();
 
 	const uploaderFeatures = computed<Required<UploaderFeatures>>(() => {
@@ -185,11 +191,15 @@ export function useUploader(options: {
 	}
 
 	function removeItem(item: UploaderItem) {
+		const index = items.value.indexOf(item);
+		if (index === -1) return;
+
+		items.value.splice(index, 1);
+		item.abort?.();
 		revokeItemObjectUrls(item);
-		items.value.splice(items.value.indexOf(item), 1);
 	}
 
-	function getMenu(item: UploaderItem): MenuItem[] {
+	function getMenu(item: UploaderItem, getUploadAccount?: () => UploadAccount | null): MenuItem[] {
 		const menu: MenuItem[] = [];
 
 		if (
@@ -512,8 +522,14 @@ export function useUploader(options: {
 			}, {
 				icon: 'ti ti-upload',
 				text: i18n.ts.upload,
-				action: () => {
-					uploadOne(item);
+				action: async () => {
+					const account = getUploadAccount?.();
+					if (account === null) return;
+					try {
+						await uploadOne(item, account);
+					} catch {
+						// uploadFile has already shown the upload error.
+					}
 				},
 			}, {
 				icon: 'ti ti-x',
@@ -554,13 +570,16 @@ export function useUploader(options: {
 		return menu;
 	}
 
-	async function uploadOne(item: UploaderItem): Promise<void> {
+	async function uploadOne(item: UploaderItem, account?: UploadAccount): Promise<void> {
+		if (!items.value.includes(item) || item.aborted || item.uploading || item.uploaded) return;
 		item.uploadFailed = false;
 		item.uploading = true;
 
 		const { filePromise, abort } = uploadFile(item.preprocessedFile ?? item.file, {
+			token: account?.token,
+			maxFileSizeMb: account?.maxFileSizeMb,
 			name: getUploadName(item),
-			folderId: options.folderId === undefined ? prefer.s.uploadFolder : options.folderId,
+			folderId: account?.token == null && options.folderId === undefined ? prefer.s.uploadFolder : options.folderId,
 			isSensitive: item.isSensitive ?? false,
 			caption: item.caption ?? null,
 			onProgress: (progress) => {
@@ -573,43 +592,41 @@ export function useUploader(options: {
 			},
 		});
 
-		item.abort = () => {
+		const abortUpload = () => {
 			item.abort = null;
 			abort();
 			item.uploading = false;
 			item.uploadFailed = true;
 		};
+		item.abort = abortUpload;
 
-		await filePromise.then((file) => {
+		try {
+			const file = await filePromise;
+			if (item.abort !== abortUpload || !items.value.includes(item)) return;
 			item.uploaded = file;
-			item.abort = null;
-			events.emit('itemUploaded', { item });
-		}).catch(err => {
+		} catch (err) {
+			if (item.abort !== abortUpload) return;
 			item.uploadFailed = true;
 			item.progress = null;
-			if (!(err instanceof UploadAbortedError)) {
-				throw err;
+			if (!(err instanceof UploadAbortedError)) throw err;
+			return;
+		} finally {
+			if (item.abort === abortUpload) {
+				item.uploading = false;
+				item.abort = null;
 			}
-		}).finally(() => {
-			item.uploading = false;
-		});
+		}
+		events.emit('itemUploaded', { item, accountId: account?.id ?? $i.id });
 	}
 
-	async function upload() { // エラーハンドリングなどを考慮してシーケンシャルにやる
-		items.value = items.value.map(item => ({
-			...item,
-			aborted: false,
-			uploadFailed: false,
-			uploading: false,
-		}));
+	async function upload(account?: UploadAccount) { // エラーハンドリングなどを考慮してシーケンシャルにやる
+		for (const item of items.value) {
+			item.aborted = false;
+			item.uploadFailed = false;
+		}
 
 		for (const item of items.value.filter(item => item.uploaded == null)) {
-			// アップロード処理途中で値が変わる場合（途中で全キャンセルされたりなど）もあるので、Array filterではなくここでチェック
-			if (item.aborted) {
-				continue;
-			}
-
-			await uploadOne(item);
+			await uploadOne(item, account);
 		}
 	}
 

@@ -172,6 +172,7 @@ vi.mock('@/pages/chat/XMessage.vue', async () => {
 import { provideMetadataReceiver } from '@/page.js';
 import XRoomPage from '@/pages/chat/room.vue';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { chatLeaveErrors } from '@/pages/chat/chat-errors.js';
 import { installFakeResizeObserver, resizeObserved } from './fake-resize-observer.js';
@@ -1505,7 +1506,7 @@ describe('leaving a room from the menu', () => {
 		expect(mocks.routerPush).not.toHaveBeenCalled();
 		expect(mocks.confirm).toHaveBeenCalledWith({
 			type: 'warning',
-			text: i18n.tsx._chat.leaveRoomConfirm({ name: 'room 1' }),
+			text: i18n.tsx._chat.leaveRoomConfirm({ name: mfmPlain('room 1') }),
 			room: {
 				id: 'r1', name: 'room 1', ownerId: 'owner',
 				owner: { id: 'owner', username: 'owner', host: null },

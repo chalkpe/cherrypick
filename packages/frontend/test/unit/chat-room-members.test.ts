@@ -16,9 +16,10 @@ vi.mock('@/router.js', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import Members from '@/pages/chat/room.members.vue';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { chatBanDeleteErrors, chatCancelInvitationErrors, chatKickErrors } from '@/pages/chat/chat-errors.js';
 
-const room = { id: 'room', ownerId: 'owner', owner: { id: 'owner', username: 'owner' }, isArchived: false } as any;
+const room = { id: 'room', name: 'Room', ownerId: 'owner', owner: { id: 'owner', username: 'owner' }, isArchived: false } as any;
 const membership = { id: 'membership', userId: 'member', user: { id: 'member', name: 'Member', username: 'member', host: 'remote.test' } };
 const stubs = {
 	MkButton: { emits: ['click'], template: '<button @click="$emit(\'click\')"><slot/></button>' },
@@ -37,7 +38,7 @@ afterEach(cleanup);
 test('the owner confirms the named member and removes that row after success', async () => {
 	render(Members, { props: { room }, global: { stubs } });
 	await fireEvent.click(await screen.findByRole('button', { name: i18n.ts._chat.kickMember }));
-	expect(mocks.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.tsx._chat.kickMemberConfirm({ name: 'Member', room: room.name }), room });
+	expect(mocks.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.tsx._chat.kickMemberConfirm({ name: mfmPlain('Member'), room: mfmPlain(room.name) }), room });
 	await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/kick', { roomId: 'room', userId: 'member' }, undefined, chatKickErrors));
 	await waitFor(() => expect(screen.queryByText('member')).toBeNull());
 });
@@ -120,7 +121,7 @@ describe('people the owner removed', () => {
 
 		await fireEvent.click(button);
 
-		expect(mocks.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.tsx._chat.pardonConfirm({ name: 'Removed' }) });
+		expect(mocks.confirm).toHaveBeenCalledWith({ type: 'warning', text: i18n.tsx._chat.pardonConfirm({ name: mfmPlain('Removed') }) });
 		await waitFor(() => expect(mocks.apiWithDialog).toHaveBeenCalledWith('chat/rooms/bans/delete', { roomId: 'room', userId: 'removed' }, undefined, chatBanDeleteErrors));
 		await waitFor(() => expect(screen.queryByText('removed')).toBeNull());
 		expect(mocks.apiWithDialog).toHaveBeenCalledTimes(1);

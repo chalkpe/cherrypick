@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { IsNull } from 'typeorm';
 import { Inject, Injectable } from '@nestjs/common';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { CustomEmojiService } from '@/core/CustomEmojiService.js';
@@ -90,7 +91,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		super(meta, paramDef, async (ps, me) => {
 			let driveFile;
 			if (ps.fileId) {
-				driveFile = await this.driveFilesRepository.findOneBy({ id: ps.fileId });
+				driveFile = await this.driveFilesRepository.findOneBy([
+					{ id: ps.fileId, userId: me.id },
+					{ id: ps.fileId, userId: IsNull() },
+				]);
 				if (driveFile == null) throw new ApiError(meta.errors.noSuchFile);
 			}
 

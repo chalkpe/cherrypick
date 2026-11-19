@@ -6,7 +6,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <div
 	:class="[$style.root, { [$style.draghover]: draghover }]"
-	draggable="true"
+	:draggable="!readOnly"
 	:title="title"
 	@contextmenu.stop="onContextmenu"
 	@mouseover="onMouseover"
@@ -51,6 +51,7 @@ const props = withDefaults(defineProps<{
 	folder: Misskey.entities.DriveFolder;
 	isSelected?: boolean;
 	selectMode?: boolean;
+	readOnly?: boolean;
 }>(), {
 	isSelected: false,
 	selectMode: false,
@@ -87,7 +88,7 @@ function onMouseout() {
 }
 
 function onDragover(ev: DragEvent) {
-	if (!ev.dataTransfer) return;
+	if (props.readOnly || !ev.dataTransfer) return;
 
 	// 自分自身がドラッグされている場合
 	if (isDragging.value) {
@@ -120,6 +121,7 @@ function onDragover(ev: DragEvent) {
 }
 
 function onDragenter() {
+	if (props.readOnly) return;
 	if (!isDragging.value) draghover.value = true;
 }
 
@@ -128,6 +130,7 @@ function onDragleave() {
 }
 
 async function onDrop(ev: DragEvent) {
+	if (props.readOnly) return;
 	draghover.value = false;
 
 	if (!ev.dataTransfer) return;
@@ -199,6 +202,7 @@ async function onDrop(ev: DragEvent) {
 }
 
 function onDragstart(ev: DragEvent) {
+	if (props.readOnly) return;
 	if (!ev.dataTransfer) return;
 
 	ev.dataTransfer.effectAllowed = 'move';
@@ -260,6 +264,7 @@ function setAsUploadFolder() {
 }
 
 function onContextmenu(ev: PointerEvent) {
+	if (props.readOnly) return;
 	let menu: MenuItem[];
 	menu = [{
 		text: i18n.ts.openInWindow,

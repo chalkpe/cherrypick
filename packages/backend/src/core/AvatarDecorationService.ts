@@ -44,6 +44,8 @@ const URL_CACHE_LIMIT = 5000;
 export class AvatarDecorationService implements OnApplicationShutdown {
 	public cache: MemorySingleCache<MiAvatarDecoration[]>;
 	public cacheWithRemote: MemorySingleCache<MiAvatarDecoration[]>;
+	private listCacheGeneration = 0;
+	private listWithRemoteCacheGeneration = 0;
 	private urlCache = new MemoryKVCache<{ id: string; url: string } | null>(URL_CACHE_LIFETIME, URL_CACHE_LIMIT);
 
 	constructor(
@@ -83,8 +85,7 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 				case 'avatarDecorationCreated':
 				case 'avatarDecorationUpdated':
 				case 'avatarDecorationDeleted': {
-					this.cache.delete();
-					this.cacheWithRemote.delete();
+					this.invalidateListCache();
 					if (typeof (body as { id?: unknown } | null)?.id === 'string') this.urlCache.delete((body as { id: string }).id);
 					break;
 				}
@@ -94,6 +95,13 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 		}
 	}
 
+	private invalidateListCache(): void {
+		this.listCacheGeneration++;
+		this.listWithRemoteCacheGeneration++;
+		this.cache.delete();
+		this.cacheWithRemote.delete();
+	}
+
 	@bindThis
 	public async create(options: Partial<MiAvatarDecoration>, moderator?: MiUser): Promise<MiAvatarDecoration> {
 		const created = await this.avatarDecorationsRepository.insertOne({
@@ -101,6 +109,7 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 			...options,
 		});
 
+		this.invalidateListCache();
 		this.urlCache.delete(created.id);
 		this.globalEventService.publishInternalEvent('avatarDecorationCreated', created);
 
@@ -124,6 +133,7 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 			...params,
 		});
 
+		this.invalidateListCache();
 		const updated = await this.avatarDecorationsRepository.findOneByOrFail({ id: avatarDecoration.id });
 		this.urlCache.delete(avatarDecoration.id);
 		this.globalEventService.publishInternalEvent('avatarDecorationUpdated', updated);
@@ -202,7 +212,6 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 		const existing = await this.avatarDecorationsRepository.findOneBy({ host, remoteId });
 		const data = { host, remoteId, url: this.getProxiedUrl(url, 'avatar'), rawUrl: url, name, description: options?.preserveDescription ? existing?.description ?? '' : description };
 		const decoration = existing == null ? await this.create(data) : (await this.update(existing.id, data), existing);
-		this.cacheWithRemote.delete();
 		return decoration.id;
 	}
 
@@ -361,7 +370,6 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 
 			if (existingDecoration == null) {
 				await this.create(decorationData);
-				this.cacheWithRemote.delete();
 			} else if (
 				existingDecoration.name !== decorationData.name
 				|| (existingDecoration.description ?? null) !== (decorationData.description ?? null)
@@ -369,7 +377,6 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 				|| existingDecoration.rawUrl !== decorationData.rawUrl
 			) {
 				await this.update(existingDecoration.id, decorationData);
-				this.cacheWithRemote.delete();
 			}
 
 			const findDecoration = await this.avatarDecorationsRepository.findOneBy({
@@ -399,6 +406,7 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 		const avatarDecoration = await this.avatarDecorationsRepository.findOneByOrFail({ id });
 
 		await this.avatarDecorationsRepository.delete({ id: avatarDecoration.id });
+		this.invalidateListCache();
 		this.urlCache.delete(avatarDecoration.id);
 		this.globalEventService.publishInternalEvent('avatarDecorationDeleted', avatarDecoration);
 
@@ -413,9 +421,9 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 	@bindThis
 	public async getAll(noCache = false, withRemote = false, remoteOnly = false): Promise<MiAvatarDecoration[]> {
 		if (noCache) {
+			this.listCacheGeneration++;
 			this.cache.delete();
 		}
-
 		if (remoteOnly) {
 			// 원격 장식만 담은 목록이 모든 장식의 캐시를 대신하지 않도록 캐시를 거치지 않는다
 			return this.avatarDecorationsRepository.find({
@@ -423,15 +431,17 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 					host: Not(IsNull()),
 				},
 			});
-		} else if (withRemote) {
-			return this.cacheWithRemote.fetch(() => this.avatarDecorationsRepository.find());
-		} else {
-			return this.cache.fetch(() => this.avatarDecorationsRepository.find({
-				where: {
-					host: IsNull(),
-				},
-			}));
 		}
+
+		const cache = withRemote ? this.cacheWithRemote : this.cache;
+		const cached = cache.get();
+		if (cached !== undefined) return cached;
+
+		const generation = withRemote ? this.listWithRemoteCacheGeneration : this.listCacheGeneration;
+		const decorations = await this.avatarDecorationsRepository.find(withRemote ? undefined : { where: { host: IsNull() } });
+		const currentGeneration = withRemote ? this.listWithRemoteCacheGeneration : this.listCacheGeneration;
+		if (currentGeneration === generation) cache.set(decorations);
+		return decorations;
 	}
 
 	@bindThis

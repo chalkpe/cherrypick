@@ -16,7 +16,7 @@ import { bindThis } from '@/decorators.js';
 import { DebounceLoader } from '@/misc/loader.js';
 import { IdService } from '@/core/IdService.js';
 import { shouldHideNoteByTime } from '@/misc/should-hide-note-by-time.js';
-import { isQuotePacked, isRenotePacked } from '@/misc/is-renote.js';
+import { isQuote, isQuotePacked, isRenote, isRenotePacked } from '@/misc/is-renote.js';
 import { ReactionsBufferingService } from '@/core/ReactionsBufferingService.js';
 import { CacheService } from '@/core/CacheService.js';
 import type { RoleService } from '@/core/RoleService.js';
@@ -25,6 +25,9 @@ import type { CustomEmojiService } from '../CustomEmojiService.js';
 import type { ReactionService } from '../ReactionService.js';
 import type { UserEntityService } from './UserEntityService.js';
 import type { DriveFileEntityService } from './DriveFileEntityService.js';
+
+type NoteVisibilityUser = Pick<Packed<'UserLite'>, 'host' | 'requireSigninToViewContents' | 'makeNotesHiddenBefore' | 'makeNotesFollowersOnlyBefore'>;
+type CurrentFollowings = Map<MiUser['id'], Promise<boolean>>;
 
 // is-renote.tsとよしなにリンク
 function isPureRenote(note: MiNote): note is MiNote & { renoteId: MiNote['id']; renote: MiNote } {
@@ -128,71 +131,62 @@ export class NoteEntityService implements OnModuleInit {
 	}
 
 	@bindThis
-	private treatVisibility(packedNote: Packed<'Note'>): Packed<'Note'>['visibility'] {
-		if (packedNote.visibility === 'public' || packedNote.visibility === 'home') {
-			const followersOnlyBefore = packedNote.user.makeNotesFollowersOnlyBefore;
-			if (shouldHideNoteByTime(followersOnlyBefore, packedNote.createdAt)) {
-				packedNote.visibility = 'followers';
-			}
+	private getEffectiveVisibility(visibility: MiNote['visibility'], followersOnlyBefore: number | null | undefined, createdAt: string | Date): MiNote['visibility'] {
+		if ((visibility === 'public' || visibility === 'home') && shouldHideNoteByTime(followersOnlyBefore, createdAt)) {
+			return 'followers';
 		}
-		return packedNote.visibility;
+		return visibility;
 	}
 
 	@bindThis
 	public async shouldHideNote(packedNote: Packed<'Note'>, meId: MiUser['id'] | null): Promise<boolean> {
-		if (meId === packedNote.userId) return false;
-		// TODO: isVisibleForMe を使うようにしても良さそう(型違うけど)
+		return this.shouldHideNoteContent(packedNote, packedNote.user, packedNote.createdAt, packedNote.reply?.userId, meId);
+	}
 
-		// TODO: ugcVisibilityForVisitor が local の場合も、付随するリモートのノートをリンクだけ残して内容を隠せるようにする
+	private async shouldHideNoteContent(
+		note: Pick<Packed<'Note'>, 'userId' | 'visibility' | 'visibleUserIds' | 'mentions'>,
+		author: NoteVisibilityUser,
+		createdAt: string | Date,
+		replyUserId: MiUser['id'] | null | undefined,
+		meId: MiUser['id'] | null,
+		currentFollowings?: CurrentFollowings,
+	): Promise<boolean> {
+		if (meId === note.userId) return false;
 		if (meId == null && this.meta.ugcVisibilityForVisitor === 'none') return true;
+		if (this.shouldHideRemoteNoteForVisitor(author.host, meId)) return true;
 
-		if (packedNote.user.requireSigninToViewContents && meId == null) {
-			return true;
+		if (author.requireSigninToViewContents && meId == null) return true;
+		if (shouldHideNoteByTime(author.makeNotesHiddenBefore, createdAt)) return true;
+
+		const visibility = this.getEffectiveVisibility(note.visibility, author.makeNotesFollowersOnlyBefore, createdAt);
+		if (visibility === 'specified') {
+			return meId == null || !note.visibleUserIds?.includes(meId);
 		}
 
-		const hiddenBefore = packedNote.user.makeNotesHiddenBefore;
-		if (shouldHideNoteByTime(hiddenBefore, packedNote.createdAt)) {
-			return true;
-		}
-
-		// visibility が specified かつ自分が指定されていなかったら非表示
-		if (packedNote.visibility === 'specified') {
-			if (meId == null) {
-				return true;
-			} else {
-				// 指定されているかどうか
-				const specified = packedNote.visibleUserIds!.some(id => meId === id);
-
-				if (!specified) {
-					return true;
+		if (visibility === 'followers') {
+			if (meId == null) return true;
+			if (meId === replyUserId || note.mentions?.includes(meId)) return false;
+			if (currentFollowings != null) {
+				let following = currentFollowings.get(note.userId);
+				if (following == null) {
+					following = this.followingsRepository.existsBy({ followerId: meId, followeeId: note.userId });
+					currentFollowings.set(note.userId, following);
 				}
+				return !(await following);
 			}
-		}
-
-		// visibility が followers かつ自分が投稿者のフォロワーでなかったら非表示
-		if (packedNote.visibility === 'followers') {
-			if (meId == null) {
-				return true;
-			} else if (packedNote.reply && (meId === packedNote.reply.userId)) {
-				// 自分の投稿に対するリプライ
-				return false;
-			} else if (packedNote.mentions && packedNote.mentions.some(id => meId === id)) {
-				// 自分へのメンション
-				return false;
-			} else {
-				// フォロワーかどうか
-				const followings = await this.cacheService.userFollowingsCache.fetch(meId);
-				if (!Object.hasOwn(followings, packedNote.userId)) {
-					return true;
-				}
-			}
+			const followings = await this.cacheService.userFollowingsCache.fetch(meId);
+			return !Object.hasOwn(followings, note.userId);
 		}
 
 		return false;
 	}
 
+	private shouldHideRemoteNoteForVisitor(host: MiUser['host'], meId: MiUser['id'] | null): boolean {
+		return meId == null && this.meta.ugcVisibilityForVisitor === 'local' && host != null;
+	}
+
 	@bindThis
-	public hideNote(packedNote: Packed<'Note'>): void {
+	public hideNote(packedNote: Packed<'Note'>, meId?: MiUser['id'] | null): void {
 		packedNote.visibleUserIds = undefined;
 		packedNote.fileIds = [];
 		packedNote.files = [];
@@ -201,6 +195,18 @@ export class NoteEntityService implements OnModuleInit {
 		packedNote.event = undefined;
 		packedNote.cw = null;
 		packedNote.isHidden = true;
+		if (meId === null && this.shouldHideRemoteNoteForVisitor(packedNote.user.host, meId)) {
+			packedNote.tags = undefined;
+			packedNote.mentions = undefined;
+			packedNote.emojis = undefined;
+			packedNote.reactions = {};
+			packedNote.reactionCount = 0;
+			packedNote.reactionEmojis = {};
+			packedNote.reactionAndUserPairCache = undefined;
+			packedNote.myReaction = undefined;
+			packedNote.reply = undefined;
+			packedNote.renote = undefined;
+		}
 		// TODO: hiddenReason みたいなのを提供しても良さそう
 	}
 
@@ -402,13 +408,16 @@ export class NoteEntityService implements OnModuleInit {
 			detail?: boolean;
 			skipHide?: boolean;
 			withReactionAndUserPairCache?: boolean;
+			_forceHide?: boolean;
 			/** 내부용: 답글 대상으로 포장되는 노트. 이 노트의 reply/renote는 detail: false로 포장한다. */
 			_asReplyTarget?: boolean;
+			_remainingRenoteDepth?: number;
 			_hint_?: {
 				bufferedReactions: Map<MiNote['id'], { deltas: Record<string, number>; pairs: ([MiUser['id'], string])[] }> | null;
 				myReactions: Map<MiNote['id'], string | null>;
 				packedFiles: Map<MiNote['fileIds'][number], Packed<'DriveFile'> | null>;
-				packedUsers: Map<MiUser['id'], Packed<'UserLite'>>
+				packedUsers: Map<MiUser['id'], Packed<'UserLite'>>;
+				currentFollowings?: CurrentFollowings;
 			};
 		},
 	): Promise<Packed<'Note'>> {
@@ -420,17 +429,52 @@ export class NoteEntityService implements OnModuleInit {
 
 		const meId = me ? me.id : null;
 		const note = typeof src === 'object' ? src : await this.noteLoader.load(src);
+		const createdAt = this.idService.parse(note.id).date.toISOString();
+		const currentFollowings = opts._hint_?.currentFollowings;
+		let user = opts._hint_?.packedUsers.get(note.userId);
+		if (!opts.skipHide && (currentFollowings != null || opts._forceHide)) {
+			user ??= await this.userEntityService.pack(note.user ?? note.userId, me);
+			if (opts._forceHide || await this.shouldHideNoteContent(note, user, createdAt, note.replyUserId, meId, currentFollowings)) {
+				return {
+					id: note.id,
+					createdAt,
+					userId: note.userId,
+					user,
+					text: null,
+					cw: null,
+					isHidden: true,
+					visibility: this.getEffectiveVisibility(note.visibility, user.makeNotesFollowersOnlyBefore, createdAt),
+					fileIds: [],
+					files: [],
+					reactionAcceptance: null,
+					reactions: {},
+					reactionEmojis: {},
+					reactionCount: 0,
+					renoteCount: 0,
+					repliesCount: 0,
+					hasDeliveryTargets: false,
+				};
+			}
+		}
+		// 화면에 표시하는 노트에서 인용과 그 인용의 미리보기까지 포함한다.
+		// 순수 리노트는 리노트 원문이 화면에 표시하는 노트다.
+		const remainingRenoteDepth = opts._remainingRenoteDepth
+			?? (isRenote(note) && !isQuote(note) && !note.hasEvent ? 3 : 2);
 		const host = note.userHost;
+		const hideRemoteContent = !opts.skipHide && this.shouldHideRemoteNoteForVisitor(host, meId);
 		const iAmModerator = me ? await this.roleService.isModerator(me as MiUser) : false;
 
-		const bufferedReactions = opts._hint_?.bufferedReactions != null
-			? (opts._hint_.bufferedReactions.get(note.id) ?? { deltas: {}, pairs: [] })
-			: this.meta.enableReactionsBuffering
-				? await this.reactionsBufferingService.get(note.id)
-				: { deltas: {}, pairs: [] };
-		const reactions = this.reactionService.convertLegacyReactions(this.reactionsBufferingService.mergeReactions(note.reactions, bufferedReactions.deltas ?? {}));
+		const bufferedReactions = hideRemoteContent
+			? null
+			: opts._hint_?.bufferedReactions?.get(note.id)
+				?? (opts._hint_?.bufferedReactions == null && this.meta.enableReactionsBuffering
+					? await this.reactionsBufferingService.get(note.id)
+					: null);
+		const reactions = hideRemoteContent
+			? {}
+			: this.reactionService.convertLegacyReactions(this.reactionsBufferingService.mergeReactions(note.reactions, bufferedReactions?.deltas ?? {}));
 
-		const reactionAndUserPairCache = note.reactionAndUserPairCache.concat(bufferedReactions.pairs.map(x => x.join('/')));
+		const reactionAndUserPairCache = hideRemoteContent ? [] : note.reactionAndUserPairCache.concat(bufferedReactions?.pairs.map(x => x.join('/')) ?? []);
 
 		let text = note.text;
 
@@ -447,18 +491,17 @@ export class NoteEntityService implements OnModuleInit {
 		const reactionEmojiNames = Object.keys(reactions)
 			.filter(x => x.startsWith(':') && x.includes('@') && !x.includes('@.')) // リモートカスタム絵文字のみ
 			.map(x => this.reactionService.decodeReaction(x).reaction.replaceAll(':', ''));
-		await this.customEmojiService.prefetchEmojis(this.aggregateNoteEmojis([note]));
+		if (!hideRemoteContent) await this.customEmojiService.prefetchEmojis(this.aggregateNoteEmojis([note]));
 		const packedFiles = options?._hint_?.packedFiles;
-		const packedUsers = options?._hint_?.packedUsers;
 
 		const packed: Packed<'Note'> = await awaitAll({
 			id: note.id,
-			createdAt: this.idService.parse(note.id).date.toISOString(),
+			createdAt,
 			updatedAt: note.updatedAt ? note.updatedAt.toISOString() : undefined,
 			updatedAtHistory: note.updatedAtHistory ? note.updatedAtHistory.map(x => x.toISOString()) : undefined,
 			deleteAt: note.deleteAt ? note.deleteAt.toISOString() : undefined,
 			userId: note.userId,
-			user: packedUsers?.get(note.userId) ?? this.userEntityService.pack(note.user ?? note.userId, me),
+			user: user ?? this.userEntityService.pack(note.user ?? note.userId, me),
 			text: text,
 			cw: note.cw,
 			visibility: note.visibility,
@@ -470,12 +513,12 @@ export class NoteEntityService implements OnModuleInit {
 			repliesCount: note.repliesCount,
 			reactionCount: Object.values(reactions).reduce((a, b) => a + b, 0),
 			reactions: reactions,
-			reactionEmojis: this.customEmojiService.populateEmojis(reactionEmojiNames, host),
+			reactionEmojis: hideRemoteContent ? {} : this.customEmojiService.populateEmojis(reactionEmojiNames, host),
 			reactionAndUserPairCache: opts.withReactionAndUserPairCache ? reactionAndUserPairCache : undefined,
-			emojis: host != null ? this.customEmojiService.populateEmojis(note.emojis, host) : undefined,
+			emojis: host != null && !hideRemoteContent ? this.customEmojiService.populateEmojis(note.emojis, host) : undefined,
 			tags: note.tags.length > 0 ? note.tags : undefined,
 			fileIds: note.fileIds,
-			files: packedFiles != null ? this.packAttachedFiles(note.fileIds, packedFiles) : this.driveFileEntityService.packManyByIds(note.fileIds),
+			files: hideRemoteContent ? [] : packedFiles != null ? this.packAttachedFiles(note.fileIds, packedFiles) : this.driveFileEntityService.packManyByIds(note.fileIds),
 			replyId: note.replyId,
 			renoteId: note.renoteId,
 			channelId: note.channelId ?? undefined,
@@ -508,7 +551,7 @@ export class NoteEntityService implements OnModuleInit {
 				})() : undefined,
 			} : {}),
 
-			...(opts.detail ? {
+			...(opts.detail && !hideRemoteContent ? {
 				clippedCount: note.clippedCount,
 
 				// そもそもJOINしていない場合はundefined、JOINしたけど存在していなかった場合はnullで区別される
@@ -518,14 +561,16 @@ export class NoteEntityService implements OnModuleInit {
 					// 답글 대상 노트의 reply/renote는 detail: false로 포장해서 포장 수가 사슬 길이에 비례하게 한다.
 					detail: !opts._asReplyTarget,
 					_asReplyTarget: !opts._asReplyTarget,
+					_remainingRenoteDepth: remainingRenoteDepth,
 					skipHide: opts.skipHide,
 					withReactionAndUserPairCache: opts.withReactionAndUserPairCache,
 					_hint_: options?._hint_,
 				})) : undefined,
 
 				// そもそもJOINしていない場合はundefined、JOINしたけど存在していなかった場合はnullで区別される
-				renote: (note.renoteId && note.renote === null) ? null : note.renoteId ? nullIfEntityNotFound(this.pack(note.renote ?? note.renoteId, me, {
+				renote: note.renoteId && remainingRenoteDepth > 0 ? note.renote === null ? null : nullIfEntityNotFound(this.pack(note.renote ?? note.renoteId, me, {
 					detail: !opts._asReplyTarget,
+					_remainingRenoteDepth: remainingRenoteDepth - 1,
 					skipHide: opts.skipHide,
 					withReactionAndUserPairCache: opts.withReactionAndUserPairCache,
 					_hint_: options?._hint_,
@@ -544,10 +589,10 @@ export class NoteEntityService implements OnModuleInit {
 			} : {}),
 		});
 
-		this.treatVisibility(packed);
+		packed.visibility = this.getEffectiveVisibility(packed.visibility, packed.user.makeNotesFollowersOnlyBefore, packed.createdAt);
 
-		if (!opts.skipHide && (await this.shouldHideNote(packed, meId))) {
-			this.hideNote(packed);
+		if (!opts.skipHide && currentFollowings == null && (await this.shouldHideNote(packed, meId))) {
+			this.hideNote(packed, meId);
 		}
 
 		return packed;
@@ -560,6 +605,8 @@ export class NoteEntityService implements OnModuleInit {
 		options?: {
 			detail?: boolean;
 			skipHide?: boolean;
+			useCurrentFollowings?: boolean;
+			hiddenNoteIds?: ReadonlySet<MiNote['id']>;
 		},
 	) {
 		if (notes.length === 0) return [];
@@ -633,14 +680,18 @@ export class NoteEntityService implements OnModuleInit {
 		];
 		const packedUsers = await this.userEntityService.packMany(users, me)
 			.then(users => new Map(users.map(u => [u.id, u])));
+		const { useCurrentFollowings, hiddenNoteIds, ...packOptions } = options ?? {};
+		const currentFollowings: CurrentFollowings | undefined = useCurrentFollowings ? new Map() : undefined;
 
 		return await Promise.all(notes.map(n => this.pack(n, me, {
-			...options,
+			...packOptions,
+			_forceHide: hiddenNoteIds?.has(n.id),
 			_hint_: {
 				bufferedReactions,
 				myReactions: myReactionsMap,
 				packedFiles,
 				packedUsers,
+				currentFollowings,
 			},
 		})));
 	}
@@ -684,7 +735,6 @@ export class NoteEntityService implements OnModuleInit {
 	@bindThis
 	public async fetchDiffs(noteIds: MiNote['id'][], meId: MiUser['id'] | null = null) {
 		if (noteIds.length === 0) return [];
-		// TODO: ugcVisibilityForVisitor が local の場合の扱いを shouldHideNote と揃える
 		if (meId == null && this.meta.ugcVisibilityForVisitor === 'none') return [];
 
 		const fetched = await this.notesRepository.find({
@@ -713,7 +763,10 @@ export class NoteEntityService implements OnModuleInit {
 
 		const bufferedReactionsMap = this.meta.enableReactionsBuffering ? await this.reactionsBufferingService.getMany(noteIds) : null;
 
-		const packings = notes.map(note => {
+		const packings = notes.map(async note => {
+			if (this.shouldHideRemoteNoteForVisitor(note.userHost, meId)) {
+				return { id: note.id, reactions: {}, reactionEmojis: {} };
+			}
 			const bufferedReactions = bufferedReactionsMap?.get(note.id);
 			//const reactionAndUserPairCache = note.reactionAndUserPairCache.concat(bufferedReactions.pairs.map(x => x.join('/')));
 
@@ -723,11 +776,11 @@ export class NoteEntityService implements OnModuleInit {
 				.filter(x => x.startsWith(':') && x.includes('@') && !x.includes('@.')) // リモートカスタム絵文字のみ
 				.map(x => this.reactionService.decodeReaction(x).reaction.replaceAll(':', ''));
 
-			return this.customEmojiService.populateEmojis(reactionEmojiNames, note.userHost).then(reactionEmojis => ({
+			return {
 				id: note.id,
 				reactions,
-				reactionEmojis,
-			}));
+				reactionEmojis: await this.customEmojiService.populateEmojis(reactionEmojiNames, note.userHost),
+			};
 		});
 
 		return await Promise.all(packings);

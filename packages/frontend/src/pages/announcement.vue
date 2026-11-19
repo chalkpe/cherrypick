@@ -53,6 +53,7 @@ import MkButton from '@/components/MkButton.vue';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { definePage } from '@/page.js';
 import { $i } from '@/i.js';
 import { prefer } from '@/preferences.js';
@@ -82,7 +83,7 @@ async function read(target: Misskey.entities.Announcement): Promise<void> {
 		const confirm = await os.confirm({
 			type: 'question',
 			title: i18n.ts._announcement.readConfirmTitle,
-			text: i18n.tsx._announcement.readConfirmText({ title: target.title }),
+			text: i18n.tsx._announcement.readConfirmText({ title: mfmPlain(target.title) }),
 		});
 		if (confirm.canceled) return;
 	}

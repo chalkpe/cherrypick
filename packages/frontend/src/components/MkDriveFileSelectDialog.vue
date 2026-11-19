@@ -19,7 +19,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		{{ multiple ? i18n.ts.selectFiles : i18n.ts.selectFile }}
 		<span v-if="selected.length > 0" style="margin-left: 8px; opacity: 0.5;">({{ selected.length }})</span>
 	</template>
-	<MkDrive :multiple="multiple" select="file" :initialFolder="initialFolder" :excludeSensitive="excludeSensitive" @changeSelectedFiles="onChangeSelection"/>
+	<MkDrive :multiple="multiple" select="file" :initialFolder="initialFolder" :excludeSensitive="excludeSensitive" :token="token" @changeSelectedFiles="onChangeSelection"/>
 </MkModalWindow>
 </template>
 
@@ -34,6 +34,7 @@ withDefaults(defineProps<{
 	initialFolder?: Misskey.entities.DriveFolder['id'] | null;
 	multiple?: boolean;
 	excludeSensitive?: boolean;
+	token?: string;
 }>(), {
 	multiple: false,
 	excludeSensitive: false,

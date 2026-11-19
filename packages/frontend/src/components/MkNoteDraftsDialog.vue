@@ -15,7 +15,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	@esc="cancel()"
 >
 	<template #header>
-		{{ i18n.ts.draftsAndScheduledNotes }} ({{ currentDraftsCount }}/{{ $i?.policies.noteDraftLimit }})
+		{{ i18n.ts.draftsAndScheduledNotes }} ({{ currentDraftsCount }}/{{ noteDraftLimit ?? $i?.policies.noteDraftLimit }})
 	</template>
 
 	<MkStickyContainer>
@@ -176,6 +176,8 @@ import MkInfo from '@/components/MkInfo.vue';
 
 const props = defineProps<{
 	scheduled?: boolean;
+	token?: string;
+	noteDraftLimit?: number;
 }>();
 
 const emit = defineEmits<{
@@ -188,6 +190,7 @@ const tab = ref<'drafts' | 'scheduled'>(props.scheduled ? 'scheduled' : 'drafts'
 
 const draftsPaginator = markRaw(new Paginator('notes/drafts/list', {
 	limit: 10,
+	token: props.token,
 	params: {
 		scheduled: false,
 	},
@@ -195,13 +198,14 @@ const draftsPaginator = markRaw(new Paginator('notes/drafts/list', {
 
 const scheduledPaginator = markRaw(new Paginator('notes/drafts/list', {
 	limit: 10,
+	token: props.token,
 	params: {
 		scheduled: true,
 	},
 }));
 
 const currentDraftsCount = ref(0);
-misskeyApi('notes/drafts/count').then((count) => {
+misskeyApi('notes/drafts/count', {}, props.token).then((count) => {
 	currentDraftsCount.value = count;
 });
 
@@ -225,7 +229,7 @@ async function deleteDraft(draft: Misskey.entities.NoteDraft) {
 
 	if (canceled) return;
 
-	os.apiWithDialog('notes/drafts/delete', { draftId: draft.id }).then(() => {
+	os.apiWithDialog('notes/drafts/delete', { draftId: draft.id }, props.token).then(() => {
 		draftsPaginator.reload();
 	});
 }
@@ -235,7 +239,7 @@ async function cancelSchedule(draft: Misskey.entities.NoteDraft) {
 		draftId: draft.id,
 		isActuallyScheduled: false,
 		scheduledAt: null,
-	}).then(() => {
+	}, props.token).then(() => {
 		scheduledPaginator.reload();
 	});
 }

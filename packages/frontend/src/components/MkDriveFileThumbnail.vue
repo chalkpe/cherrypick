@@ -14,7 +14,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<MkImgWithBlurhash
 		v-if="isThumbnailAvailable && prefer.s.enableHighQualityImagePlaceholders"
 		:hash="file.blurhash"
-		:src="url"
+		:src="forceBlurhash ? null : url"
 		:alt="file.comment"
 		:title="file.name"
 		:class="$style.thumbnail"
@@ -26,7 +26,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		@touchend="prefer.s.showingAnimatedImages === 'interaction' ? playAnimation = false : ''"
 	/>
 	<img
-		v-else-if="isThumbnailAvailable && file.thumbnailUrl != null"
+		v-else-if="!forceBlurhash && isThumbnailAvailable && file.thumbnailUrl != null"
 		:src="url ?? undefined"
 		:alt="file.name"
 		:title="file.name"

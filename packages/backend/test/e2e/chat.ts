@@ -6,12 +6,14 @@
 process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
-import { afterAll, beforeAll, describe, test } from 'vitest';
+import { once } from 'node:events';
+import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { WebSocket } from 'ws';
 import { ChatMessageAccessError, ChatService } from '@/core/ChatService.js';
 import { MiChatMessage } from '@/models/ChatMessage.js';
 import { MiChatApproval } from '@/models/ChatApproval.js';
 import { MiUser } from '@/models/User.js';
-import { api, createAppToken, failedApiCall, initTestDb, signup } from '../utils.js';
+import { api, connectStream, createAppToken, failedApiCall, initTestDb, port, role, signup } from '../utils.js';
 import { waitForChatNotificationTurn } from '../misc/chat-notification-drain.js';
 import type * as misskey from 'cherrypick-js';
 
@@ -95,6 +97,131 @@ describe('chat/messages/update', () => {
 		assert.strictEqual((await api('chat/rooms/members', { roomId }, { token: readWrite })).status, 200);
 		assert.strictEqual((await api('chat/rooms/members', { roomId }, { token: nonmember })).status, 400);
 	});
+
+	test.each(['available', 'readonly', 'unavailable'])('chat subscriptions follow the %s role policy', async availability => {
+		const reader = await signup({ username: `stream${availability}` });
+		const created = await api('chat/rooms/create', { name: 'Stream permissions' }, reader);
+		assert.strictEqual(created.status, 200);
+		const roomId = created.body.id;
+		const chatRole = await role(alice, { name: `Chat ${availability}` }, {
+			chatAvailability: { priority: 2, useDefault: false, value: availability },
+		});
+		assert.strictEqual((await api('admin/roles/assign', { roleId: chatRole.id, userId: reader.id }, alice)).status, 204);
+		const expected = availability === 'unavailable' ? ['main'] : ['chatRoom', 'chatUser', 'main'];
+		const appToken = await createAppToken(reader, ['read:account', 'read:chat']);
+
+		for (const token of [reader.token, appToken]) {
+			const socket = new WebSocket(`ws://127.0.0.1:${port}/streaming`, { headers: { Authorization: `Bearer ${token}` } });
+			try {
+				const connected: string[] = [];
+				socket.on('message', data => {
+					const msg = JSON.parse(data.toString());
+					if (msg.type === 'connected') connected.push(msg.body.id);
+				});
+				await once(socket, 'open');
+				for (const [channel, params] of [
+					['chatRoom', { roomId }],
+					['chatUser', { otherId: bob.id }],
+					['main', {}],
+				] as const) {
+					socket.send(JSON.stringify({ type: 'connect', body: { channel, id: channel, params, pong: true } }));
+				}
+				// 연결 요청은 순서대로 처리되므로 main 응답이 앞의 두 요청이 끝났음을 보장한다.
+				await expect.poll(() => connected.includes('main')).toBe(true);
+				expect(connected).toEqual(expected);
+			} finally {
+				socket.close();
+			}
+		}
+	});
+
+	test('an open room subscription follows later chat role changes', async () => {
+		const reader = await signup({ username: 'streamrolechange' });
+		const created = await api('chat/rooms/create', { name: 'Room stream' }, alice);
+		assert.strictEqual(created.status, 200);
+		const roomId = created.body.id;
+		assert.strictEqual((await api('chat/rooms/invitations/create', { roomId, userId: reader.id }, alice)).status, 200);
+		assert.strictEqual((await api('chat/rooms/join', { roomId }, reader)).status, 204);
+		const readonlyRole = await role(alice, { name: 'Read-only chat' }, {
+			chatAvailability: { priority: 1, useDefault: false, value: 'readonly' },
+		});
+		const unavailableRole = await role(alice, { name: 'Chat unavailable' }, {
+			chatAvailability: { priority: 2, useDefault: false, value: 'unavailable' },
+		});
+		const received: string[] = [];
+		const sent: string[] = [];
+		const stream = await connectStream(reader, 'chatRoom', event => {
+			if (event.type === 'message') received.push(event.body.id);
+		}, { roomId });
+		const senderStream = await connectStream(alice, 'chatRoom', event => {
+			if (event.type === 'message') sent.push(event.body.id);
+		}, { roomId });
+		try {
+			assert.strictEqual((await api('admin/roles/assign', { roleId: readonlyRole.id, userId: reader.id }, alice)).status, 204);
+			const first = await api('chat/messages/create-to-room', { toRoomId: roomId, text: 'First' }, alice);
+			assert.strictEqual(first.status, 200);
+			await expect.poll(() => received).toEqual([first.body.id]);
+
+			assert.strictEqual((await api('admin/roles/assign', { roleId: unavailableRole.id, userId: reader.id }, alice)).status, 204);
+			await expect.poll(async () => (await api('chat/messages/room-timeline', { roomId }, reader)).status).toBe(403);
+			const second = await api('chat/messages/create-to-room', { toRoomId: roomId, text: 'Second' }, alice);
+			assert.strictEqual(second.status, 200);
+			await expect.poll(() => sent).toEqual([first.body.id, second.body.id]);
+			await waitForChatNotificationTurn();
+			expect(received).toEqual([first.body.id]);
+
+			assert.strictEqual((await api('admin/roles/unassign', { roleId: unavailableRole.id, userId: reader.id }, alice)).status, 204);
+			await expect.poll(async () => (await api('chat/messages/room-timeline', { roomId }, reader)).status).toBe(200);
+			const third = await api('chat/messages/create-to-room', { toRoomId: roomId, text: 'Third' }, alice);
+			assert.strictEqual(third.status, 200);
+			await expect.poll(() => received).toEqual([first.body.id, third.body.id]);
+		} finally {
+			stream.close();
+			senderStream.close();
+		}
+	}, 30_000);
+
+	test('an open direct chat subscription resumes after its read role is restored', async () => {
+		const reader = await signup({ username: 'directrolechange' });
+		assert.strictEqual((await api('i/update', { chatScope: 'everyone' }, reader)).status, 200);
+		const unavailable = await role(alice, { name: 'Chat unavailable' }, {
+			chatAvailability: { priority: 2, useDefault: false, value: 'unavailable' },
+		});
+		const received: [string, string][] = [];
+		const stream = await connectStream(reader, 'chatUser', event => {
+			if (event.type === 'message') received.push(['message', event.body.id]);
+			if (event.type === 'updated') received.push(['updated', event.body.messageId]);
+			if (event.type === 'deleted') received.push(['deleted', event.body]);
+		}, { otherId: alice.id });
+		try {
+			const first = await api('chat/messages/create-to-user', { toUserId: reader.id, text: 'First' }, alice);
+			assert.strictEqual(first.status, 200);
+			await expect.poll(() => received).toEqual([['message', first.body.id]]);
+
+			const assignment = { roleId: unavailable.id, userId: reader.id };
+			const timeline = () => api('chat/messages/user-timeline', { userId: alice.id }, reader);
+			assert.strictEqual((await api('admin/roles/assign', assignment, alice)).status, 204);
+			await expect.poll(async () => (await timeline()).status).toBe(403);
+			assert.strictEqual((await api('chat/messages/delete', { messageId: first.body.id }, alice)).status, 204);
+			await waitForChatNotificationTurn();
+			expect(received).toEqual([['message', first.body.id]]);
+
+			assert.strictEqual((await api('admin/roles/unassign', assignment, alice)).status, 204);
+			await expect.poll(async () => (await timeline()).status).toBe(200);
+			const second = await api('chat/messages/create-to-user', { toUserId: reader.id, text: 'Second' }, alice);
+			assert.strictEqual(second.status, 200);
+			assert.strictEqual((await api('chat/messages/update', { messageId: second.body.id, text: 'Visible edit' }, alice)).status, 200);
+			assert.strictEqual((await api('chat/messages/delete', { messageId: second.body.id }, alice)).status, 204);
+			await expect.poll(() => received).toEqual([
+				['message', first.body.id],
+				['message', second.body.id],
+				['updated', second.body.id],
+				['deleted', second.body.id],
+			]);
+		} finally {
+			stream.close();
+		}
+	}, 30_000);
 
 	test('does not reveal a message owned by another user', async () => {
 		const created = await api('chat/messages/create-to-user', { toUserId: bob.id, text: 'hello' }, alice);

@@ -5,6 +5,7 @@
 
 //import bcrypt from 'bcryptjs';
 import { Inject, Injectable } from '@nestjs/common';
+import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import type { UserSecurityKeysRepository } from '@/models/_.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
@@ -16,6 +17,11 @@ export const meta = {
 	requireCredential: true,
 
 	secure: true,
+
+	limit: {
+		duration: ms('1hour'),
+		max: 30,
+	},
 
 	errors: {
 		noSuchKey: {

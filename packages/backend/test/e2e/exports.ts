@@ -7,7 +7,7 @@ process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
 import { afterAll, beforeAll, beforeEach, describe, test } from 'vitest';
-import { api, origin, port, post, signup, startJobQueue } from '../utils.js';
+import { api, origin, port, post, signup, startJobQueue, uploadFile } from '../utils.js';
 import type { INestApplicationContext } from '@nestjs/common';
 import type * as misskey from 'cherrypick-js';
 
@@ -195,7 +195,7 @@ describe('export-clips', () => {
 		assert.strictEqual(exported[1].clipNotes[0].note.text, 'baz2');
 	});
 
-	test('Clipping other user\'s note (followers only notes are excluded when not following)', async () => {
+	test('excludes previously clipped followers-only notes after unfollowing', async () => {
 		const res = await api('clips/create', {
 			name: 'kawaii',
 			description: 'kawaii',
@@ -208,17 +208,82 @@ describe('export-clips', () => {
 			visibility: 'followers',
 		});
 
+		assert.strictEqual((await api('following/create', { userId: bob.id }, alice)).status, 200);
 		const res2 = await api('clips/add-note', {
 			clipId: clip.id,
 			noteId: note.id,
 		}, alice);
 		assert.strictEqual(res2.status, 204);
+		assert.strictEqual((await api('following/delete', { userId: bob.id }, alice)).status, 200);
 
 		const res3 = await api('i/export-clips', {}, alice);
 		assert.strictEqual(res3.status, 204);
 
 		const exported = await pollFirstDriveFile();
 		assert.strictEqual(exported[0].clipNotes.length, 0);
+	});
+
+	test('uses the current age-based visibility rules when exporting notes', async () => {
+		const writer = await signup({ username: 'clip_writer' });
+		const { body: clip } = await api('clips/create', { name: 'reading list' }, alice);
+		const publicNote = await post(writer, { text: 'public before the setting changed' });
+		const ownNote = await post(alice, { text: 'my own note' });
+
+		try {
+			for (const note of [publicNote, ownNote]) {
+				assert.strictEqual((await api('clips/add-note', { clipId: clip.id, noteId: note.id }, alice)).status, 204);
+			}
+			assert.strictEqual((await api('i/update', { makeNotesFollowersOnlyBefore: 1 + Math.ceil(Date.now() / 1000) }, writer)).status, 200);
+			assert.strictEqual((await api('i/update', { makeNotesHiddenBefore: 1 + Math.ceil(Date.now() / 1000) }, alice)).status, 200);
+
+			assert.strictEqual((await api('i/export-clips', {}, alice)).status, 204);
+
+			const exported = await pollFirstDriveFile();
+			assert.deepStrictEqual(exported[0].clipNotes.map((entry: { note: { id: string } }) => entry.note.id), [ownNote.id]);
+		} finally {
+			await api('clips/delete', { clipId: clip.id }, alice);
+			await api('i/update', { makeNotesHiddenBefore: null }, alice);
+		}
+	});
+
+	test('checks the current follow when adding, listing, and exporting age-restricted notes', async () => {
+		const writer = await signup({ username: 'clip_followed_writer' });
+		const { body: clip } = await api('clips/create', { name: 'followed notes' }, alice);
+		const attachment = await uploadFile(writer);
+		assert.strictEqual(attachment.status, 200);
+		assert.ok(attachment.body);
+		const fileId = attachment.body.id;
+		const cw = 'Saved note warning';
+		const saved = await post(writer, { text: 'Saved first', cw, fileIds: [fileId], localOnly: true });
+		const unsaved = await post(writer, { text: 'Saved later', localOnly: true });
+
+		try {
+			assert.strictEqual((await api('following/create', { userId: writer.id }, alice)).status, 200);
+			assert.strictEqual((await api('i/update', { makeNotesFollowersOnlyBefore: 0 }, writer)).status, 200);
+			assert.strictEqual((await api('clips/add-note', { clipId: clip.id, noteId: saved.id }, alice)).status, 204);
+			const whileFollowing = await api('clips/notes', { clipId: clip.id }, alice);
+			assert.strictEqual(whileFollowing.status, 200);
+			assert.strictEqual(whileFollowing.body[0].text, saved.text);
+			assert.strictEqual(whileFollowing.body[0].cw, cw);
+			assert.deepStrictEqual(whileFollowing.body[0].fileIds, [fileId]);
+			assert.deepStrictEqual(whileFollowing.body[0].files?.map(file => file.id), [fileId]);
+
+			assert.strictEqual((await api('following/delete', { userId: writer.id }, alice)).status, 200);
+			assert.strictEqual((await api('clips/add-note', { clipId: clip.id, noteId: unsaved.id }, alice)).status, 400);
+			const afterUnfollowing = await api('clips/notes', { clipId: clip.id }, alice);
+			assert.strictEqual(afterUnfollowing.status, 200);
+			assert.deepStrictEqual(afterUnfollowing.body.map(note => note.id), [saved.id]);
+			const [hidden] = afterUnfollowing.body;
+			assert.strictEqual(hidden.isHidden, true);
+			assert.strictEqual(hidden.text, null);
+			assert.strictEqual(hidden.cw, null);
+			assert.deepStrictEqual(hidden.fileIds, []);
+			assert.deepStrictEqual(hidden.files, []);
+			assert.strictEqual((await api('i/export-clips', {}, alice)).status, 204);
+			assert.deepStrictEqual((await pollFirstDriveFile())[0].clipNotes, []);
+		} finally {
+			await api('clips/delete', { clipId: clip.id }, alice);
+		}
 	});
 
 	test('Clipping other user\'s note (followers only notes are included when following)', async () => {

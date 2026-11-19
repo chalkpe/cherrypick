@@ -99,6 +99,7 @@ import MkSwitch from '@/components/MkSwitch.vue';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { definePage } from '@/page.js';
 import { useMkSelect } from '@/composables/use-mkselect.js';
 
@@ -177,7 +178,7 @@ function add() {
 function remove(ad: Misskey.entities.Ad) {
 	os.confirm({
 		type: 'warning',
-		text: i18n.tsx.removeAreYouSure({ x: ad.url }),
+		text: i18n.tsx.removeAreYouSure({ x: mfmPlain(ad.url) }),
 	}).then(({ canceled }) => {
 		if (canceled) return;
 		ads.value = ads.value.filter(x => x !== ad);

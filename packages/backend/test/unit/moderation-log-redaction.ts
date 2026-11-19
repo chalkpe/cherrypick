@@ -74,7 +74,7 @@ function createFixture(initial: Record<string, unknown> = {}) {
 		return { stored, packed };
 	}
 
-	return { update, entityService, getMeta: () => current };
+	return { update, entityService, moderationLogService, rows, getMeta: () => current };
 }
 
 function turnFields(side: Record<string, unknown>) {
@@ -209,6 +209,29 @@ describe('moderation logs of server settings keep the Cloudflare TURN key out', 
 	});
 });
 
+describe('system webhook moderation logs', () => {
+	test.each([
+		['createSystemWebhook', { webhook: { name: 'Created', secret: API_TOKEN } }, { webhook: { name: 'Created' } }],
+		['updateSystemWebhook', {
+			before: { name: 'Before', secret: API_TOKEN },
+			after: { name: 'After', secret: NEW_API_TOKEN },
+		}, { before: { name: 'Before' }, after: { name: 'After' } }],
+		['deleteSystemWebhook', { webhook: { name: 'Deleted', secret: API_TOKEN } }, { webhook: { name: 'Deleted' } }],
+	] as const)('%s omits secrets when saving and reading', async (type, snapshots, expected) => {
+		const { moderationLogService, entityService, rows } = createFixture();
+		const info = { systemWebhookId: 'webhook1', ...snapshots };
+		const redacted = { systemWebhookId: 'webhook1', ...expected };
+
+		await moderationLogService.log({ id: 'admin' }, type, info);
+		const stored = rows[0];
+		const packed = await entityService.pack({ ...stored, user: null, info });
+
+		expect(stored.info).toEqual(redacted);
+		expect(packed.info).toEqual(redacted);
+		expect(JSON.stringify(info)).toContain(API_TOKEN);
+	});
+});
+
 describe('searching moderation logs', () => {
 	/** 検索したときに admin/show-moderation-logs が足す条件 (SQL) と、その引数 */
 	async function searchCondition(search: string): Promise<[string, Record<string, string>]> {
@@ -279,6 +302,10 @@ describe('searching moderation logs', () => {
 				['arrayAfter', 'updateServerSettings', { before: { voiceCallCloudflareTurnApiToken: 'needle' }, after: ['needle'] }],
 				['nullAfter', 'updateServerSettings', { before: { voiceCallCloudflareTurnKeyId: 'needle' }, after: null }],
 				['secretOnly', 'updateServerSettings', { before: { voiceCallCloudflareTurnApiToken: 'needle' }, after: { voiceCallCloudflareTurnKeyId: 'needle', name: 'server' } }],
+				['webhookCreated', 'createSystemWebhook', { webhook: { name: 'created', secret: 'needle' } }],
+				['webhookUpdated', 'updateSystemWebhook', { before: { name: 'before', secret: 'needle' }, after: { secret: 'needle' } }],
+				['webhookDeleted', 'deleteSystemWebhook', { webhook: { name: 'deleted', secret: 'needle' } }],
+				['webhookName', 'updateSystemWebhook', { before: null, after: { name: 'needle', secret: 'test' } }],
 				['otherType', 'suspend', ['needle']],
 			];
 			const values = rows.map((_, i) => `($${i * 3 + 1}::varchar, $${i * 3 + 2}::varchar, $${i * 3 + 3}::jsonb)`).join(', ');
@@ -287,7 +314,7 @@ describe('searching moderation logs', () => {
 			const result = await client.query(sql, [...rows.flatMap(([id, type, info]) => [id, type, JSON.stringify(info)]), parameters.search]);
 
 			// オブジェクトの before / after の中の認証情報だけを除いて探す
-			expect(result.rows.map(row => row.id)).toEqual(['arrayAfter', 'arrayBefore', 'arrayInfo', 'otherType', 'scalarInfo', 'stringBefore']);
+			expect(result.rows.map(row => row.id)).toEqual(['arrayAfter', 'arrayBefore', 'arrayInfo', 'otherType', 'scalarInfo', 'stringBefore', 'webhookName']);
 		} finally {
 			await client.end();
 		}

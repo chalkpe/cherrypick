@@ -9,6 +9,7 @@ import * as Misskey from 'cherrypick-js';
 import type { MenuItem } from '@/types/menu.js';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { prefer } from '@/preferences.js';
 import { ensureSignin } from '@/i.js';
 import { userName } from '@/filters/user.js';
@@ -133,7 +134,7 @@ export function useChatRoomVoiceCall(room: MaybeRefOrGetter<Misskey.entities.Cha
 				action: async () => {
 					const { canceled } = await os.confirm({
 						type: 'warning',
-						text: i18n.tsx._voiceCall.kickConfirm({ name: userName(participant.user) }),
+						text: i18n.tsx._voiceCall.kickConfirm({ name: mfmPlain(userName(participant.user)) }),
 					});
 					if (canceled) return;
 					os.apiWithDialog('chat/rooms/voice/kick', { roomId: target.id, userId: participant.user.id });

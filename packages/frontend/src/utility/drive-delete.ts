@@ -8,6 +8,7 @@ import type * as Misskey from 'cherrypick-js';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { prefer } from '@/preferences.js';
 import { globalEvents } from '@/events.js';
 
@@ -59,7 +60,7 @@ export async function deleteDriveItems(input: Selection): Promise<DeleteResult |
 			title: i18n.ts.delete,
 			text: ('fileIds' in input
 				? i18n.tsx._driveDeletion.filesConfirm({ count: plan.totalCount })
-				: i18n.tsx._driveDeletion.folderConfirm({ name: input.name, count: plan.totalCount })) + '\n\n' + i18n.ts._driveDeletion.scope,
+				: i18n.tsx._driveDeletion.folderConfirm({ name: mfmPlain(input.name), count: plan.totalCount })) + '\n\n' + i18n.ts._driveDeletion.scope,
 		});
 		if (canceled) return null;
 		confirmed = true;

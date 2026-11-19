@@ -519,16 +519,16 @@ export type ModerationLogPayloads = {
 	};
 	createSystemWebhook: {
 		systemWebhookId: string;
-		webhook: SystemWebhook;
+		webhook: Omit<SystemWebhook, 'secret'>;
 	};
 	updateSystemWebhook: {
 		systemWebhookId: string;
-		before: SystemWebhook;
-		after: SystemWebhook;
+		before: Omit<SystemWebhook, 'secret'>;
+		after: Omit<SystemWebhook, 'secret'>;
 	};
 	deleteSystemWebhook: {
 		systemWebhookId: string;
-		webhook: SystemWebhook;
+		webhook: Omit<SystemWebhook, 'secret'>;
 	};
 	createAbuseReportNotificationRecipient: {
 		recipientId: string;

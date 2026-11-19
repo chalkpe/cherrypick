@@ -3,12 +3,13 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { DataSource, In, IsNull } from 'typeorm';
 import type { EntityManager } from 'typeorm';
 import * as Redis from 'ioredis';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
+import { MiBlocking } from '@/models/Blocking.js';
 import { MiChatRoom } from '@/models/ChatRoom.js';
 import { MiChatMessage } from '@/models/ChatMessage.js';
 import { MiChatRoomMembership } from '@/models/ChatRoomMembership.js';
@@ -110,6 +111,26 @@ export class ChatRoomNotificationService {
 		return manager.findBy(MiUser, { id: In([room.ownerId, ...memberships.map(member => member.userId)]) });
 	}
 
+	private async recipientsWithoutBlock(userIds: string[], authorId: string | null, manager = this.db.manager): Promise<string[]> {
+		if (authorId == null || userIds.length === 0) return userIds;
+		const blocks = await manager.findBy(MiBlocking, { blockeeId: authorId, blockerId: In(userIds) });
+		const blockers = new Set(blocks.map(block => block.blockerId));
+		return userIds.filter(userId => !blockers.has(userId));
+	}
+
+	public isBlockedByRecipient(userId: string, authorId: string, manager = this.db.manager): Promise<boolean> {
+		return manager.existsBy(MiBlocking, { blockerId: userId, blockeeId: authorId });
+	}
+
+	public async isBlockedByRecipientOnPrimary(userId: string, authorId: string): Promise<boolean> {
+		const runner = this.db.createQueryRunner('master');
+		try {
+			return await this.isBlockedByRecipient(userId, authorId, runner.manager);
+		} finally {
+			await runner.release();
+		}
+	}
+
 	public mentioned(message: Pick<MiChatMessage, 'text' | 'fromUserId'>, members: MiUser[]): string[] {
 		const author = members.find(member => member.id === message.fromUserId);
 		return author == null ? [] : chatMentionedUserIds(message.text ?? '', author, members, this.config.hostname ?? this.config.host);
@@ -148,7 +169,12 @@ export class ChatRoomNotificationService {
 		const channelId = message.toRoomChannelId ?? null;
 		const marker = chatUnreadMarker(message.roomMessageSequence, message.id);
 		const marked: string[] = [];
-		for (const userId of recorded.recipients) {
+		const recipients = await this.recipientsWithoutBlock(recorded.recipients, message.fromUserId).catch(error => {
+			// 글은 이미 저장됐다. 차단을 확인하지 못하면 미읽음 표식만 보류한다.
+			Logger.warn(error, ChatRoomNotificationService.name);
+			return [];
+		});
+		for (const userId of recipients) {
 			const settings = await this.settings(userId, room.id);
 			const level = effectiveChatNotificationLevel(settings.notificationLevel, channelId != null ? settings.channelOverrides[channelId] : null);
 			if (level === 'none') continue;
@@ -167,6 +193,7 @@ export class ChatRoomNotificationService {
 		if (message.toRoomId == null || message.fromUserId === userId || message.deletedAt != null) return false;
 		const room = await manager.findOneBy(MiChatRoom, { id: message.toRoomId });
 		if (room == null || !await this.isMember(userId, room, manager)) return false;
+		if (message.fromUserId != null && await this.isBlockedByRecipient(userId, message.fromUserId, manager)) return false;
 		const settings = await this.settings(userId, room.id, manager);
 		const level = effectiveChatNotificationLevel(settings.notificationLevel, message.toRoomChannelId != null ? settings.channelOverrides[message.toRoomChannelId] : null);
 		if (level === 'none') return false;
@@ -184,27 +211,26 @@ export class ChatRoomNotificationService {
 		if (editRecipients != null && editRecipients.length === 0) return [];
 		const members = await this.participants(room);
 		const mentioned = editRecipients != null ? this.mentioned(message, members) : null;
+		const candidates = members.filter(member => member.host == null && member.id !== message.fromUserId && (editRecipients == null || editRecipients.includes(member.id)));
 		const recipients: string[] = [];
-		for (const member of members) {
-			if (member.host != null || member.id === message.fromUserId) continue;
-			if (editRecipients != null && !editRecipients.includes(member.id)) continue;
-			const settings = await this.settings(member.id, room.id);
+		for (const { id: userId } of candidates) {
+			const settings = await this.settings(userId, room.id);
 			const channelId = message.toRoomChannelId;
 			const level = effectiveChatNotificationLevel(settings.notificationLevel, channelId != null ? settings.channelOverrides[channelId] : null);
 			if (level === 'none') continue;
-			const mentionKey = channelId != null ? this.channelMentionKey(member.id, room.id, channelId) : this.roomMentionKey(member.id, room.id);
+			const mentionKey = channelId != null ? this.channelMentionKey(userId, room.id, channelId) : this.roomMentionKey(userId, room.id);
 			if (editRecipients != null) {
 				// 수정 사이에 멘션이 사라졌으면 알리지 않는다
-				if (!mentioned!.includes(member.id)) continue;
+				if (!mentioned!.includes(userId)) continue;
 				// 멘션 표식이 남아 있어야 아직 읽지 않은 것이다. 표식이 어떤 글을 가리키는지는 묻지 않는다
 				if (await this.redis.get(mentionKey) == null) continue;
 			} else if (level === 'mentions') {
 				if (chatUnreadMarkerMessageId(await this.redis.get(mentionKey)) !== message.id) continue;
 			} else {
-				const messageKey = channelId != null ? this.channelMessageKey(member.id, room.id, channelId) : this.roomMessageKey(member.id, room.id);
+				const messageKey = channelId != null ? this.channelMessageKey(userId, room.id, channelId) : this.roomMessageKey(userId, room.id);
 				if (chatUnreadMarkerMessageId(await this.redis.get(messageKey)) !== message.id) continue;
 			}
-			recipients.push(member.id);
+			recipients.push(userId);
 		}
 		return recipients;
 	}

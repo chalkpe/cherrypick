@@ -57,6 +57,7 @@ import MkFolder from '@/components/MkFolder.vue';
 import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { definePage } from '@/page.js';
 import MkButton from '@/components/MkButton.vue';
 import MkUserCardMini from '@/components/MkUserCardMini.vue';
@@ -95,7 +96,7 @@ function edit() {
 async function del() {
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.deleteAreYouSure({ x: role.name }),
+		text: i18n.tsx.deleteAreYouSure({ x: mfmPlain(role.name) }),
 	});
 	if (canceled) return;
 
@@ -110,7 +111,7 @@ async function assign() {
 	const user = await os.selectUser({ includeSelf: true });
 
 	const { canceled: canceled2, result: period } = await os.select({
-		title: i18n.ts.period + ': ' + role.name,
+		title: i18n.ts.period + ': ' + mfmPlain(role.name),
 		items: [{
 			value: 'indefinitely', label: i18n.ts.indefinitely,
 		}, {

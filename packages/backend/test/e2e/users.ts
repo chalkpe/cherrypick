@@ -8,9 +8,10 @@ process.env.NODE_ENV = 'test';
 import * as assert from 'assert';
 import { beforeAll, beforeEach, describe, test } from 'vitest';
 import { inspect } from 'node:util';
-import { api, post, role, signup, successfulApiCall, uploadFile } from '../utils.js';
+import { api, failedApiCall, initTestDb, origin, post, role, signup, simpleGet, successfulApiCall, uploadFile } from '../utils.js';
 import type * as misskey from 'cherrypick-js';
 import { DEFAULT_POLICIES } from '@/core/RoleService.js';
+import { MiUser } from '@/models/User.js';
 
 describe('ユーザー', () => {
 	// エンティティとしてのユーザーを主眼においたテストを記述する
@@ -626,6 +627,112 @@ describe('ユーザー', () => {
 
 	//#endregion
 	//#region ユーザー情報(users/show)
+
+	test('returns the saved move target in single and bulk profile lookups', async () => {
+		const host = 'example.test';
+		const source = await signup({ username: 'movedsource' });
+		const target = await signup({ username: 'movedtarget', host });
+		const targetUri = `https://${host}/users/${target.username}`;
+		const db = await initTestDb(true);
+		try {
+			const users = db.getRepository(MiUser);
+			await users.update(target.id, { uri: targetUri });
+			await users.update(source.id, { movedToUri: targetUri });
+		} finally {
+			await db.destroy();
+		}
+
+		const visitor = await successfulApiCall({ endpoint: 'users/show', parameters: { username: source.username }, user: undefined });
+		assert.strictEqual(visitor.movedTo, target.id);
+		const bulkVisitor = await successfulApiCall({ endpoint: 'users/show', parameters: { userIds: [source.id] }, user: undefined });
+		assert.strictEqual(bulkVisitor[0].movedTo, target.id);
+		const signedIn = await successfulApiCall({ endpoint: 'users/show', parameters: { userId: source.id }, user: alice });
+		assert.strictEqual(signedIn.movedTo, target.id);
+	});
+
+	test('includes only saved move targets in public profile HTML and federation users', async () => {
+		const host = 'move-source.example.test';
+		const targetHost = 'move-target.example.test';
+		const localSource = await signup({ username: 'localmovesource' });
+		const localMissing = await signup({ username: 'localmovemissing' });
+		const remoteSource = await signup({ username: 'remotemovesource', host });
+		const remoteMissing = await signup({ username: 'remotemovemissing', host });
+		const target = await signup({ username: 'savedmovetarget', host: targetHost });
+		const targetUri = `https://${targetHost}/users/${target.username}`;
+		const missingUri = `${origin}/users/${'0'.repeat(target.id.length)}`;
+		const db = await initTestDb(true);
+		try {
+			const users = db.getRepository(MiUser);
+			await users.update(target.id, { uri: targetUri });
+			await users.update([localSource.id, remoteSource.id], { movedToUri: targetUri });
+			await users.update([localMissing.id, remoteMissing.id], { movedToUri: missingUri });
+		} finally {
+			await db.destroy();
+		}
+
+		for (const [source, movedTo] of [[localSource, target.id], [localMissing, null]] as const) {
+			const html = await simpleGet(`/@${source.username}`, 'text/html');
+			assert.strictEqual(html.status, 200);
+			const { user } = JSON.parse(html.body.querySelector('#cherrypick_clientCtx').textContent);
+			assert.strictEqual(user.id, source.id);
+			assert.strictEqual(user.movedTo, movedTo);
+		}
+
+		const visitor = await successfulApiCall({ endpoint: 'federation/users', parameters: { host }, user: undefined });
+		assert.strictEqual(visitor.find(user => user.id === remoteSource.id)?.movedTo, target.id);
+		assert.strictEqual(visitor.find(user => user.id === remoteMissing.id)?.movedTo, null);
+		const signedIn = await successfulApiCall({ endpoint: 'federation/users', parameters: { host }, user: alice });
+		assert.strictEqual(signedIn.find(user => user.id === remoteSource.id)?.movedTo, target.id);
+	});
+
+	const hiddenFollowingSeries = { total: [], inc: [], dec: [] };
+	const hiddenFollowingChart = {
+		local: { followings: hiddenFollowingSeries, followers: hiddenFollowingSeries },
+		remote: { followings: hiddenFollowingSeries, followers: hiddenFollowingSeries },
+	};
+
+	test('the following chart respects access to a suspended profile', async () => {
+		const parameters = { userId: userSuspended.id, span: 'day', limit: 1 } as const;
+
+		const visitor = await successfulApiCall({ endpoint: 'charts/user/following', parameters, user: undefined });
+		assert.deepStrictEqual(visitor, hiddenFollowingChart);
+
+		const moderator = await successfulApiCall({ endpoint: 'charts/user/following', parameters, user: userModerator });
+		assert.strictEqual(moderator.local.followings.total.length, 1);
+		assert.strictEqual(moderator.remote.followers.total.length, 1);
+	});
+
+	test('the following chart respects local-only visitor access to profiles', async () => {
+		const remote = await signup({ username: 'chartremote', host: 'example.test' });
+		await successfulApiCall({ endpoint: 'admin/update-meta', parameters: { ugcVisibilityForVisitor: 'local' }, user: root });
+
+		const parameters = { userId: remote.id, span: 'day', limit: 1 } as const;
+		const visitor = await successfulApiCall({ endpoint: 'charts/user/following', parameters, user: undefined });
+		assert.deepStrictEqual(visitor, hiddenFollowingChart);
+		const signedIn = await successfulApiCall({ endpoint: 'charts/user/following', parameters, user: alice });
+		assert.strictEqual(signedIn.local.followings.total.length, 1);
+	});
+
+	test('reports credential management permissions for the target account', async () => {
+		const canManage = async (target: typeof alice, moderator: typeof alice) => {
+			const result = await successfulApiCall({ endpoint: 'admin/show-user', parameters: { userId: target.id }, user: moderator });
+			return result.canManageUserCredentials;
+		};
+
+		assert.strictEqual(await canManage(userAdmin, root), false);
+		assert.strictEqual(await canManage(root, root), true);
+		assert.strictEqual(await canManage(userModerator, root), true);
+		assert.strictEqual(await canManage(userModerator, userModerator), true);
+		assert.strictEqual(await canManage(alice, userModerator), true);
+
+		const parameters = { userId: userAdmin.id };
+		await failedApiCall({ endpoint: 'admin/reset-password', parameters, user: root }, {
+			status: 400, code: 'ACCESS_DENIED', id: 'cda8f8ce-89a6-4f92-8055-33bbe0c1464d',
+		});
+		await failedApiCall({ endpoint: 'admin/unset-mfa', parameters, user: root }, {
+			status: 400, code: 'ACCESS_DENIED', id: 'a32093d8-e6f9-4030-855b-dac6580f5f24',
+		});
+	});
 
 	test.each([
 		{ label: 'ID指定で自分自身を', parameters: () => ({ userId: alice.id }), user: () => alice, type: meDetailed },

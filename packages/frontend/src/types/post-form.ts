@@ -3,7 +3,10 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import * as Misskey from 'cherrypick-js';
+import type * as Misskey from 'cherrypick-js';
+import type { PollEditorModelValue } from '@/components/MkPollEditor.vue';
+import type { DeleteScheduleEditorModelValue } from '@/components/MkScheduledNoteDelete.vue';
+import type { DeliveryTargetEditorModelValue } from '@/components/MkDeliveryTargetEditor.vue';
 
 export interface PostFormProps {
 	reply?: Misskey.entities.Note | null;
@@ -28,3 +31,29 @@ export interface PostFormProps {
 	instant?: boolean;
 	updateMode?: boolean;
 }
+
+export type StoredDrafts = {
+	[key: string]: {
+		updatedAt: string;
+		data: {
+			text: string;
+			useCw: boolean;
+			cw: string | null;
+			disableRightClick?: boolean;
+			saveToDraft?: boolean;
+			event?: unknown;
+			scheduledNoteDelete?: DeleteScheduleEditorModelValue | null;
+			deliveryTargets?: DeliveryTargetEditorModelValue | null;
+			visibility: 'public' | 'home' | 'followers' | 'specified';
+			localOnly: boolean;
+			files: Misskey.entities.DriveFile[];
+			attachmentAccountId?: string;
+			postAccountId?: string;
+			poll: PollEditorModelValue | null;
+			visibleUserIds?: string[];
+			quoteId: string | null;
+			reactionAcceptance: 'likeOnly' | 'likeOnlyForRemote' | 'nonSensitiveOnly' | 'nonSensitiveOnlyForLocalLikeOnlyForRemote' | null;
+			scheduledAt: number | null;
+		};
+	};
+};

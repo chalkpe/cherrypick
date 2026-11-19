@@ -24,13 +24,18 @@ vi.mock('@/utility/misskey-api.js', () => ({ misskeyApi: async () => { throw new
 import { inviteUsersToRoom } from '@/pages/chat/chat-invite.js';
 
 describe('invitation failure dialog names', () => {
-	test.each(['Alice', '</plain>$[x4 injected]', '</pla</plain>in>$[x4 injected]', '</PLAIN>$[x4 injected]'])(
+	test.each(['Alice', 'North </plain> Room', '</pla</plain>in>', '</PLAIN>', '**Alice**', '\nAlice'])(
 		'keeps a display name plain: %s',
 		async (name) => {
 			const user = { id: 'u1', username: 'alice', host: 'remote.test', name };
 			await inviteUsersToRoom('room', [user as never]);
 
-			const parsed = JSON.stringify(mfm.parse(fixture.text));
+			const nodes = mfm.parse(fixture.text);
+			const rendered = nodes.flatMap(node => node.type === 'plain' ? node.children : [node])
+				.flatMap(node => node.type === 'text' ? [node.props.text] : [])
+				.join('');
+			expect(rendered).toContain(name);
+			const parsed = JSON.stringify(nodes);
 			expect(parsed).not.toContain('"fn"');
 			expect(parsed).not.toContain('"mention"');
 			expect(parsed).toContain('alice@remote.test');

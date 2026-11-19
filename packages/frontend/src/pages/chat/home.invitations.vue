@@ -22,7 +22,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<div style="flex: 1;" class="_gaps_s">
 					<MkUserName :user="invitation.room.owner"/>
 					<hr>
-					<div><Mfm v-if="invitation.room.description" :text="invitation.room.description" :author="invitation.room.owner"/><template v-else>{{ i18n.ts.noDescription }}</template></div>
+					<div class="_mfmContained"><Mfm v-if="invitation.room.description" :text="invitation.room.description" :containBounce="true" :author="invitation.room.owner"/><template v-else>{{ i18n.ts.noDescription }}</template></div>
 				</div>
 			</div>
 		</MkFolder>

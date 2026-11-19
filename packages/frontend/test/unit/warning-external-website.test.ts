@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { cleanup, fireEvent, render } from '@testing-library/vue';
 
 const state = vi.hoisted(() => ({
 	trustedLinkUrlPatterns: [] as string[],
@@ -29,6 +30,25 @@ vi.mock('@/os.js', () => ({
 }));
 
 import { warningExternalWebsite } from '@/utility/warning-external-website.js';
+import MkRemoteCaution from '@/components/MkRemoteCaution.vue';
+import { i18n } from '@/i18n.js';
+
+afterEach(cleanup);
+
+test.each([['click', 0], ['auxclick', 1]] as const)('the remote profile link can be canceled on %s', async (type, button) => {
+	state.trustedLinkUrlPatterns = [];
+	state.trustedDomains = [];
+	state.popups = 0;
+	const { getByRole } = render(MkRemoteCaution, { props: { href: 'https://remote.example/@account' } });
+	const link = getByRole('link', { name: i18n.ts.showOnRemote });
+
+	const click = new MouseEvent(type, { button, cancelable: true });
+	await fireEvent(link, click);
+
+	expect(click.defaultPrevented).toBe(true);
+	expect(link.getAttribute('target')).toBe('_blank');
+	expect(state.popups).toBe(1);
+});
 
 async function warned(url: string): Promise<boolean> {
 	state.popups = 0;
@@ -84,6 +104,13 @@ describe('外部サイト移動の警告判定', () => {
 		state.trustedLinkUrlPatterns = ['/^https:\\/\\/docs\\.example\\.net\\//', 'wiki.example.net /w/'];
 		expect(await warned('https://docs.example.net/a')).toBe(false);
 		expect(await warned('https://wiki.example.net/w/page')).toBe(false);
+		expect(await warned('https://other.example.net/a')).toBe(true);
+	});
+
+	test('invalid stored expressions leave the remaining trust rules active', async () => {
+		state.trustedLinkUrlPatterns = ['/[/', '/docs/invalid', 'docs.example.net'];
+
+		expect(await warned('https://docs.example.net/a')).toBe(false);
 		expect(await warned('https://other.example.net/a')).toBe(true);
 	});
 });

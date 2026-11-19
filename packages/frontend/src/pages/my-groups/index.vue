@@ -53,6 +53,7 @@ import MkButton from '@/components/MkButton.vue';
 import MkAvatars from '@/components/MkAvatars.vue';
 import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { definePage } from '@/page.js';
 import { Paginator } from '@/utility/paginator.js';
 
@@ -105,7 +106,7 @@ function rejectInvite(invitation: Misskey.Endpoints['i/user-group-invites']['res
 async function leave(group: Misskey.Endpoints['users/groups/joined']['res'][number]) {
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.leaveGroupConfirm({ name: group.name }),
+		text: i18n.tsx.leaveGroupConfirm({ name: mfmPlain(group.name) }),
 	});
 	if (canceled) return;
 	os.apiWithDialog('users/groups/leave', {

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import * as mfm from 'mfc-js';
 import { beforeEach, expect, test, vi } from 'vitest';
 import locales from 'i18n';
 
@@ -30,7 +31,10 @@ test.each(['나무', '숲', 'Quarry'])('the Korean folder confirmation keeps par
 
 	await deleteDriveItems({ folderId: 'root', name });
 
-	const text = vi.mocked(os.confirm).mock.calls[0][0].text;
+	const nodes = mfm.parse(vi.mocked(os.confirm).mock.calls[0][0].text!);
+	const text = nodes.flatMap(node => node.type === 'plain' ? node.children : [node])
+		.flatMap(node => node.type === 'text' ? [node.props.text] : [])
+		.join('');
 	expect(text).not.toContain('”과');
 	expect(text).toContain(`“${name}” 폴더와 모든 하위 폴더(파일 총 3개)를 삭제할까요? 삭제한 폴더와 파일은 복구할 수 없어요.`);
 });

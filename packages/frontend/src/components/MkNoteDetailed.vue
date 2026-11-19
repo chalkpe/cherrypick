@@ -153,7 +153,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 						class="_selectable"
 					/>
 					<a v-if="appearNote.renote != null" :class="$style.rn">RN:</a>
-					<div v-if="prefer.s.showTranslateButtonInNote && (!prefer.s.useAutoTranslate || (!$i?.policies.canUseAutoTranslate || (prefer.s.useAutoTranslate && (appearNote.cw != null || !showContent)))) && instance.translatorAvailable && $i && $i.policies.canUseTranslator && appearNote.text && isForeignLanguage" style="padding: 5px 0; color: var(--MI_THEME-accent);">
+					<div v-if="prefer.s.showTranslateButtonInNote && (!prefer.s.useAutoTranslate || !$i?.policies.canUseAutoTranslate || (appearNote.cw != null || !showContent) || autoTranslationFailed) && instance.translatorAvailable && $i && $i.policies.canUseTranslator && appearNote.text && isForeignLanguage" style="padding: 5px 0; color: var(--MI_THEME-accent);">
 						<button v-if="!(translating || translation)" ref="translateButton" class="_button" @click="translate()">{{ i18n.ts.translateNote }}</button>
 						<button v-else class="_button" @click="translation = null">{{ i18n.ts.close }}</button>
 					</div>
@@ -420,7 +420,8 @@ import { miLocalStorage } from '@/local-storage.js';
 import { deviceKind } from '@/utility/device-kind.js';
 import { haptic, hapticConfirm } from '@/utility/haptic.js';
 import { store } from '@/store.js';
-import detectLanguage from '@/utility/detect-language.js';
+import { isForeignNoteLanguage } from '@/utility/detect-language.js';
+import { translateWithState } from '@/utility/translate-with-state.js';
 import { openExternalUrl } from '@/utility/open-external-url.js';
 import MkInfo from '@/components/MkInfo.vue';
 import MkNoteHistory from '@/components/MkNoteHistory.vue';
@@ -484,6 +485,7 @@ const isDeleted = ref(false);
 const muted = ref($i ? checkWordMute(appearNote, $i, $i.mutedWords) : false);
 const translation = ref<Misskey.entities.NotesTranslateResponse | null>(null);
 const translating = ref(false);
+const autoTranslationFailed = ref(false);
 const parsed = appearNote.text ? parseMfmCached(appearNote.text) : null;
 const urls = parsed ? extractUrlFromMfm(parsed).filter((url) => appearNote.renote?.url !== url && appearNote.renote?.uri !== url) : null;
 const showTicker = (prefer.s.instanceTicker === 'always') || (prefer.s.instanceTicker === 'remote' && appearNote.user.instance);
@@ -808,7 +810,7 @@ function onContextmenu(ev: PointerEvent): void {
 		ev.preventDefault();
 		react();
 	} else {
-		const { menu, cleanup } = getNoteMenu({ note: note, translation, translating, viewTextSource, noNyaize });
+		const { menu, cleanup } = getNoteMenu({ note: note, translation, translating, autoTranslationFailed: autoTranslationFailed.value, viewTextSource, noNyaize });
 		os.contextMenu(menu, ev).then(focus).finally(cleanup);
 	}
 }
@@ -816,33 +818,27 @@ function onContextmenu(ev: PointerEvent): void {
 function showMenu(): void {
 	haptic();
 
-	const { menu, cleanup } = getNoteMenu({ note: note, translation, translating, viewTextSource, noNyaize });
+	const { menu, cleanup } = getNoteMenu({ note: note, translation, translating, autoTranslationFailed: autoTranslationFailed.value, viewTextSource, noNyaize });
 	os.popupMenu(menu, menuButton.value).then(focus).finally(cleanup);
 }
 
-const isForeignLanguage: boolean = appearNote.text != null && (() => {
-	const targetLang = (miLocalStorage.getItem('lang') ?? navigator.language).slice(0, 2);
-	const postLang = detectLanguage(appearNote.text);
-	const choicesLang = appearNote.poll?.choices.map((choice) => choice.text).join(' ') ?? '';
-	const pollLang = detectLanguage(choicesLang);
-	return postLang !== '' && (postLang !== targetLang || pollLang !== targetLang);
-})();
+const isForeignLanguage = isForeignNoteLanguage(appearNote, (miLocalStorage.getItem('lang') ?? navigator.language).slice(0, 2));
 
-if (prefer.s.useAutoTranslate && instance.translatorAvailable && $i && $i.policies.canUseTranslator && $i.policies.canUseAutoTranslate && (appearNote.cw == null || showContent.value) && appearNote.text && isForeignLanguage) translate();
+if (prefer.s.useAutoTranslate && instance.translatorAvailable && $i && $i.policies.canUseTranslator && $i.policies.canUseAutoTranslate && (appearNote.cw == null || showContent.value) && isForeignLanguage) void translate(true);
 
-async function translate(): Promise<void> {
-	if (translation.value != null) return;
-	translating.value = true;
-
+async function translate(automatic = false): Promise<void> {
+	if (translation.value != null || translating.value) return;
 	haptic();
 
-	const res = await misskeyApi('notes/translate', {
+	const params = {
 		noteId: appearNote.id,
 		targetLang: miLocalStorage.getItem('lang') ?? navigator.language,
-	});
-	translating.value = false;
-	translation.value = res;
-
+	};
+	const translated = await translateWithState(translation, translating, () => automatic
+		? misskeyApi('notes/translate', params)
+		: os.apiWithDialog('notes/translate', params));
+	if (automatic) autoTranslationFailed.value = !translated;
+	if (!translated) return;
 	hapticConfirm();
 }
 

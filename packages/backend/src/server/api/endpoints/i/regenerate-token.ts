@@ -11,11 +11,14 @@ import type { UsersRepository, UserProfilesRepository } from '@/models/_.js';
 import { generateNativeUserToken } from '@/misc/token.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { DI } from '@/di-symbols.js';
+import { accountReauthenticationLimit } from '@/server/api/reauthentication-limit.js';
 
 export const meta = {
 	requireCredential: true,
 
 	secure: true,
+
+	limit: accountReauthenticationLimit,
 } as const;
 
 export const paramDef = {

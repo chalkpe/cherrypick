@@ -6,7 +6,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 <template>
 <div
 	:class="[$style.root, { [$style.isSelected]: isSelected, [$style.isDisabled]: isDisabled }]"
-	draggable="true"
+	:draggable="!readOnly"
 	:title="title"
 	@contextmenu.stop="onContextmenu"
 	@dragstart="onDragstart"
@@ -52,6 +52,7 @@ const props = withDefaults(defineProps<{
 	folder: Misskey.entities.DriveFolder | null;
 	isSelected?: boolean;
 	isDisabled?: boolean;
+	readOnly?: boolean;
 }>(), {
 	isSelected: false,
 	isDisabled: false,
@@ -67,11 +68,11 @@ const isDragging = ref(false);
 const title = computed(() => `${props.file.name}\n${props.file.type} ${bytes(props.file.size)}`);
 
 function onContextmenu(ev: PointerEvent) {
-	os.contextMenu(getDriveFileMenu(props.file, props.folder), ev);
+	if (!props.readOnly) os.contextMenu(getDriveFileMenu(props.file, props.folder), ev);
 }
 
 function onDragstart(ev: DragEvent) {
-	if (props.isDisabled) return;
+	if (props.readOnly || props.isDisabled) return;
 
 	if (ev.dataTransfer) {
 		ev.dataTransfer.effectAllowed = 'move';

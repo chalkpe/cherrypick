@@ -71,6 +71,7 @@ import * as os from '@/os.js';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { selectFile } from '@/utility/drive.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { definePage } from '@/page.js';
 import { $i } from '@/i.js';
 import { mainRouter } from '@/router.js';
@@ -175,7 +176,7 @@ async function del() {
 
 	const { canceled } = await os.confirm({
 		type: 'warning',
-		text: i18n.tsx.removeAreYouSure({ x: title.value.trim() }),
+		text: i18n.tsx.removeAreYouSure({ x: mfmPlain(title.value.trim()) }),
 	});
 
 	if (canceled) return;

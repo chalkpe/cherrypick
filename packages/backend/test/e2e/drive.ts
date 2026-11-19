@@ -6,8 +6,9 @@
 process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
+import { spawnSync } from 'node:child_process';
 import { describe, beforeAll, afterAll, test } from 'vitest';
-import { api, createAppToken, initTestDb, makeStreamCatcher, post, signup, uploadFile, waitFire } from '../utils.js';
+import { api, createAppToken, initTestDb, makeStreamCatcher, post, relativeFetch, signup, uploadFile, waitFire } from '../utils.js';
 import { IdService } from '@/core/IdService.js';
 import { loadConfig } from '@/config.js';
 import { MiDriveFolder } from '@/models/DriveFolder.js';
@@ -17,6 +18,9 @@ import type * as misskey from 'cherrypick-js';
 // このファイルで最初に signup する alice が root (モデレーター権限あり) になる
 let alice: misskey.entities.SignupResponse;
 let bob: misskey.entities.SignupResponse;
+
+const hasVideoTools = [process.env.FFMPEG_PATH ?? 'ffmpeg', process.env.FFPROBE_PATH ?? 'ffprobe']
+	.every(command => spawnSync(command, ['-version']).status === 0);
 
 describe('Drive', () => {
 	beforeAll(async () => {
@@ -58,6 +62,17 @@ describe('Drive', () => {
 
 		assert.strictEqual(res.body?.name, 'テスト画像.jpg');
 		assert.strictEqual(res.body.type, 'image/jpeg');
+	});
+
+	test.skipIf(!hasVideoTools)('generates a WebP thumbnail for an uploaded WebM video', async () => {
+		const video = await uploadFile(alice, { path: 'recording-vfr.webm' });
+
+		assert.strictEqual(video.status, 200);
+		assert.strictEqual(video.body?.type, 'video/webm');
+		assert.ok(video.body.thumbnailUrl);
+		const thumbnail = await relativeFetch(new URL(video.body.thumbnailUrl).pathname);
+		assert.strictEqual(thumbnail.status, 200);
+		assert.strictEqual(thumbnail.headers.get('content-type'), 'image/webp');
 	});
 
 	test('添付ノート一覧を取得できる', async () => {

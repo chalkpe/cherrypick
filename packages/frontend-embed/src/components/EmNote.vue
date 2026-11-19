@@ -42,9 +42,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 				<button ref="renoteTime" class="_button">
 					<i class="ti ti-dots" :class="$style.renoteMenu"></i>
 				</button>
-				<MkA :to="notePage(note)">
+				<EmA :to="notePage(note)">
 					<EmTime :time="note.createdAt"/>
-				</MkA>
+				</EmA>
 			</span>
 		</div>
 	</div>
@@ -56,8 +56,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<EmNoteHeader :note="appearNote" :mini="true"/>
 			<div style="container-type: inline-size;">
 				<div v-if="appearNote.replyId" style="margin-bottom: 4px;">
-					<EmA :class="$style.replyIcon" :to="`/notes/${appearNote.replyId}`" @click.stop><i class="ti ti-arrow-back-up"></i></EmA>
-					<EmA v-user-preview="appearNote.reply.userId" :class="$style.replyToText" :to="userPage(appearNote.reply.user)" @click.stop><span v-html="replyTo"></span></EmA>
+					<EmA :class="$style.replyIcon" :to="`/notes/${appearNote.replyId}`" :aria-label="i18n.ts.reply" @click.stop><i class="ti ti-arrow-back-up"></i></EmA>
+					<EmA v-if="appearNote.reply" v-user-preview="appearNote.reply.userId" :class="$style.replyToText" :to="userPage(appearNote.reply.user)" @click.stop><span v-html="replyTo"></span></EmA>
 				</div>
 				<p v-if="appearNote.cw != null" :class="$style.cw">
 					<EmMfm v-if="appearNote.cw != ''" style="margin-right: 8px;" :text="appearNote.cw" :author="appearNote.user" :nyaize="'respect'"/>
@@ -82,6 +82,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 					</div>
 					<EmPoll v-if="appearNote.poll" :noteId="appearNote.id" :poll="appearNote.poll" :readOnly="true" :class="$style.poll"/>
 					<div v-if="appearNote.renote" :class="$style.quote"><EmNoteSimple :note="appearNote.renote" :class="$style.quoteNote"/></div>
+					<EmA v-else-if="appearNote.isHidden && appearNote.renoteId" :to="`/notes/${appearNote.renoteId}`" :aria-label="i18n.ts.renote"><i class="ti ti-repeat"></i></EmA>
 					<button v-if="isLong && collapsed" :class="$style.collapsed" class="_button" @click="collapsed = false">
 						<span :class="$style.collapsedLabel">{{ i18n.ts.showMore }}</span>
 					</button>
@@ -99,7 +100,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			<footer :class="$style.footer">
 				<a :href="`/notes/${appearNote.id}`" target="_blank" rel="noopener" :class="[$style.footerButton, $style.footerButtonLink]" class="_button">
 					<i class="ti ti-arrow-back-up"></i>
-					<p v-if="appearNote.repliesCount > 0" :class="$style.footerButtonCount">{{ number(appearNote.repliesCount) }}</p>
+					<p v-if="appearNote.repliesCount > 0" :class="$style.footerButtonCount">{{ numberFormat.format(appearNote.repliesCount) }}</p>
 				</a>
 				<a :href="`/notes/${appearNote.id}`" target="_blank" rel="noopener" :class="[$style.footerButton, $style.footerButtonLink]" class="_button">
 					<i class="ti ti-repeat"></i>
@@ -128,6 +129,8 @@ import * as mfm from 'mfc-js';
 import * as Misskey from 'cherrypick-js';
 import { shouldCollapsed, shouldMfmCollapsed } from '@@/js/collapsed.js';
 import { url } from '@@/js/config.js';
+import { numberFormat } from '@@/js/intl-const.js';
+import { notePage } from '@@/js/note.js';
 import { toUnicode } from 'punycode.js';
 import I18n from '@/components/I18n.vue';
 import EmNoteSub from '@/components/EmNoteSub.vue';
@@ -176,11 +179,13 @@ const collapsed = ref(appearNote.value.cw == null && (isLong || (isMFM)));
 const isDeleted = ref(false);
 
 const replyTo = computed(() => {
-	const username = appearNote.value.reply.user.host == null ? `@${appearNote.value.reply.user.username}` : `@${appearNote.value.reply.user.username}@${toUnicode(appearNote.value.reply.user.host)}`;
+	const user = appearNote.value.reply?.user;
+	if (user == null) return '';
+	const username = user.host == null ? `@${user.username}` : `@${user.username}@${toUnicode(user.host)}`;
 	const text = i18n.tsx.replyTo({ user: username });
-	const user = `<span style="color: var(--MI_THEME-accent); margin-right: 0.25em;">${username}</span>`;
+	const highlightedUsername = `<span style="color: var(--MI_THEME-accent); margin-right: 0.25em;">${username}</span>`;
 
-	return text.replace(username, user);
+	return text.replace(username, highlightedUsername);
 });
 </script>
 

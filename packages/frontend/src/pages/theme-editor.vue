@@ -91,6 +91,7 @@ import { deepClone } from '@/utility/clone.js';
 import * as os from '@/os.js';
 import { store } from '@/store.js';
 import { i18n } from '@/i18n.js';
+import { mfmPlain } from '@/utility/mfm-plain.js';
 import { useLeaveGuard } from '@/composables/use-leave-guard.js';
 import { definePage } from '@/page.js';
 import { prefer } from '@/preferences.js';
@@ -211,7 +212,7 @@ async function saveAs() {
 	changed.value = false;
 	os.alert({
 		type: 'success',
-		text: i18n.tsx._theme.installed({ name: theme.value.name }),
+		text: i18n.tsx._theme.installed({ name: mfmPlain(theme.value.name) }),
 	});
 }
 

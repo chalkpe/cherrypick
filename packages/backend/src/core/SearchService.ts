@@ -4,7 +4,7 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
-import { In } from 'typeorm';
+import { MeilisearchApiError } from 'meilisearch';
 import { DI } from '@/di-symbols.js';
 import { type Config, FulltextSearchProvider } from '@/config.js';
 import { bindThis } from '@/decorators.js';
@@ -19,13 +19,16 @@ import { IdService } from '@/core/IdService.js';
 import { LoggerService } from '@/core/LoggerService.js';
 import type { Index, Meilisearch } from 'meilisearch';
 
+const MEILISEARCH_MAX_TOTAL_HITS = 10_000;
+const MEILISEARCH_MAX_BATCH_SIZE = 256;
+
 type K = string;
 type V = string | number | boolean;
 type Q =
 	{ op: '=', k: K, v: V } |
 	{ op: '!=', k: K, v: V } |
-	{ op: '>', k: K, v: number } |
-	{ op: '<', k: K, v: number } |
+	{ op: '>', k: K, v: string | number } |
+	{ op: '<', k: K, v: string | number } |
 	{ op: '>=', k: K, v: number } |
 	{ op: '<=', k: K, v: number } |
 	{ op: 'is null', k: K } |
@@ -45,8 +48,15 @@ export type SearchOpts = {
 export type SearchPagination = {
 	untilId?: MiNote['id'];
 	sinceId?: MiNote['id'];
+	untilDate?: number;
+	sinceDate?: number;
 	limit: number;
 };
+
+function isAscending(pagination: SearchPagination): boolean {
+	return (pagination.sinceId != null || pagination.sinceDate != null)
+		&& pagination.untilId == null && pagination.untilDate == null;
+}
 
 function compileValue(value: V): string {
 	if (typeof value === 'string') {
@@ -76,10 +86,23 @@ function compileQuery(q: Q): string {
 	}
 }
 
+function hasMismatchedSearchSettings(error: unknown): boolean {
+	if (!(error instanceof MeilisearchApiError) || error.cause == null) return false;
+	const { code, message } = error.cause;
+	switch (code) {
+		case 'invalid_search_sort': return message.includes('Attribute `id` is not sortable')
+			|| message.includes('You must specify where `sort` is listed in the rankingRules setting');
+		case 'invalid_search_filter': return /Attribute `(?:createdAt|id|userId|userHost|channelId)` is not filterable/u.test(message);
+		default: return false;
+	}
+}
+
 @Injectable()
 export class SearchService {
 	private readonly meilisearchIndexScope: 'local' | 'global' | string[] = 'local';
 	private readonly meilisearchNoteIndex: Index | null = null;
+	private meilisearchSettingsReady: Promise<boolean> | undefined;
+	private usesLexicalDatabaseOrder: Promise<boolean> | undefined;
 	private readonly provider: FulltextSearchProvider;
 
 	constructor(
@@ -102,28 +125,6 @@ export class SearchService {
 	) {
 		if (meilisearch) {
 			this.meilisearchNoteIndex = meilisearch.index(`${config.meilisearch!.index}---notes`);
-			this.meilisearchNoteIndex.updateSettings({
-				searchableAttributes: [
-					'text',
-					'cw',
-				],
-				sortableAttributes: [
-					'createdAt',
-				],
-				filterableAttributes: [
-					'createdAt',
-					'userId',
-					'userHost',
-					'channelId',
-					'tags',
-				],
-				typoTolerance: {
-					enabled: false,
-				},
-				pagination: {
-					maxTotalHits: 10000,
-				},
-			});
 		}
 
 		if (config.meilisearch?.scope) {
@@ -132,6 +133,47 @@ export class SearchService {
 
 		this.provider = config.fulltextSearch?.provider ?? 'sqlLike';
 		this.loggerService.getLogger('SearchService').info(`-- Provider: ${this.provider}`);
+	}
+
+	private prepareMeilisearchIndex(index: Index): Promise<boolean> {
+		// 기존 문서의 id를 사용한다. 설정 적용이 끝난 뒤부터 같은 키로 정렬하고 검색한다.
+		return this.meilisearchSettingsReady ??= index.updateSettings({
+			searchableAttributes: ['text', 'cw'],
+			sortableAttributes: ['createdAt', 'id'],
+			filterableAttributes: ['createdAt', 'id', 'userId', 'userHost', 'channelId', 'tags'],
+			rankingRules: ['sort'],
+			typoTolerance: { enabled: false },
+			pagination: { maxTotalHits: MEILISEARCH_MAX_TOTAL_HITS },
+		}).waitTask({ timeout: 30_000 }).then(async task => {
+			if (task.status !== 'succeeded') {
+				throw new Error(`Meilisearch note index settings task ${task.uid} ${task.status}: ${task.error?.message ?? ''}`);
+			}
+			// Meilisearch 1.3.4 sorts strings but accepts only numbers in range filters.
+			try {
+				await index.search('', { filter: "id < 'a'", limit: 1, attributesToRetrieve: ['id'] });
+				return true;
+			} catch (error) {
+				if (error instanceof MeilisearchApiError && error.cause?.code === 'invalid_search_filter' && error.cause.message.startsWith('invalid float literal')) {
+					return false;
+				}
+				throw error;
+			}
+		}).catch(error => {
+			this.meilisearchSettingsReady = undefined;
+			throw error;
+		});
+	}
+
+	private canUseAidTimeBounds(): Promise<boolean> {
+		// Only use ID bounds with collations that sort the AID/AIDX alphabet lexically.
+		return this.usesLexicalDatabaseOrder ??= this.notesRepository.query(`
+			SELECT COALESCE(to_jsonb(db)->>'datlocprovider', 'c') = 'c'
+				AND datcollate IN ('C', 'POSIX', 'C.UTF-8', 'C.utf8', 'en_US.UTF-8', 'en_US.utf8') AS allowed
+			FROM pg_database AS db WHERE datname = current_database()
+		`).then(([row]: { allowed: boolean }[]) => row?.allowed === true).catch(error => {
+			this.usesLexicalDatabaseOrder = undefined;
+			throw error;
+		});
 	}
 
 	@bindThis
@@ -237,21 +279,26 @@ export class SearchService {
 			}
 		}
 
-		if (opts.rangeStartAt != null) {
-			const date = this.idService.gen(opts.rangeStartAt - 1);
-			query.andWhere('note.id > :rangeStartAt', { rangeStartAt: date });
-		}
+		if (opts.rangeStartAt != null || opts.rangeEndAt != null || pagination.sinceDate != null || pagination.untilDate != null) {
+			const timestamp = this.idService.timestampSql('note.id');
+			if (opts.rangeStartAt != null) query.andWhere(`${timestamp} >= CAST(:rangeStartAt AS numeric)`, { rangeStartAt: opts.rangeStartAt });
+			if (opts.rangeEndAt != null) query.andWhere(`${timestamp} <= CAST(:rangeEndAt AS numeric)`, { rangeEndAt: opts.rangeEndAt });
+			if (pagination.sinceDate != null) query.andWhere(`${timestamp} > CAST(:sinceDate AS numeric)`, { sinceDate: pagination.sinceDate });
+			if (pagination.untilDate != null) query.andWhere(`${timestamp} < CAST(:untilDate AS numeric)`, { untilDate: pagination.untilDate });
 
-		if (opts.rangeEndAt != null) {
-			const date = this.idService.gen(opts.rangeEndAt + 1);
-			query.andWhere('note.id < :rangeEndAt', { rangeEndAt: date });
+			const lower = this.idService.aidTimePrefix(Math.max(opts.rangeStartAt ?? -Infinity, (pagination.sinceDate ?? -Infinity) + 1));
+			const upper = this.idService.aidTimePrefix(Math.min((opts.rangeEndAt ?? Infinity) + 1, pagination.untilDate ?? Infinity));
+			if ((lower != null || upper != null) && await this.canUseAidTimeBounds()) {
+				if (lower != null) query.andWhere('note.id >= :lowerTimeId', { lowerTimeId: lower });
+				if (upper != null) query.andWhere('note.id < :upperTimeId', { upperTimeId: upper });
+			}
 		}
+		query.orderBy('note.id', isAscending(pagination) ? 'ASC' : 'DESC');
 
-		this.queryService.generateVisibilityQuery(query, me);
-		if (me == null) this.queryService.generateUgcVisibilityQueryForVisitor(query);
+		this.queryService.generateNoteContentVisibilityQuery(query, me);
 		this.queryService.generateBaseNoteFilteringQuery(query, me);
 
-		return query.limit(pagination.limit).getMany();
+		return await query.limit(pagination.limit).getMany();
 	}
 
 	@bindThis
@@ -261,7 +308,8 @@ export class SearchService {
 		opts: SearchOpts,
 		pagination: SearchPagination,
 	): Promise<MiNote[]> {
-		if (!this.meilisearch || !this.meilisearchNoteIndex) {
+		const index = this.meilisearchNoteIndex;
+		if (!index) {
 			throw new Error('Meilisearch is not available');
 		}
 
@@ -269,22 +317,14 @@ export class SearchService {
 			op: 'and',
 			qs: [],
 		};
-		if (pagination.untilId) filter.qs.push({
-			op: '<',
-			k: 'createdAt',
-			v: this.idService.parse(pagination.untilId).date.getTime(),
-		});
-		if (opts.rangeEndAt) filter.qs.push({
+		if (pagination.untilDate != null) filter.qs.push({ op: '<', k: 'createdAt', v: pagination.untilDate });
+		if (opts.rangeEndAt != null) filter.qs.push({
 			op: '<=',
 			k: 'createdAt',
 			v: opts.rangeEndAt,
 		});
-		if (pagination.sinceId) filter.qs.push({
-			op: '>',
-			k: 'createdAt',
-			v: this.idService.parse(pagination.sinceId).date.getTime(),
-		});
-		if (opts.rangeStartAt) filter.qs.push({
+		if (pagination.sinceDate != null) filter.qs.push({ op: '>', k: 'createdAt', v: pagination.sinceDate });
+		if (opts.rangeStartAt != null) filter.qs.push({
 			op: '>=',
 			k: 'createdAt',
 			v: opts.rangeStartAt,
@@ -302,16 +342,23 @@ export class SearchService {
 			if (this.meta.ugcVisibilityForVisitor === 'none') return [];
 			if (this.meta.ugcVisibilityForVisitor === 'local') filter.qs.push({ op: 'is null', k: 'userHost' });
 		}
-
-		const res = await this.meilisearchNoteIndex.search(q, {
-			sort: ['createdAt:desc'],
-			matchingStrategy: 'all',
-			attributesToRetrieve: ['id', 'createdAt'],
-			filter: compileQuery(filter),
-			limit: pagination.limit,
-		});
-		if (res.hits.length === 0) {
-			return [];
+		let settings = this.prepareMeilisearchIndex(index);
+		const supportsIdRange = await settings;
+		if (pagination.untilId) {
+			if (supportsIdRange) {
+				filter.qs.push({ op: '<', k: 'id', v: pagination.untilId });
+			} else {
+				const time = this.idService.parseCursorTime(pagination.untilId);
+				if (time != null) filter.qs.push({ op: '<=', k: 'createdAt', v: time });
+			}
+		}
+		if (pagination.sinceId) {
+			if (supportsIdRange) {
+				filter.qs.push({ op: '>', k: 'id', v: pagination.sinceId });
+			} else {
+				const time = this.idService.parseCursorTime(pagination.sinceId);
+				if (time != null) filter.qs.push({ op: '>=', k: 'createdAt', v: time });
+			}
 		}
 
 		const [
@@ -331,17 +378,62 @@ export class SearchService {
 			.leftJoinAndSelect('reply.user', 'replyUser')
 			.leftJoinAndSelect('renote.user', 'renoteUser');
 
-		query.where('note.id IN (:...noteIds)', { noteIds: res.hits.map(x => x.id) });
-
+		query.where('note.id IN (:...noteIds)').andWhere('note.visibility IN (\'public\', \'home\')');
+		this.queryService.generateNoteContentVisibilityQuery(query, me);
 		this.queryService.generateBlockedHostQueryForNote(query);
 		this.queryService.generateSuspendedUserQueryForNote(query);
 
-		const notes = (await query.getMany()).filter(note => {
-			if (me && isUserRelated(note, userIdsWhoBlockingMe)) return false;
-			if (me && isUserRelated(note, userIdsWhoMeMuting)) return false;
-			return true;
-		});
+		const notes: MiNote[] = [];
+		const ascending = isAscending(pagination);
+		let cursor: string | undefined;
+		let batchSize = Math.max(pagination.limit, 32);
+		let scanned = 0;
+		let restoredSettings = false;
+		while (notes.length < pagination.limit && scanned < MEILISEARCH_MAX_TOTAL_HITS) {
+			const limit = Math.min(batchSize, MEILISEARCH_MAX_TOTAL_HITS - scanned);
+			const batchFilter: Q = cursor == null || !supportsIdRange ? filter : {
+				op: 'and',
+				qs: [...filter.qs, { op: ascending ? '>' : '<', k: 'id', v: cursor }],
+			};
+			const search = () => index.search<{ id: string }>(q, {
+				sort: [ascending ? 'id:asc' : 'id:desc'],
+				matchingStrategy: 'all',
+				attributesToRetrieve: ['id'],
+				filter: compileQuery(batchFilter),
+				limit,
+				offset: supportsIdRange ? undefined : scanned,
+			});
+			const { hits } = await search().catch(async (error: unknown) => {
+				if (restoredSettings || !hasMismatchedSearchSettings(error)) throw error;
+				restoredSettings = true;
+				if (this.meilisearchSettingsReady === settings) this.meilisearchSettingsReady = undefined;
+				settings = this.prepareMeilisearchIndex(index);
+				await settings;
+				return search();
+			});
+			scanned += hits.length;
 
-		return notes.sort((a, b) => a.id > b.id ? -1 : 1);
+			const noteIds = [...new Set(hits.map(hit => hit.id).filter(id =>
+				(cursor == null || (ascending ? id > cursor : id < cursor))
+				&& (pagination.sinceId == null || id > pagination.sinceId)
+				&& (pagination.untilId == null || id < pagination.untilId)))];
+			if (noteIds.length > 0) {
+				cursor = noteIds.at(-1);
+				const candidates = (await query.setParameter('noteIds', noteIds).getMany()).filter(note =>
+					!isUserRelated(note, userIdsWhoBlockingMe) && !isUserRelated(note, userIdsWhoMeMuting));
+				const visibleById = new Map(candidates.map(note => [note.id, note]));
+				for (const id of noteIds) {
+					const note = visibleById.get(id);
+					if (note) notes.push(note);
+					if (notes.length === pagination.limit) break;
+				}
+			} else if (supportsIdRange) {
+				break;
+			}
+			if (hits.length < limit) break;
+			batchSize = Math.min(batchSize * 2, MEILISEARCH_MAX_BATCH_SIZE);
+		}
+
+		return notes;
 	}
 }
