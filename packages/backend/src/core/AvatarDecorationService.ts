@@ -11,7 +11,7 @@ import { IdService } from '@/core/IdService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { DI } from '@/di-symbols.js';
 import { bindThis } from '@/decorators.js';
-import { MemorySingleCache } from '@/misc/cache.js';
+import { MemoryKVCache, MemorySingleCache } from '@/misc/cache.js';
 import type { GlobalEvents } from '@/core/GlobalEventService.js';
 import { ModerationLogService } from '@/core/ModerationLogService.js';
 import { HttpRequestService } from '@/core/HttpRequestService.js';
@@ -23,6 +23,13 @@ import { isStorableText } from '@/core/chat-room-channels.js';
 
 // Software that serves the Misskey API, which avatar decorations are fetched through, without saying so
 const DECORATION_SOFTWARE = ['misskey', 'cherrypick', 'sharkey'];
+
+// 다른 서버의 사용자나 그룹 한 곳에서 받아들이는 장식의 최대 수
+const MAX_REMOTE_DECORATIONS = 16;
+
+// 사용자 응답에 쓰는 장식 주소 캐시. 장식 표 전체가 아니라 id별로 보관하고 개수에 상한을 둔다
+const URL_CACHE_LIFETIME = 1000 * 60 * 5;
+const URL_CACHE_LIMIT = 5000;
 
 // TODO:
 // 1. checkDuplicateする => done
@@ -37,6 +44,7 @@ const DECORATION_SOFTWARE = ['misskey', 'cherrypick', 'sharkey'];
 export class AvatarDecorationService implements OnApplicationShutdown {
 	public cache: MemorySingleCache<MiAvatarDecoration[]>;
 	public cacheWithRemote: MemorySingleCache<MiAvatarDecoration[]>;
+	private urlCache = new MemoryKVCache<{ id: string; url: string } | null>(URL_CACHE_LIFETIME, URL_CACHE_LIMIT);
 
 	constructor(
 		@Inject(DI.config)
@@ -70,12 +78,14 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 		const obj = JSON.parse(data);
 
 		if (obj.channel === 'internal') {
-			const { type, body: _ } = obj.message as GlobalEvents['internal']['payload'];
+			const { type, body } = obj.message as GlobalEvents['internal']['payload'];
 			switch (type) {
 				case 'avatarDecorationCreated':
 				case 'avatarDecorationUpdated':
 				case 'avatarDecorationDeleted': {
 					this.cache.delete();
+					this.cacheWithRemote.delete();
+					if (typeof (body as { id?: unknown } | null)?.id === 'string') this.urlCache.delete((body as { id: string }).id);
 					break;
 				}
 				default:
@@ -91,6 +101,7 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 			...options,
 		});
 
+		this.urlCache.delete(created.id);
 		this.globalEventService.publishInternalEvent('avatarDecorationCreated', created);
 
 		if (moderator) {
@@ -114,6 +125,7 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 		});
 
 		const updated = await this.avatarDecorationsRepository.findOneByOrFail({ id: avatarDecoration.id });
+		this.urlCache.delete(avatarDecoration.id);
 		this.globalEventService.publishInternalEvent('avatarDecorationUpdated', updated);
 
 		if (moderator) {
@@ -146,6 +158,31 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 		return this.avatarDecorationsRepository.findBy({ id: In(ids) });
 	}
 
+	/**
+	 * 사용자 응답에 쓰는 장식 주소를 id로 찾는다. 장식 표 전체를 읽지 않고, 캐시에 없는 id만 한 번에 조회한다.
+	 * 없는 id는 결과에 들어가지 않는다.
+	 */
+	@bindThis
+	public async findUrlsByIds(ids: MiAvatarDecoration['id'][]): Promise<Map<string, { id: string; url: string }>> {
+		const found = new Map<string, { id: string; url: string }>();
+		const missing: string[] = [];
+		for (const id of new Set(ids)) {
+			const cached = this.urlCache.get(id);
+			if (cached === undefined) missing.push(id);
+			else if (cached !== null) found.set(id, cached);
+		}
+		if (missing.length === 0) return found;
+
+		const rows = await this.avatarDecorationsRepository.find({ select: { id: true, url: true }, where: { id: In(missing) } });
+		const byId = new Map(rows.map(row => [row.id, { id: row.id, url: row.url }]));
+		for (const id of missing) {
+			const row = byId.get(id) ?? null;
+			this.urlCache.set(id, row);
+			if (row != null) found.set(id, row);
+		}
+		return found;
+	}
+
 	@bindThis
 	public async pack(used: MiUser['avatarDecorations']) {
 		if (used.length === 0) return [];
@@ -171,24 +208,52 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 
 	@bindThis
 	public async resolveChatDecorations(host: string, value: unknown): Promise<MiUser['avatarDecorations'] | undefined> {
-		if (!Array.isArray(value) || value.length > 16) return undefined;
+		if (!Array.isArray(value) || value.length > MAX_REMOTE_DECORATIONS) return undefined;
 		const result: MiUser['avatarDecorations'] = [];
 		for (const item of value) {
-			if (item == null || typeof item !== 'object' || typeof item.id !== 'string' || item.id.length === 0 || item.id.length > 32 || !isStorableText(item.id)) continue;
-			if (typeof item.url !== 'string' || item.url.length > 4096 || !isStorableText(item.url) || !checkHttps(item.url)) continue;
-			try {
-				const url = new URL(item.url);
-				if (url.username || url.password || this.getProxiedUrl(item.url, 'avatar').length > 1024) continue;
-			} catch {
-				continue;
-			}
+			if (!this.isValidRemoteDecoration(item)) continue;
 			if (typeof item.name !== 'string' || item.name.length > 256 || !isStorableText(item.name)) continue;
-			if (item.flipH != null && typeof item.flipH !== 'boolean') continue;
-			if (!this.isDecorationValuesInRange(item)) continue;
 			const id = await this.registerRemote(host, item.id, item.url, item.name, undefined, { preserveDescription: true });
 			result.push(normalizeAvatarDecoration({ id, angle: item.angle, flipH: item.flipH, offsetX: item.offsetX, offsetY: item.offsetY, scale: item.scale, opacity: item.opacity }));
 		}
 		return result;
+	}
+
+	/**
+	 * 다른 서버가 보낸 장식을 저장하지 않고 표시용 값으로만 바꾼다. 형식과 범위는 resolveChatDecorations와 같게 검사한다.
+	 */
+	@bindThis
+	public previewChatDecorations(value: unknown): { id: string; angle: number | undefined; flipH: true | undefined; offsetX: number | undefined; offsetY: number | undefined; scale: number | undefined; opacity: number | undefined; url: string }[] {
+		if (!Array.isArray(value) || value.length > MAX_REMOTE_DECORATIONS) return [];
+		const result: ReturnType<AvatarDecorationService['previewChatDecorations']> = [];
+		for (const item of value) {
+			if (!this.isValidRemoteDecoration(item)) continue;
+			if (typeof item.name !== 'string' || item.name.length > 256 || !isStorableText(item.name)) continue;
+			const d = normalizeAvatarDecoration({ id: item.id, angle: item.angle, flipH: item.flipH, offsetX: item.offsetX, offsetY: item.offsetY, scale: item.scale, opacity: item.opacity });
+			result.push({
+				id: d.id, angle: d.angle || undefined, flipH: d.flipH || undefined,
+				offsetX: d.offsetX || undefined, offsetY: d.offsetY || undefined,
+				scale: d.scale || undefined, opacity: d.opacity || undefined, url: this.getProxiedUrl(item.url, 'avatar'),
+			});
+		}
+		return result;
+	}
+
+	/** 다른 서버가 알려 준 장식 한 건의 id·주소·flipH·수치 범위를 확인한다. name과 description은 받는 쪽이 따로 확인한다 */
+	@bindThis
+	private isValidRemoteDecoration(item: unknown): item is Record<string, any> & { id: string; url: string } {
+		if (item == null || typeof item !== 'object') return false;
+		const d = item as Record<string, unknown>;
+		if (typeof d.id !== 'string' || d.id.length === 0 || d.id.length > 32 || !isStorableText(d.id)) return false;
+		if (typeof d.url !== 'string' || d.url.length > 4096 || !isStorableText(d.url) || !checkHttps(d.url)) return false;
+		try {
+			const url = new URL(d.url);
+			if (url.username || url.password || this.getProxiedUrl(d.url, 'avatar').length > 1024) return false;
+		} catch {
+			return false;
+		}
+		if (d.flipH != null && typeof d.flipH !== 'boolean') return false;
+		return this.isDecorationValuesInRange(d);
 	}
 
 	@bindThis
@@ -236,9 +301,9 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 			if (support === 'advertised') return;
 			throw err;
 		}
-		const userAvatarDecorations = userData.avatarDecorations ?? undefined;
+		const userAvatarDecorations: unknown[] = Array.isArray(userData?.avatarDecorations) ? userData.avatarDecorations.slice(0, MAX_REMOTE_DECORATIONS) : [];
 
-		if (!userAvatarDecorations || userAvatarDecorations.length === 0) {
+		if (userAvatarDecorations.length === 0) {
 			const updates = {} as Partial<MiUser>;
 			updates.avatarDecorations = [];
 
@@ -257,25 +322,28 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 			body: JSON.stringify({}),
 		});
 
-		const allDecorations: any = await allRes.json();
+		const allResult: unknown = await allRes.json();
+		const allDecorations: any[] = Array.isArray(allResult) ? allResult : [];
 		const updates = {} as Partial<MiUser>;
 		updates.avatarDecorations = [];
 
 		for (const avatarDecoration of userAvatarDecorations) {
-			if (avatarDecoration == null || typeof avatarDecoration !== 'object' || !this.isDecorationValuesInRange(avatarDecoration)) continue;
+			if (!this.isValidRemoteDecoration(avatarDecoration)) continue;
 
 			let name;
 			let description;
 			const avatarDecorationId = avatarDecoration.id;
 
 			for (const decoration of allDecorations) {
-				// eslint-disable-next-line eqeqeq
-				if (decoration.id == avatarDecorationId) {
+				if (decoration != null && decoration.id === avatarDecorationId) {
 					name = decoration.name;
 					description = decoration.description;
 					break;
 				}
 			}
+
+			if (typeof name !== 'string' || name.length > 256 || !isStorableText(name)) continue;
+			if (description != null && (typeof description !== 'string' || description.length > 2048 || !isStorableText(description))) continue;
 
 			const existingDecoration = await this.avatarDecorationsRepository.findOneBy({
 				host: userHost,
@@ -294,7 +362,12 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 			if (existingDecoration == null) {
 				await this.create(decorationData);
 				this.cacheWithRemote.delete();
-			} else {
+			} else if (
+				existingDecoration.name !== decorationData.name
+				|| (existingDecoration.description ?? null) !== (decorationData.description ?? null)
+				|| existingDecoration.url !== decorationData.url
+				|| existingDecoration.rawUrl !== decorationData.rawUrl
+			) {
 				await this.update(existingDecoration.id, decorationData);
 				this.cacheWithRemote.delete();
 			}
@@ -326,6 +399,7 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 		const avatarDecoration = await this.avatarDecorationsRepository.findOneByOrFail({ id });
 
 		await this.avatarDecorationsRepository.delete({ id: avatarDecoration.id });
+		this.urlCache.delete(avatarDecoration.id);
 		this.globalEventService.publishInternalEvent('avatarDecorationDeleted', avatarDecoration);
 
 		if (moderator) {
@@ -340,15 +414,15 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 	public async getAll(noCache = false, withRemote = false, remoteOnly = false): Promise<MiAvatarDecoration[]> {
 		if (noCache) {
 			this.cache.delete();
-			this.cacheWithRemote.delete();
 		}
 
 		if (remoteOnly) {
-			return this.cacheWithRemote.fetch(() => this.avatarDecorationsRepository.find({
+			// 원격 장식만 담은 목록이 모든 장식의 캐시를 대신하지 않도록 캐시를 거치지 않는다
+			return this.avatarDecorationsRepository.find({
 				where: {
 					host: Not(IsNull()),
 				},
-			}));
+			});
 		} else if (withRemote) {
 			return this.cacheWithRemote.fetch(() => this.avatarDecorationsRepository.find());
 		} else {
@@ -413,6 +487,7 @@ export class AvatarDecorationService implements OnApplicationShutdown {
 	@bindThis
 	public dispose(): void {
 		this.redisForSub.off('message', this.onMessage);
+		this.urlCache.dispose();
 	}
 
 	@bindThis

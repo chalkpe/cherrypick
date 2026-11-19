@@ -12,7 +12,7 @@ const generation = 'c6e909aa-9c88-4bb9-ab9b-c6bb215a5142';
 
 test('direct admission checks current generation and authorization after verifying the refresh key', async () => {
 	vi.spyOn(RoomServiceClient.prototype, 'listRooms').mockResolvedValue([{ name: 'chatRoom:room', maxParticipants: 10 }] as Awaited<ReturnType<RoomServiceClient['listRooms']>>);
- const runner = { connect: async () => {}, release: async () => {}, query: async (sql: string) => sql.startsWith('SELECT generation') ? [{ generation, pending: false }] : [] };
+ const runner = { connect: async () => {}, release: async () => {}, query: async (sql: string) => sql.startsWith('SELECT generation') ? [{ generation, pending: false }] : sql.startsWith('SELECT pg_try_advisory_lock') ? [{ pg_try_advisory_lock: true }] : [] };
  const db = { driver: { master: { options: { max: 6 } } }, createQueryRunner: () => runner } as any;
  const relay = { isEnabled: false, hasRetainedCalls: false, storage: { pool: { options: { max: 6 } } }, rtc: async () => null } as any;
  const config = { url: 'https://local.test', voiceCall: { livekit: { internalUrl: 'http://127.0.0.1:1', ...active, verificationKeys: [refresh] } } } as any;

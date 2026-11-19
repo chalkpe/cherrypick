@@ -32,7 +32,7 @@
 		"punycode.js": "2.3.1",
 		"tinycolor2": "1.6.0",
 		"vue": "3.5.44",
-		"mfc-js": "0.1.0",
+		"mfc-js": "npm:mfm-js@0.28.0",
 		"temml": "0.13.1"
 	}
 }

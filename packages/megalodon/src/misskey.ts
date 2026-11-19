@@ -1172,13 +1172,18 @@ export default class Misskey implements MegalodonInterface {
    * POST /api/notes/conversation
    *
    * notes/children only returns the direct replies of a note, so the replies below them are fetched level by level.
+   *
+   * @param limits Lower bounds than the defaults for the number of requests that follow the replies and the notes returned.
    */
   public async getStatusContext(
     id: string,
-    options?: { limit?: number; max_id?: string; since_id?: string }
+    options?: { limit?: number; max_id?: string; since_id?: string },
+    limits?: { maxRequests?: number; maxAncestors?: number; maxDescendants?: number }
   ): Promise<Response<Entity.Context>> {
     // Mastodon clients ask for the whole thread without a limit, while Misskey returns 10 notes by default
     const limit = Math.min(options?.limit || CONTEXT_PAGE_LIMIT, CONTEXT_PAGE_LIMIT)
+    const maxRequests = limits?.maxRequests ?? CONTEXT_MAX_REQUESTS
+    const maxDescendants = limits?.maxDescendants ?? CONTEXT_MAX_DESCENDANTS
     let params = {
       noteId: id,
       limit
@@ -1196,14 +1201,14 @@ export default class Misskey implements MegalodonInterface {
       }
     }
     const [res, conversation] = await Promise.all([
-      this.client.post<Array<MisskeyAPI.Entity.Note>>('/api/notes/children', params),
-      this.client.post<Array<MisskeyAPI.Entity.Note>>('/api/notes/conversation', params)
+      this.client.post<Array<MisskeyAPI.Entity.Note>>('/api/notes/children', { ...params, limit: Math.min(limit, maxDescendants) }),
+      this.client.post<Array<MisskeyAPI.Entity.Note>>('/api/notes/conversation', { ...params, limit: Math.min(limit, limits?.maxAncestors ?? CONTEXT_PAGE_LIMIT) })
     ])
 
     const replies = [...res.data]
     const seen = new Set(replies.map(n => n.id))
     const pending = replies.filter(n => n.replyId === id && n.repliesCount > 0)
-    for (let requests = 0; pending.length > 0 && requests < CONTEXT_MAX_REQUESTS && replies.length < CONTEXT_MAX_DESCENDANTS; requests++) {
+    for (let requests = 0; pending.length > 0 && requests < maxRequests && replies.length < maxDescendants; requests++) {
       const parent = pending.shift()!
       const children = await this.client.post<Array<MisskeyAPI.Entity.Note>>('/api/notes/children', { noteId: parent.id, limit: CONTEXT_PAGE_LIMIT })
       for (const child of children.data) {
@@ -1215,9 +1220,11 @@ export default class Misskey implements MegalodonInterface {
       }
     }
 
+    const ancestors = limits?.maxAncestors == null ? conversation.data : conversation.data.slice(0, limits.maxAncestors)
+    const descendants = this.dfs(replies.map(n => MisskeyAPI.Converter.note(n, this.baseUrl)), id)
     const context: Entity.Context = {
-      ancestors: conversation.data.map(n => MisskeyAPI.Converter.note(n, this.baseUrl)).reverse(),
-      descendants: this.dfs(replies.map(n => MisskeyAPI.Converter.note(n, this.baseUrl)), id)
+      ancestors: ancestors.map(n => MisskeyAPI.Converter.note(n, this.baseUrl)).reverse(),
+      descendants: limits?.maxDescendants == null ? descendants : descendants.slice(0, limits.maxDescendants)
     }
     return {
       ...res,

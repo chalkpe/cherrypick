@@ -41,6 +41,11 @@ export const meta = {
 			code: 'INVALID_FILE_FORMAT',
 			id: 'ba474685-c641-40a4-bedb-b8aabc5b0333',
 		},
+		tooBigFile: {
+			message: 'That file is too big.',
+			code: 'TOO_BIG_FILE',
+			id: '5d8c5f4e-6c0e-4f0c-9d63-2b0f6f5a7d41',
+		},
 		tooManyClips: {
 			message: 'You cannot create clip any more.',
 			code: 'TOO_MANY_CLIPS',
@@ -74,6 +79,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			const file = await this.driveFilesRepository.findOneBy({ id: ps.fileId, userId: me.id });
 			if (file == null) throw new ApiError(meta.errors.noSuchFile);
 			if (file.size === 0) throw new ApiError(meta.errors.emptyFile);
+			if (file.size > 32 * 1024 * 1024) throw new ApiError(meta.errors.tooBigFile);
 
 			const text = await this.driveService.readFileAsText(file);
 			let clips: unknown;

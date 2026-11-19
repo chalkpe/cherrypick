@@ -114,6 +114,8 @@ export function getErrorException(error: unknown): Error | null {
 	return error;
 }
 
+const INTERNAL_ERROR_DESCRIPTION = 'Internal error occurred. Please contact us if the error persists.';
+
 export function getErrorData(error: unknown): MastodonError {
 	// Axios wraps errors from the backend
 	error = unpackAxiosError(error);
@@ -121,7 +123,7 @@ export function getErrorData(error: unknown): MastodonError {
 	if (!error || typeof(error) !== 'object') {
 		return {
 			error: 'UNKNOWN_ERROR',
-			error_description: String(error),
+			error_description: INTERNAL_ERROR_DESCRIPTION,
 		};
 	}
 
@@ -143,6 +145,15 @@ export function getErrorData(error: unknown): MastodonError {
 		return convertApiError(error);
 	}
 
+	// The messages of other exceptions, such as database and system errors, are only for the log.
+	// What the Misskey API answered with is a plain object, and the client errors of Fastify have messages written for clients.
+	if (error instanceof Error) {
+		if (isFastifyClientError(error)) {
+			return convertApiError(error as unknown as ApiError);
+		}
+		return convertGenericError();
+	}
+
 	if ('code' in error && typeof (error.code) === 'string') {
 		if ('message' in error && typeof (error.message) === 'string') {
 			return convertApiError(error as ApiError);
@@ -155,10 +166,6 @@ export function getErrorData(error: unknown): MastodonError {
 		}
 	}
 
-	if (error instanceof Error) {
-		return convertGenericError(error);
-	}
-
 	if ('error' in error && typeof(error.error) === 'string') {
 		// "error_description" is string, undefined, or not present.
 		if (!('error_description' in error) || typeof(error.error_description) === 'string' || typeof(error.error_description) === 'undefined') {
@@ -168,8 +175,13 @@ export function getErrorData(error: unknown): MastodonError {
 
 	return {
 		error: 'INTERNAL_ERROR',
-		error_description: 'Internal error occurred. Please contact us if the error persists.',
+		error_description: INTERNAL_ERROR_DESCRIPTION,
 	};
+}
+
+function isFastifyClientError(error: Error): boolean {
+	const { code, statusCode } = error as { code?: unknown, statusCode?: unknown };
+	return typeof code === 'string' && code.startsWith('FST_') && typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500;
 }
 
 function unpackAxiosError(error: unknown): unknown {
@@ -217,10 +229,10 @@ function convertErrorMessageError(error: { error: string, message: string }): Ma
 	};
 }
 
-function convertGenericError(error: Error): MastodonError {
+function convertGenericError(): MastodonError {
 	return {
 		error: 'INTERNAL_ERROR',
-		error_description: String(error),
+		error_description: INTERNAL_ERROR_DESCRIPTION,
 	};
 }
 

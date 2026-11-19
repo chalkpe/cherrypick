@@ -127,7 +127,13 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				if (userList == null) {
 					throw new ApiError(meta.errors.noSuchUserList);
 				}
-			} else if (ps.src === 'group' && ps.userGroupId) {
+			}
+
+			if (ps.src === 'group') {
+				if (!ps.userGroupId) {
+					throw new ApiError(meta.errors.noSuchUserGroup);
+				}
+
 				userGroupJoining = await this.userGroupJoiningsRepository.findOneBy({
 					userGroupId: ps.userGroupId,
 					userId: me.id,

@@ -66,7 +66,7 @@ const props = withDefaults(defineProps<{
 	setTempUnitFahrenheit: false,
 	showSurfacePressure: false,
 	show12Hours: false,
-	useCurrentLocation: true,
+	useCurrentLocation: false,
 });
 
 Chart.register(...registerables);
@@ -103,14 +103,19 @@ interface WeatherData {
 	};
 }
 
+// 外部サービスへ送る座標は小数第2位に丸める
+function roundCoordinate(value: number): number {
+	return Math.round(value * 100) / 100;
+}
+
 async function fetchWeather() {
 	if (props.setTempUnitFahrenheit) temperatureUnit.value = '°F';
 	else temperatureUnit.value = '°C';
 
 	const url = 'https://api.open-meteo.com/v1/forecast';
 	const params = {
-		'latitude': props.latitude,
-		'longitude': props.longtitude,
+		'latitude': roundCoordinate(props.latitude),
+		'longitude': roundCoordinate(props.longtitude),
 		'hourly': ['temperature_2m', 'surface_pressure', 'weather_code', 'precipitation', 'relative_humidity_2m'],
 		'daily': ['weather_code', 'temperature_2m_max', 'temperature_2m_min', 'precipitation_sum', 'precipitation_probability_mean'],
 		'timezone': 'auto',
@@ -177,7 +182,7 @@ function formatDate(time: Date): string {
 
 async function fetchLocation() {
 	try {
-		const response = await window.fetch(`https://nominatim.openstreetmap.org/reverse?lat=${props.latitude}&lon=${props.longtitude}&format=json`);
+		const response = await window.fetch(`https://nominatim.openstreetmap.org/reverse?lat=${roundCoordinate(props.latitude)}&lon=${roundCoordinate(props.longtitude)}&format=json`);
 		const data = await response.json();
 		location.value = data.address.city || data.address.town || data.address.village || data.address.suburb || data.address.state;
 	} catch (err) {
@@ -265,7 +270,7 @@ function createPressureChart() {
 }
 
 const getLocation = () => {
-	if (!props.useCurrentLocation && !navigator.geolocation) {
+	if (!props.useCurrentLocation || !navigator.geolocation) {
 		locationLoading.value = false;
 		return;
 	}

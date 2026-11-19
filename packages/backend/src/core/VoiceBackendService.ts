@@ -16,12 +16,18 @@ import { LiveKitService, userIdOfMetadata, type LiveKitParticipant } from '@/cor
 import { VoiceRelayConsumerService, type RelayRtc, type RelayCall } from '@/core/VoiceRelayConsumerService.js';
 import { VoiceRelayError } from '@/core/VoiceRelayClient.js';
 import { withAdmission } from '@/core/voice-relay/admission.js';
+import { getIpHash } from '@/misc/get-ip-hash.js';
 import { validateLiveKitVerificationKeys, verifyLiveKitToken } from '@/core/voice-relay/livekit-verification.js';
 import type { IceServer } from '@/core/CloudflareTurnService.js';
 import type { ScreenShareLimits } from '@/core/voice-relay/screen-share-limits.js';
 type DirectServer = { fingerprint: string };
 type DirectCall = { generation: string; state: 'pending' | 'active' | 'ended'; slots: number; server?: DirectServer };
 export type RtcParticipant = { identity: string; userId: string; canScreenShare: boolean };
+
+/** IPv6 addresses share a budget per /64; anything that is not an address is used as is. */
+function ipBudgetKey(address: string): string {
+	try { return getIpHash(address); } catch { return address; }
+}
 
 /** Call only after the token is verified by the local SFU key or the selected provider. */
 function participantOfVerifiedToken(token: string): RtcParticipant | null {
@@ -42,6 +48,8 @@ function participantOfVerifiedToken(token: string): RtcParticipant | null {
 @Injectable()
 export class VoiceBackendService extends LiveKitService {
  private readonly rtcIpBudget = new Map<string, { started: number; count: number }>();
+	/** このプロセスで、部屋と参加者ごとに処理中のシグナリング接続の検査 */
+	private readonly signalingInFlight = new Set<string>();
 	private readonly participantLock = new AsyncLocalStorage<{ roomId: string; identity: string; runner: QueryRunner; digest: string; active: boolean }>();
 	private voiceConfig: Config;
 	private readonly retainedLivekits: NonNullable<VoiceCallConfig['livekit']>[];
@@ -70,7 +78,8 @@ export class VoiceBackendService extends LiveKitService {
 		} finally { await runner.release(); }
 	}
 	/** A session-level lock serializes mint, admission and kick across application workers. */
-	private async withDirectTokenLock<T>(roomId: string, identity: string, run: (runner: QueryRunner, digest: string) => Promise<T>): Promise<T> {
+	// `tryLock` では、他のプロセスが同じ鍵を持っていれば待たずに 429 にする (シグナリング接続の検査用)
+	private async withDirectTokenLock<T>(roomId: string, identity: string, run: (runner: QueryRunner, digest: string) => Promise<T>, options: { tryLock?: boolean } = {}): Promise<T> {
 		const existing = this.participantLock.getStore();
 		if (existing?.active && existing.roomId === roomId && existing.identity === identity) return run(existing.runner, existing.digest);
 		const digest = createHash('sha256').update(identity).digest('hex');
@@ -82,7 +91,12 @@ export class VoiceBackendService extends LiveKitService {
 			await runner.connect();
 			let locked = false;
 			try {
-				await runner.query('SELECT pg_advisory_lock(hashtextextended($1,1794232026))', [lock]);
+				if (options.tryLock) {
+					const acquired = await runner.query('SELECT pg_try_advisory_lock(hashtextextended($1,1794232026))', [lock]);
+					if (acquired[0]?.pg_try_advisory_lock !== true) throw new VoiceRelayError('SIGNALING_IN_PROGRESS', 429);
+				} else {
+					await runner.query('SELECT pg_advisory_lock(hashtextextended($1,1794232026))', [lock]);
+				}
 				locked = true;
 				const state = { roomId, identity, runner, digest, active: true };
 				try { return await this.participantLock.run(state, () => run(runner, digest)); } finally { state.active = false; }
@@ -290,26 +304,36 @@ export class VoiceBackendService extends LiveKitService {
 				try { const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()); generation = JSON.parse(payload.metadata).voiceSessionGeneration; } catch {}
 				if (!participant || typeof generation !== 'string') throw new VoiceRelayError('FORBIDDEN', 403);
 				const id = roomId;
-				return this.withDirectTokenLock(id, participant.identity, async (runner, digest) => {
-					const current = await this.currentDirectGeneration(runner, id, digest);
-					if (current.pending || generation !== current.generation) throw new VoiceRelayError('FORBIDDEN', 403);
-					await authorizeToken(id);
-					if (!this.hasRelayConfiguration) {
-						if (!await this.localRoom(id)) await super.ensureRoom(id, this.settings?.voiceCallMaxParticipants ?? 10);
-						return connect(null);
-					}
-					return this.relay.storage.directLock(`allocation:${id}`, async () => {
-						const remote = await this.relay.get(id), direct = await this.relay.storage.read<DirectCall>(`direct:${id}`);
-						if (remote && remote.state !== 'ended' || direct?.state === 'ended') throw new VoiceRelayError('FORBIDDEN', 403);
-						if (!await this.localRoom(id)) await super.ensureRoom(id, direct?.slots ?? this.settings?.voiceCallMaxParticipants ?? 10);
-						return connect(null);
-					});
-				});
+				// 同じ部屋と参加者の検査がこのプロセスで進んでいれば、DB の接続を取る前に断る
+				const inFlightKey = `${id}\n${participant.identity}`;
+				if (this.signalingInFlight.has(inFlightKey)) throw new VoiceRelayError('SIGNALING_IN_PROGRESS', 429);
+				this.signalingInFlight.add(inFlightKey);
+				try {
+					return await this.withDirectTokenLock(id, participant.identity, async (runner, digest) => {
+						const current = await this.currentDirectGeneration(runner, id, digest);
+						if (current.pending || generation !== current.generation) throw new VoiceRelayError('FORBIDDEN', 403);
+						await authorizeToken(id);
+						if (!this.hasRelayConfiguration) {
+							if (!await this.localRoom(id)) await super.ensureRoom(id, this.settings?.voiceCallMaxParticipants ?? 10);
+							return connect(null);
+						}
+						return this.relay.storage.directLock(`allocation:${id}`, async () => {
+							const remote = await this.relay.get(id), direct = await this.relay.storage.read<DirectCall>(`direct:${id}`);
+							if (remote && remote.state !== 'ended' || direct?.state === 'ended') throw new VoiceRelayError('FORBIDDEN', 403);
+							if (!await this.localRoom(id)) await super.ensureRoom(id, direct?.slots ?? this.settings?.voiceCallMaxParticipants ?? 10);
+							return connect(null);
+						});
+					}, { tryLock: true });
+				} finally { this.signalingInFlight.delete(inFlightKey); }
 			}
 		}
-  let budget = this.rtcIpBudget.get(remoteAddress);
-  if (!budget || Date.now() - budget.started >= 60000) { budget = { started: Date.now(), count: 0 }; if (this.rtcIpBudget.size >= 4096) this.rtcIpBudget.delete(this.rtcIpBudget.keys().next().value!); this.rtcIpBudget.set(remoteAddress, budget); }
+  // リレーが確かめ済みのトークンは、トークンを確かめる前に数える予算を使わない
+  if (!this.relay.hasVerifiedToken?.(token)) {
+  const budgetKey = ipBudgetKey(remoteAddress);
+  let budget = this.rtcIpBudget.get(budgetKey);
+  if (!budget || Date.now() - budget.started >= 60000) { budget = { started: Date.now(), count: 0 }; if (this.rtcIpBudget.size >= 4096) this.rtcIpBudget.delete(this.rtcIpBudget.keys().next().value!); this.rtcIpBudget.set(budgetKey, budget); }
   if (++budget.count > 600) throw new VoiceRelayError('RATE_LIMITED', 429);
+  }
   return withAdmission(this.relay.storage.pool, () => new VoiceRelayError('RATE_LIMITED', 429), async () => {
 			const route = await this.relay.rtc(rawUrl); if (!route) throw new VoiceRelayError('FORBIDDEN', 403);
 			return this.relay.storage.lock(`allocation:${route.roomId}`, async () => { const current = await this.relay.get(route.roomId); if (!current || current.state !== 'active' || current.generation !== route.generation || current.remoteId !== route.remoteId) throw new VoiceRelayError('FORBIDDEN', 403); await authorizeToken(route.roomId); return connect(route); });

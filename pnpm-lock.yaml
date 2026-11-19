@@ -195,6 +195,9 @@ overrides:
   undici@^6: 6.29.1
   '@tabler/icons-webfont>sharp': '-'
 
+patchedDependencies:
+  mfm-js@0.28.0: 5b1d0229290b8543af7cb79f944568efbfd0a038ab78cf05e4586a559fc051b2
+
 importers:
 
   .:
@@ -530,11 +533,11 @@ importers:
         specifier: 0.62.0
         version: 0.62.0
       mfc-js:
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: npm:mfm-js@0.28.0
+        version: mfm-js@0.28.0(patch_hash=5b1d0229290b8543af7cb79f944568efbfd0a038ab78cf05e4586a559fc051b2)
       mfm-js:
         specifier: 0.28.0
-        version: 0.28.0
+        version: 0.28.0(patch_hash=5b1d0229290b8543af7cb79f944568efbfd0a038ab78cf05e4586a559fc051b2)
       mime-types:
         specifier: 3.0.2
         version: 3.0.2
@@ -1013,11 +1016,11 @@ importers:
         specifier: 1.65.0
         version: 1.65.0
       mfc-js:
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: npm:mfm-js@0.28.0
+        version: mfm-js@0.28.0(patch_hash=5b1d0229290b8543af7cb79f944568efbfd0a038ab78cf05e4586a559fc051b2)
       mfm-js:
         specifier: 0.28.0
-        version: 0.28.0
+        version: 0.28.0(patch_hash=5b1d0229290b8543af7cb79f944568efbfd0a038ab78cf05e4586a559fc051b2)
       misskey-bubble-game:
         specifier: workspace:*
         version: link:../misskey-bubble-game
@@ -1351,11 +1354,11 @@ importers:
         specifier: 2.2.3
         version: 2.2.3
       mfc-js:
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: npm:mfm-js@0.28.0
+        version: mfm-js@0.28.0(patch_hash=5b1d0229290b8543af7cb79f944568efbfd0a038ab78cf05e4586a559fc051b2)
       mfm-js:
         specifier: 0.28.0
-        version: 0.28.0
+        version: 0.28.0(patch_hash=5b1d0229290b8543af7cb79f944568efbfd0a038ab78cf05e4586a559fc051b2)
       punycode.js:
         specifier: 2.3.1
         version: 2.3.1
@@ -1469,11 +1472,11 @@ importers:
         specifier: 2.2.3
         version: 2.2.3
       mfc-js:
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: npm:mfm-js@0.28.0
+        version: mfm-js@0.28.0(patch_hash=5b1d0229290b8543af7cb79f944568efbfd0a038ab78cf05e4586a559fc051b2)
       mfm-js:
         specifier: 0.28.0
-        version: 0.28.0
+        version: 0.28.0(patch_hash=5b1d0229290b8543af7cb79f944568efbfd0a038ab78cf05e4586a559fc051b2)
       punycode.js:
         specifier: 2.3.1
         version: 2.3.1
@@ -4099,9 +4102,6 @@ packages:
   '@tsd/typescript@5.9.3':
     resolution: {integrity: sha512-JSSdNiS0wgd8GHhBwnMAI18Y8XPhLVN+dNelPfZCXFhy9Lb3NbnFyp9JKxxr54jSUkEJPk3cidvCoHducSaRMQ==}
     engines: {node: '>=14.17'}
-
-  '@twemoji/parser@17.0.0':
-    resolution: {integrity: sha512-UsFCnivUCUq/UHJhfM3bd3L35VerCi76jYwT5nFNHUnESDKefNav0z2l0jdoFVbcq72n3llr6AQrOlcrStPE1Q==}
 
   '@tybys/wasm-util@0.10.4':
     resolution: {integrity: sha512-W3c4gRigFS0T/Ma4qIYF3GDAc5AQdHb1yL5znJT1Zv1YaD9Kitx656wBjvr19qbiosmZT8lWDM5BEMynUqX65A==}
@@ -7090,9 +7090,6 @@ packages:
   merge2@1.4.1:
     resolution: {integrity: sha512-8q7VEgMJW4J8tcfVPy8g09NcQwZdbwFEqhe/WZkoIzjn/3TGDwtOCYtXGxA3O8tPzpczCCDgv+P2P5y00ZJOOg==}
     engines: {node: '>= 8'}
-
-  mfc-js@0.1.0:
-    resolution: {integrity: sha512-ibcX5cJfObLB6fcKHQuX8fbBArZJCzMXTZN5NJ3dkf2UZSy1mEtosPRI61P+4KHEGISyqBQg4lsK1W7LeVRaNQ==}
 
   mfm-js@0.28.0:
     resolution: {integrity: sha512-Ym54M3C1F5rqsqawi8BYEc/uCcbAlewSLiwLmJgB0Eow6QPJxm8I+pGjtRqJXf+BqoFyDFchr+dtFwesS22NHw==}
@@ -12111,8 +12108,6 @@ snapshots:
 
   '@tsd/typescript@5.9.3': {}
 
-  '@twemoji/parser@17.0.0': {}
-
   '@tybys/wasm-util@0.10.4':
     dependencies:
       tslib: 2.9.1
@@ -16011,11 +16006,7 @@ snapshots:
 
   merge2@1.4.1: {}
 
-  mfc-js@0.1.0:
-    dependencies:
-      '@twemoji/parser': 17.0.0
-
-  mfm-js@0.28.0:
+  mfm-js@0.28.0(patch_hash=5b1d0229290b8543af7cb79f944568efbfd0a038ab78cf05e4586a559fc051b2):
     dependencies:
       '@misskey-dev/emoji-data': 17.0.3
 

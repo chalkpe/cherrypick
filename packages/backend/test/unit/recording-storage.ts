@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import { Redis } from 'ioredis';
 import { afterAll, afterEach, beforeAll, expect, test, vi } from 'vitest';
 import { loadConfig } from '@/config.js';
-import { RecordingStorageService, RecordingStorageFullError, RECORDING_DOWNLOAD_STORAGE_MAX_BYTES, type RecordingResult } from '@/core/RecordingStorageService.js';
+import { RecordingStorageService, RecordingStorageFullError, RECORDING_DOWNLOAD_STORAGE_MAX_BYTES, RECORDING_DOWNLOAD_USER_MAX_ENTRIES, type RecordingResult } from '@/core/RecordingStorageService.js';
 
 // 본 Redis 클라이언트(제품 설정과 같은 keyPrefix)와 실제 임시 디렉터리로 보관 수명 주기를 확인한다.
 let redis: Redis;
@@ -50,6 +50,12 @@ async function makeServiceWithPrefix(otherPrefix: string) {
 	fs.mkdirSync(dirOf(service), { recursive: true });
 	services.push(service);
 	return service;
+}
+
+// 기록 없는 파일 정리는 최근 5분 안에 바뀐 파일을 남기므로, 지워지는 경우를 확인하는 시험은 파일을 오래된 것으로 만든다
+function makeOld(file: string) {
+	const old = new Date(Date.now() - 6 * 60 * 1000);
+	fs.utimesSync(file, old, old);
 }
 
 function dirOf(service: RecordingStorageService): string {
@@ -116,6 +122,7 @@ test('the sweep keeps a live kept file and removes an expired one', async () => 
 	const expired = await service.store('u1', 'r2', writeSource('expired.bin', 2048), 'expired.mp4');
 	await redis.pexpire(`chatVoice:recordingDownload:${expired.id}`, 1);
 	await new Promise(resolve => setTimeout(resolve, 20));
+	makeOld(expired.path);
 
 	await (service as any).sweep();
 
@@ -157,6 +164,7 @@ test('initialization still removes files that have no record', async () => {
 	await service.onModuleInit();
 	const orphan = path.join(dirOf(service), 'orphan.bin');
 	fs.writeFileSync(orphan, 'x');
+	makeOld(orphan);
 
 	const restarted = makeService();
 	await restarted.onModuleInit();
@@ -281,6 +289,7 @@ test('the sweep keeps a live part and removes an expired one', async () => {
 	const expired = await service.storePart('u1', writeSource('expired.bin', 2048), 'expired.webm', 'audio/webm');
 	await redis.pexpire(`chatVoice:recordingPart:${expired.id}`, 1);
 	await new Promise(resolve => setTimeout(resolve, 20));
+	makeOld(expired.path);
 
 	await (service as any).sweep();
 
@@ -294,9 +303,293 @@ test('initialization removes part files that have no record', async () => {
 	await service.onModuleInit();
 	const orphan = path.join(dirOf(service), 'orphan-part.bin');
 	fs.writeFileSync(orphan, 'x');
+	makeOld(orphan);
 
 	const restarted = makeService();
 	await restarted.onModuleInit();
 
 	expect(fs.existsSync(orphan)).toBe(false);
+});
+
+function seedPart(id: string, userId: string, size: number, ttlMs = 60_000) {
+	return redis.set(`chatVoice:recordingPart:${id}`, JSON.stringify({ id, userId, path: '/nonexistent', name: `${id}.webm`, size, type: 'audio/webm' }), 'PX', ttlMs);
+}
+
+const SLOT = 1024;
+
+test('concurrent uploads never push the kept total over the cap', async () => {
+	const service = makeService();
+	await seedPart('big', 'u9', RECORDING_DOWNLOAD_STORAGE_MAX_BYTES - 3 * SLOT);
+
+	const results = await Promise.allSettled(Array.from({ length: 10 }, (_, i) => service.storePart(`u${i}`, writeSource(`c${i}.bin`, SLOT), `c${i}.webm`, 'audio/webm')));
+
+	expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(3);
+	for (const result of results) if (result.status === 'rejected') expect(result.reason).toBeInstanceOf(RecordingStorageFullError);
+	expect(await (service as any).storageUsage()).toBeLessThanOrEqual(RECORDING_DOWNLOAD_STORAGE_MAX_BYTES);
+	expect(await (service as any).storageUsage()).toBe(RECORDING_DOWNLOAD_STORAGE_MAX_BYTES);
+});
+
+function writeSparseSource(name: string, bytes: number): string {
+	const file = path.join(tmpRoot, name);
+	fs.writeFileSync(file, '');
+	fs.truncateSync(file, bytes);
+	return file;
+}
+
+test('a final file larger than half of the cap is kept while the total has room', async () => {
+	const service = makeService();
+	const size = RECORDING_DOWNLOAD_STORAGE_MAX_BYTES / 2 + 4096;
+
+	const record = await service.store('u1', 'r1', writeSparseSource('big.bin', size), 'big.mp4');
+
+	expect(record.size).toBe(size);
+	expect(await (service as any).storageUsage()).toBe(size);
+});
+
+test('parts and the final file of one recording are counted against the total only', async () => {
+	const service = makeService();
+	const third = Math.floor(RECORDING_DOWNLOAD_STORAGE_MAX_BYTES / 3);
+	await seedPart('p1', 'u1', third);
+	await seedPart('p2', 'u1', third);
+
+	// 조각 두 개(약 2/3)가 남은 채로 최종 파일(약 1/3)이 들어간다
+	const record = await service.store('u1', 'r1', writeSparseSource('final.bin', third), 'final.mp4');
+
+	expect(record.size).toBe(third);
+	expect(await (service as any).storageUsage()).toBe(3 * third);
+	await expect(service.store('u1', 'r2', writeSparseSource('more.bin', third), 'more.mp4')).rejects.toBeInstanceOf(RecordingStorageFullError);
+});
+
+test('one user can keep up to the entry cap and others are not affected', async () => {
+	const service = makeService();
+	const pipeline = redis.pipeline();
+	for (let i = 0; i < RECORDING_DOWNLOAD_USER_MAX_ENTRIES; i++) {
+		pipeline.set(`chatVoice:recordingPart:many${i}`, JSON.stringify({ id: `many${i}`, userId: 'u1', path: '/nonexistent', name: `many${i}.webm`, size: 1, type: 'audio/webm' }), 'PX', 60_000);
+	}
+	await pipeline.exec();
+
+	await expect(service.storePart('u1', writeSource('a.bin', 16), 'a.webm', 'audio/webm')).rejects.toBeInstanceOf(RecordingStorageFullError);
+	await expect(service.store('u1', 'r1', writeSource('b.bin', 16), 'b.mp4')).rejects.toBeInstanceOf(RecordingStorageFullError);
+	const other = await service.storePart('u2', writeSource('c.bin', 16), 'c.webm', 'audio/webm');
+	expect(other.userId).toBe('u2');
+
+	await service.removePart('many0');
+	const again = await service.storePart('u1', writeSource('d.bin', 16), 'd.webm', 'audio/webm');
+	expect(again.userId).toBe('u1');
+}, 60_000);
+
+async function evalStats(): Promise<{ calls: number; usec: number }> {
+	const info = await redis.info('commandstats');
+	const match = /cmdstat_eval:calls=(\d+),usec=(\d+)/.exec(info);
+	return { calls: Number(match?.[1] ?? 0), usec: Number(match?.[2] ?? 0) };
+}
+
+test('reserving does not walk every kept entry', async () => {
+	const service = makeService();
+	const pipeline = redis.pipeline();
+	for (let i = 0; i < 6000; i++) {
+		pipeline.set(`chatVoice:recordingPart:bulk${i}`, JSON.stringify({ id: `bulk${i}`, userId: `bulk-user-${i % 60}`, path: '/nonexistent', name: `bulk${i}.webm`, size: 1, type: 'audio/webm' }), 'PX', 600_000);
+	}
+	await pipeline.exec();
+	await service.storePart('u1', writeSource('warm.bin', 16), 'warm.webm', 'audio/webm');
+
+	const before = await evalStats();
+	for (let i = 0; i < 20; i++) await service.storePart('u1', writeSource(`w${i}.bin`, 16), `w${i}.webm`, 'audio/webm');
+	const after = await evalStats();
+
+	const perCallUsec = (after.usec - before.usec) / Math.max(1, after.calls - before.calls);
+	expect(perCallUsec).toBeLessThan(1000);
+}, 60_000);
+
+test('a refused upload leaves no reservation behind', async () => {
+	const service = makeService();
+	await seedPart('big', 'u9', RECORDING_DOWNLOAD_STORAGE_MAX_BYTES - SLOT);
+
+	for (let i = 0; i < 5; i++) await expect(service.storePart('u1', writeSource(`o${i}.bin`, 2 * SLOT), `o${i}.webm`, 'audio/webm')).rejects.toBeInstanceOf(RecordingStorageFullError);
+
+	expect(await (service as any).storageUsage()).toBe(RECORDING_DOWNLOAD_STORAGE_MAX_BYTES - SLOT);
+	await service.storePart('u1', writeSource('fits.bin', SLOT), 'fits.webm', 'audio/webm');
+});
+
+test('a failed copy gives the reservation back', async () => {
+	const service = makeService();
+	await expect(service.storePart('u1', path.join(tmpRoot, 'missing.bin'), 'missing.webm', 'audio/webm')).rejects.toThrow();
+	const copy = vi.spyOn(fs.promises, 'copyFile').mockRejectedValueOnce(new Error('disk failure'));
+	await expect(service.storePart('u1', writeSource('f.bin', SLOT), 'f.webm', 'audio/webm')).rejects.toThrow('disk failure');
+	copy.mockRestore();
+
+	expect(await (service as any).storageUsage()).toBe(0);
+});
+
+test('large parts are copied without blocking the event loop', async () => {
+	const service = makeService();
+	const copy = vi.spyOn(fs.promises, 'copyFile');
+	const src = writeSource('async.bin', 4096);
+	const part = await service.storePart('u1', src, 'async.webm', 'audio/webm');
+
+	expect(copy).toHaveBeenCalledWith(src, part.path);
+	copy.mockRestore();
+	expect(fs.readFileSync(part.path).equals(fs.readFileSync(src))).toBe(true);
+});
+
+test('removing kept files and parts frees their share for new uploads', async () => {
+	const service = makeService();
+	await seedPart('big', 'u9', RECORDING_DOWNLOAD_STORAGE_MAX_BYTES - 2 * SLOT);
+	const kept = await service.store('u1', 'r1', writeSource('k.bin', SLOT), 'k.mp4');
+	const part = await service.storePart('u2', writeSource('p.bin', SLOT), 'p.webm', 'audio/webm');
+	await expect(service.storePart('u3', writeSource('x.bin', SLOT), 'x.webm', 'audio/webm')).rejects.toBeInstanceOf(RecordingStorageFullError);
+
+	await service.removeDownload(kept.id);
+	await service.removePart(part.id);
+
+	expect(await (service as any).storageUsage()).toBe(RECORDING_DOWNLOAD_STORAGE_MAX_BYTES - 2 * SLOT);
+	await service.storePart('u3', writeSource('y.bin', 2 * SLOT), 'y.webm', 'audio/webm');
+});
+
+test('expired keeps stop counting toward the cap', async () => {
+	const service = makeService();
+	await seedPart('old', 'u9', RECORDING_DOWNLOAD_STORAGE_MAX_BYTES - SLOT, 60_000);
+	await seedPart('keep', 'u8', SLOT, 3_600_000);
+	await expect(service.storePart('u1', writeSource('n.bin', SLOT), 'n.webm', 'audio/webm')).rejects.toBeInstanceOf(RecordingStorageFullError);
+	const realNow = Date.now();
+	const clock = vi.spyOn(Date, 'now').mockReturnValue(realNow + 120_000);
+
+	try {
+		await (service as any).sweep();
+		await service.storePart('u1', writeSource('m.bin', SLOT), 'm.webm', 'audio/webm');
+		expect(await (service as any).storageUsage()).toBe(2 * SLOT);
+	} finally {
+		clock.mockRestore();
+	}
+});
+
+test('kept files that were stored before are still counted', async () => {
+	const service = makeService();
+	await seedPart('before', 'u1', RECORDING_DOWNLOAD_STORAGE_MAX_BYTES - SLOT);
+
+	await service.storePart('u1', writeSource('a.bin', SLOT), 'a.webm', 'audio/webm');
+
+	await expect(service.storePart('u1', writeSource('b.bin', SLOT), 'b.webm', 'audio/webm')).rejects.toBeInstanceOf(RecordingStorageFullError);
+	expect(await (service as any).storageUsage()).toBe(RECORDING_DOWNLOAD_STORAGE_MAX_BYTES);
+});
+
+function bareService() {
+	const service = new RecordingStorageService(
+		redis,
+		{ findOneBy: vi.fn(async () => null) } as any,
+		{ deleteFile: vi.fn(async () => {}) } as any,
+		loggerService(),
+	);
+	services.push(service);
+	return service;
+}
+
+test('a newly created keeping folder is private to its owner', async () => {
+	const service = bareService();
+	fs.rmSync(dirOf(service), { recursive: true, force: true });
+
+	await service.onModuleInit();
+
+	expect(fs.statSync(dirOf(service)).mode & 0o777).toBe(0o700);
+});
+
+test('an existing keeping folder of the same user gets owner-only permissions and stays usable', async () => {
+	const service = bareService();
+	fs.rmSync(dirOf(service), { recursive: true, force: true });
+	fs.mkdirSync(dirOf(service), { mode: 0o755 });
+	fs.chmodSync(dirOf(service), 0o755);
+	const leftover = path.join(dirOf(service), 'leftover');
+	fs.writeFileSync(leftover, 'kept');
+
+	await service.onModuleInit();
+
+	expect(fs.statSync(dirOf(service)).mode & 0o777).toBe(0o700);
+	const record = await service.store('u1', 'r1', writeSource('after.bin', 1024), 'after.mp4');
+	expect(fs.existsSync(record.path)).toBe(true);
+	expect(await service.getDownload(record.id)).not.toBeNull();
+});
+
+test('a keeping folder that is a symbolic link is not used', async () => {
+	const service = bareService();
+	fs.rmSync(dirOf(service), { recursive: true, force: true });
+	const elsewhere = fs.mkdtempSync(path.join(tmpRoot, 'elsewhere-'));
+	fs.symlinkSync(elsewhere, dirOf(service));
+
+	await service.onModuleInit();
+
+	await expect(service.store('u1', 'r1', writeSource('s.bin', 1024), 's.mp4')).rejects.toBeInstanceOf(RecordingStorageFullError);
+	await expect(service.storePart('u1', writeSource('t.bin', 1024), 't.webm', 'audio/webm')).rejects.toBeInstanceOf(RecordingStorageFullError);
+	expect(fs.readdirSync(elsewhere)).toEqual([]);
+	fs.rmSync(dirOf(service), { force: true });
+});
+
+test('a keeping folder owned by someone else is not used', async () => {
+	const service = bareService();
+	fs.rmSync(dirOf(service), { recursive: true, force: true });
+	fs.mkdirSync(dirOf(service), { mode: 0o755 });
+	fs.chmodSync(dirOf(service), 0o755);
+	vi.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 0) + 1);
+
+	await service.onModuleInit();
+	vi.restoreAllMocks();
+
+	expect(fs.statSync(dirOf(service)).mode & 0o777).toBe(0o755);
+	await expect(service.store('u1', 'r1', writeSource('o.bin', 1024), 'o.mp4')).rejects.toBeInstanceOf(RecordingStorageFullError);
+});
+
+test('the periodic cleanup runs without a usable keeping folder', async () => {
+	const driveFilesRepository = { findOneBy: vi.fn(async () => ({ id: 'left1' })) };
+	const driveService = { deleteFile: vi.fn(async () => {}) };
+	const service = new RecordingStorageService(redis, driveFilesRepository as any, driveService as any, loggerService());
+	services.push(service);
+	fs.rmSync(dirOf(service), { recursive: true, force: true });
+	const elsewhere = fs.mkdtempSync(path.join(tmpRoot, 'elsewhere-'));
+	fs.symlinkSync(elsewhere, dirOf(service));
+	await service.setResult('u1', 'r1', { remainingParts: ['left1'] });
+
+	await service.onModuleInit();
+
+	expect(driveService.deleteFile).toHaveBeenCalledTimes(1);
+	expect((await service.getResult('u1', 'r1'))?.remainingParts).toEqual([]);
+	expect((service as any).sweepTimer).not.toBeNull();
+	await expect(service.store('u1', 'r1', writeSource('s.bin', 1024), 's.mp4')).rejects.toBeInstanceOf(RecordingStorageFullError);
+	fs.rmSync(dirOf(service), { force: true });
+});
+
+test('the sweep keeps a file without a record that was modified within the last 5 minutes', async () => {
+	const service = makeService();
+	const fresh = path.join(dirOf(service), 'fresh-orphan.bin');
+	fs.writeFileSync(fresh, 'x');
+
+	await (service as any).sweep();
+
+	expect(fs.existsSync(fresh)).toBe(true);
+});
+
+test('the sweep removes a file without a record that was last modified more than 5 minutes ago', async () => {
+	const service = makeService();
+	const stale = path.join(dirOf(service), 'stale-orphan.bin');
+	fs.writeFileSync(stale, 'x');
+	makeOld(stale);
+
+	await (service as any).sweep();
+
+	expect(fs.existsSync(stale)).toBe(false);
+});
+
+test('a part being copied survives a sweep that runs before its record is written', async () => {
+	const service = makeService();
+	const realCopy = fs.promises.copyFile;
+	const copy = vi.spyOn(fs.promises, 'copyFile').mockImplementation(async (src, dest, mode) => {
+		await realCopy(src, dest, mode);
+		await (service as any).sweep();
+	});
+
+	try {
+		const part = await service.storePart('u1', writeSource('copying.bin', 2048), 'copying.webm', 'audio/webm');
+		expect(fs.existsSync(part.path)).toBe(true);
+		expect(await service.getPart(part.id)).not.toBeNull();
+	} finally {
+		copy.mockRestore();
+	}
 });

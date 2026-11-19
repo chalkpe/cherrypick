@@ -201,6 +201,45 @@ afterEach(async () => {
 	await leaveVoiceCall();
 });
 
+describe('status report for rooms of other servers', () => {
+	const remoteRoom = { id: 'rr1', name: 'remote room', owner: { host: 'remote.test' } } as any;
+	const statusCalls = () => mocks.misskeyApi.mock.calls.filter(call => call[0] === 'chat/rooms/voice/status');
+	beforeEach(() => vi.useFakeTimers());
+	afterEach(async () => { await leaveVoiceCall(); vi.useRealTimers(); });
+
+	test('resends the current status every six hours while in a room of another server', async () => {
+		await joinVoiceCall(remoteRoom, { micEnabled: false });
+		await vi.advanceTimersByTimeAsync(0);
+		const initial = statusCalls().length;
+
+		await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000);
+		expect(statusCalls()).toHaveLength(initial + 1);
+		expect(statusCalls().at(-1)?.[1]).toMatchObject({ roomId: 'rr1', sessionId: 'PA_local', micMuted: true, deafened: false, recording: false });
+
+		await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000);
+		expect(statusCalls()).toHaveLength(initial + 2);
+	});
+
+	test('does not resend in a room of this server', async () => {
+		await joinVoiceCall(room1, { micEnabled: false });
+		await vi.advanceTimersByTimeAsync(0);
+		const initial = statusCalls().length;
+
+		await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+		expect(statusCalls()).toHaveLength(initial);
+	});
+
+	test('stops resending after leaving the call', async () => {
+		await joinVoiceCall(remoteRoom, { micEnabled: false });
+		await vi.advanceTimersByTimeAsync(0);
+		await leaveVoiceCall();
+		const left = statusCalls().length;
+
+		await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+		expect(statusCalls()).toHaveLength(left);
+	});
+});
+
 describe('TURN credential refresh', () => {
 	const oldIce = [{ urls: ['turn:turn.example:3478'], username: 'old', credential: 'old' }];
 	const freshIce = [{ urls: ['turn:turn.example:3478'], username: 'new', credential: 'new' }];

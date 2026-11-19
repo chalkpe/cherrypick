@@ -55,6 +55,7 @@ export class MastodonClientService {
 				code: 'YOUR_ACCOUNT_SUSPENDED',
 				kind: 'permission',
 				id: 'a8c724b3-6e9c-4b46-b1a8-bc3ed6258370',
+				httpStatusCode: 403,
 			});
 		}
 

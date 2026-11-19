@@ -60,6 +60,8 @@ import type { ChatInvitePreview, ChatInvitePreviewDocument, ChatJoinRefusal, Cha
  */
 const JOIN_TTL_SECONDS = 30 * 60;
 // 서명한 요청은 리다이렉트를 따르지 않는다. 다른 곳으로 서명이 가지 않게 한다 (RemoteVoiceCallService와 같은 한도)
+// 한 그룹이 가질 수 있는 초대장의 수. 넘으면 링크로 온 새 Join은 정원 초과로 거절한다
+const MAX_ROOM_INVITATIONS = 200;
 const PREVIEW_TIMEOUT_MS = 10_000;
 const PREVIEW_SIZE_LIMIT = 64 * 1024;
 
@@ -311,10 +313,12 @@ export class ChatInviteLinkService {
 	 * 결과는 기존 미리보기 캐시를 그대로 탄다.
 	 */
 	@bindThis
-	public async summarize(url: string): Promise<ChatInviteSummary | null> {
+	public async summarize(url: string, options: { remote?: boolean } = {}): Promise<ChatInviteSummary | null> {
 		const resolved = this.resolveTarget(url);
 		if (resolved == null) return null;
 		const { target, isLocal } = resolved;
+		// 다른 서버의 링크를 이 서버가 직접 가져오지 않아야 할 때는 일반 미리보기에 맡긴다
+		if (!isLocal && options.remote === false) return null;
 
 		let info: ChatInviteIcon & { name: string; description: string; membersCount: number };
 		if (isLocal) {
@@ -324,12 +328,12 @@ export class ChatInviteLinkService {
 		} else {
 			const preview = await this.fetchRemotePreview(target);
 			if (preview == null || preview === 'gone') return null;
-			const decorations = await this.avatarDecorationService.resolveChatDecorations(target.host, preview.iconDecorations);
 			info = {
 				name: preview.name, description: preview.description, membersCount: preview.membersCount,
 				iconUrl: preview.iconUrl != null ? this.avatarDecorationService.getProxiedUrl(preview.iconUrl, 'avatar') : this.chatRoomIconEntityService.getIdenticonUrl(preview.roomUri),
 				iconBlurhash: null,
-				iconDecorations: await this.avatarDecorationService.pack(decorations ?? []),
+				// 미리보기는 저장하지 않고 표시할 값만 싣는다
+				iconDecorations: this.avatarDecorationService.previewChatDecorations(preview.iconDecorations),
 			};
 		}
 
@@ -570,6 +574,7 @@ export class ChatInviteLinkService {
 
 			// 초대장은 (그룹, 사용자)당 하나. 같은 Join이 여러 번 와도 결과가 같다
 			const existing = await manager.findOneBy(MiChatRoomInvitation, { roomId: room.id, userId: actor.id });
+			if (existing == null && decision === 'join' && await manager.countBy(MiChatRoomInvitation, { roomId: room.id }) >= MAX_ROOM_INVITATIONS) return { decision: 'full' as const, invitationId: null };
 			const invitationId = existing?.id ?? this.idService.gen();
 			if (existing == null) await manager.insert(MiChatRoomInvitation, { id: invitationId, roomId: room.id, userId: actor.id });
 			// 차단 처리도 그룹 잠금 아래서 이 기록을 확인한다. 커밋이 실패해도 초대 ID가 다르면 다른 초대를 보호하지 않는다.

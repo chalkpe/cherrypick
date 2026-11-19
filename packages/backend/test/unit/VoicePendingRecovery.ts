@@ -13,6 +13,7 @@ function database() {
  const rows = new Map<string, { generation: string; pending: boolean }>();
  let beforeReturn: (() => Promise<void>) | undefined;
  const query = async (sql: string, values: string[]) => {
+  if (sql.startsWith('SELECT pg_try_advisory_lock')) return [{ pg_try_advisory_lock: true }];
   if (sql.startsWith('SELECT pg_advisory_')) return [];
   const key = `${values[0]}:${values[1]}`;
   if (sql.startsWith('INSERT INTO voice_token_generation')) {

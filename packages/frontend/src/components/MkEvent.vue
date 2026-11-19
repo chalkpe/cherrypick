@@ -35,7 +35,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 		<template v-if="eventUrl">
 			<dt :class="$style.key">URL</dt>
-			<dd :class="$style.value"><a :href="eventUrl" target="_blank" rel="noopener noreferrer">{{ eventUrl }}</a></dd>
+			<dd :class="$style.value"><a :href="eventUrl" target="_blank" rel="noopener noreferrer" @click.stop="(ev: MouseEvent) => warningExternalWebsite(ev, eventUrl!)">{{ eventUrl }}</a></dd>
 		</template>
 
 		<template v-if="eventMetadata && 'organizer' in eventMetadata && eventMetadata.organizer">
@@ -65,7 +65,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 		<template v-if="offersUrl">
 			<dt :class="$style.key">{{ i18n.ts._event.ticketsUrl }}</dt>
-			<dd :class="$style.value"><a :href="offersUrl" target="_blank" rel="noopener noreferrer">{{ offersUrl }}</a></dd>
+			<dd :class="$style.value"><a :href="offersUrl" target="_blank" rel="noopener noreferrer" @click.stop="(ev: MouseEvent) => warningExternalWebsite(ev, offersUrl!)">{{ offersUrl }}</a></dd>
 		</template>
 
 		<template v-if="eventMetadata && 'isAccessibleForFree' in eventMetadata && eventMetadata.isAccessibleForFree">
@@ -101,6 +101,7 @@ import { computed } from 'vue';
 import * as Misskey from 'cherrypick-js';
 import { i18n } from '@/i18n.js';
 import { safeHttpUrl } from '@/utility/safe-http-url.js';
+import { warningExternalWebsite } from '@/utility/warning-external-website.js';
 
 const props = defineProps<{
 	note: Misskey.entities.Note | null;

@@ -160,6 +160,7 @@ function fixture(options: {
 	const apResolverService = { createResolver: vi.fn(async () => resolver) };
 	const pendingRoomIndex = new Map<string, Set<string>>();
 	const pendingRoomActivities = new Map<string, string[]>();
+	const pendingRoomCounters = new Map<string, number>();
 	const roomTombstones = new Map<string, string>();
 	const redisClient = {
 		get: vi.fn(async (key: string) => roomTombstones.get(key) ?? null),
@@ -175,8 +176,24 @@ function fixture(options: {
 			return 1;
 		}),
 		expire: vi.fn().mockResolvedValue(1),
+		incr: vi.fn(async (key: string) => {
+			pendingRoomCounters.set(key, (pendingRoomCounters.get(key) ?? 0) + 1);
+			return pendingRoomCounters.get(key)!;
+		}),
+		decr: vi.fn(async (key: string) => {
+			pendingRoomCounters.set(key, (pendingRoomCounters.get(key) ?? 0) - 1);
+			return pendingRoomCounters.get(key)!;
+		}),
+		incrby: vi.fn(async (key: string, by: number) => {
+			pendingRoomCounters.set(key, (pendingRoomCounters.get(key) ?? 0) + by);
+			return pendingRoomCounters.get(key)!;
+		}),
+		decrby: vi.fn(async (key: string, by: number) => {
+			pendingRoomCounters.set(key, (pendingRoomCounters.get(key) ?? 0) - by);
+			return pendingRoomCounters.get(key)!;
+		}),
 		llen: vi.fn(async (key: string) => pendingRoomActivities.get(key)?.length ?? 0),
-		del: vi.fn(async (key: string) => Number(pendingRoomActivities.delete(key))),
+		del: vi.fn(async (key: string) => Number(pendingRoomActivities.delete(key) || pendingRoomCounters.delete(key))),
 		multi: () => {
 			const commands: (() => unknown)[] = [];
 			const transaction = {

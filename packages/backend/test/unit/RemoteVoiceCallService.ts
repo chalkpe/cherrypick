@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { describe, expect, test, vi } from 'vitest';
 import { RemoteVoiceCallError, RemoteVoiceCallService } from '@/core/RemoteVoiceCallService.js';
-import type { ChatVoiceService, RemoteSnapshotStoreResult } from '@/core/ChatVoiceService.js';
+import { REMOTE_JOIN_TTL_SECONDS, remoteJoinKeyOf, type ChatVoiceService, type RemoteSnapshotStoreResult } from '@/core/ChatVoiceService.js';
 import { HostPolicyService } from '@/core/HostPolicyService.js';
 import type { CloudflareTurnService, IceServer } from '@/core/CloudflareTurnService.js';
 import { UtilityService } from '@/core/UtilityService.js';
@@ -602,5 +602,62 @@ describe('RemoteVoiceCallService', () => {
 		[{ enableRemoteVoiceCall: true, federation: 'none' }, false],
 	])('reports whether remote calls are enabled for %j', (meta, expected) => {
 		expect(createFixture(meta).service.isEnabled).toBe(expected);
+	});
+});
+
+describe('RemoteVoiceCallService record of joins', () => {
+	const key = remoteJoinKeyOf('r1', 'me');
+
+	test('a successful join is recorded for a day before the snapshot of the response is stored', async () => {
+		const f = createFixture();
+		// 現況の保存は待たれず、失敗は警告に回るので、保存を始めた時点で記録があったかは変数に取り、あとで確かめる
+		let recordedWhenSnapshotStarted: boolean | null = null;
+		f.chatVoiceService.storeRemoteSnapshot.mockImplementation(async () => {
+			recordedWhenSnapshotStarted = f.redis.store.has(key);
+			return 'stored';
+		});
+
+		await f.service.requestJoin(me, room, owner, false);
+
+		expect(recordedWhenSnapshotStarted).toBe(true);
+		expect(f.redis.set).toHaveBeenCalledWith(key, expect.any(String), 'EX', REMOTE_JOIN_TTL_SECONDS);
+		expect(REMOTE_JOIN_TTL_SECONDS).toBe(24 * 60 * 60);
+		expect(f.chatVoiceService.storeRemoteSnapshot).toHaveBeenCalledTimes(1);
+	});
+
+	test('a join that failed is not recorded', async () => {
+		const f = createFixture();
+		f.apRequestService.signedPostJson.mockRejectedValue(new StatusError('403 Forbidden', 403, 'Forbidden'));
+
+		await expect(f.service.requestJoin(me, room, owner, false)).rejects.toMatchObject({ reason: 'forbidden' });
+
+		expect(f.redis.store.has(key)).toBe(false);
+		expect(f.chatVoiceService.storeRemoteSnapshot).not.toHaveBeenCalled();
+	});
+
+	test('a join answered with an unusable response is not recorded', async () => {
+		const f = createFixture();
+		f.apRequestService.signedPostJson.mockResolvedValue({ url: 'https://elsewhere.test/livekit', token: 'jwt', participants: [], updatedAt: 1 });
+
+		await expect(f.service.requestJoin(me, room, owner, false)).rejects.toMatchObject({ reason: 'unreachable' });
+
+		expect(f.redis.store.has(key)).toBe(false);
+	});
+
+	test('a status report accepted by the host refills the record', async () => {
+		const f = createFixture();
+
+		await f.service.reportStatus(me, room, owner, 'PA_1', { micMuted: true, deafened: false });
+
+		expect(f.redis.set).toHaveBeenCalledWith(key, expect.any(String), 'EX', REMOTE_JOIN_TTL_SECONDS);
+	});
+
+	test('a status report the host refused leaves the record alone', async () => {
+		const f = createFixture();
+		f.apRequestService.signedPostJson.mockRejectedValue(new StatusError('403 Forbidden', 403, 'Forbidden'));
+
+		await expect(f.service.reportStatus(me, room, owner, 'PA_1', { micMuted: true, deafened: false })).rejects.toMatchObject({ reason: 'forbidden' });
+
+		expect(f.redis.store.has(key)).toBe(false);
 	});
 });

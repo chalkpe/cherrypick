@@ -46,6 +46,16 @@ function isQuoteNote(note: MisskeyEntity.Note): boolean {
 	return note.renoteId != null && (note.text != null || note.cw != null || note.fileIds.length > 0 || note.poll != null || note.replyId != null);
 }
 
+// What a thread shows to viewers without a token
+const ANONYMOUS_CONTEXT_LIMITS = { maxRequests: 0, maxAncestors: 40, maxDescendants: 60 };
+
+const VISIBILITIES: readonly unknown[] = ['public', 'unlisted', 'private', 'direct', 'local'];
+
+/** A missing visibility takes the default of the user. Any other value has to be one of those Mastodon defines. */
+function isValidVisibility(value: unknown): boolean {
+	return value == null || value === '' || VISIBILITIES.includes(value);
+}
+
 /** Validate before sensitive media updates fan out into one internal request per file. */
 function isValidMediaIds(value: unknown): boolean {
 	return value == null || (Array.isArray(value) && value.length <= 16
@@ -156,7 +166,8 @@ export class ApiStatusMastodon {
 			if (!_request.params.id) return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'Missing required parameter "id"' });
 
 			const { client, me } = await this.clientService.getAuthClient(_request);
-			const { data } = await client.getStatusContext(_request.params.id, parseTimelineArgs(_request.query));
+			// Without a token the thread is not followed down its branches, and only the nearest notes are returned
+			const { data } = await client.getStatusContext(_request.params.id, parseTimelineArgs(_request.query), me ? undefined : ANONYMOUS_CONTEXT_LIMITS);
 			const ancestors = await this.mastoConverters.convertStatuses(data.ancestors, me);
 			const descendants = await this.mastoConverters.convertStatuses(data.descendants, me);
 			const response = { ancestors, descendants };
@@ -230,6 +241,7 @@ export class ApiStatusMastodon {
 			// Form clients send "media_ids[]" and "poll[options][]" instead of nested values
 			const body = unflattenFormBody((_request.body ?? {}) as Record<string, unknown>) as PostStatusBody;
 			if (!isValidMediaIds(body.media_ids)) return reply.code(400).send({ error: 'media_ids must be an array of at most 16 unique file IDs' });
+			if (!isValidVisibility(body.visibility)) return reply.code(422).send({ error: 'Validation failed: Visibility is not included in the list' });
 			const text = body.status ??= ' ';
 			const removed = text.replace(/@\S+/g, '').replace(/\s|/g, '');
 			const isDefaultEmoji = isUnicodeEmojiReaction(removed);

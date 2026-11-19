@@ -10,7 +10,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi 
 import { FindOperator, IsNull } from 'typeorm';
 import { Redis } from 'ioredis';
 import { loadConfig } from '@/config.js';
-import { KNOWN_USERS, TEST_CLOCK, createFixture, fakeRedis, localRoom, matchesWhere, mirrorRoom, pauseNextCall, remoteUser } from '../misc/chat-voice-fixture.js';
+import { remoteJoinKeyOf, REMOTE_JOIN_TTL_SECONDS } from '@/core/ChatVoiceService.js';
+import { KNOWN_USERS, REMOTE_JOINED_USER_IDS, TEST_CLOCK, createFixture, fakeRedis, localRoom, matchesWhere, mirrorRoom, pauseNextCall, remoteUser } from '../misc/chat-voice-fixture.js';
 
 describe('ChatVoiceService', () => {
 	let f: ReturnType<typeof createFixture>;
@@ -106,6 +107,53 @@ describe('ChatVoiceService', () => {
 		} finally {
 			other.service.onApplicationShutdown();
 		}
+	});
+
+	test('a local member who never asked to join through this server is dropped from a mirror snapshot', async () => {
+		const room = mirrorRoom();
+		f.rooms.set('r1', room);
+
+		expect(await f.service.storeRemoteSnapshot(room, [
+			{ identity: 'https://local.test/users/u1', screenSharing: false },
+			{ identity: 'https://local.test/users/u3', screenSharing: true, recording: true },
+		], TEST_CLOCK)).toBe('stored');
+
+		expect(JSON.parse(f.redis.store.get('chatVoice:state:r1')!).participants.map((p: { userId: string }) => p.userId)).toEqual(['u1']);
+		const announced = f.globalEventService.publishMainStream.mock.calls.flatMap(call => JSON.stringify(call[2]));
+		expect(announced.some(payload => payload.includes('u3'))).toBe(false);
+	});
+
+	test('a snapshot sent by the host does not extend the record of a join', async () => {
+		const room = mirrorRoom();
+		f.rooms.set('r1', room);
+		const key = remoteJoinKeyOf('r1', 'u1');
+		f.redis.store.delete(key);
+		await f.redis.set(key, '1', 'EX', REMOTE_JOIN_TTL_SECONDS);
+		f.redis.set.mockClear();
+		f.redis.expire.mockClear();
+
+		await vi.advanceTimersByTimeAsync(0);
+		await f.service.storeRemoteSnapshot(room, [{ identity: 'https://local.test/users/u1', screenSharing: false }], TEST_CLOCK);
+
+		expect(f.redis.set.mock.calls.filter(call => call[0] === key)).toEqual([]);
+		expect(f.redis.expire.mock.calls.filter(call => call[0] === key)).toEqual([]);
+		expect(f.redis.pttl).not.toHaveBeenCalledWith(key);
+	});
+
+	test('a local member whose record of a join has expired is dropped from the next snapshot', async () => {
+		const room = mirrorRoom();
+		f.rooms.set('r1', room);
+		const key = remoteJoinKeyOf('r1', 'u1');
+		f.redis.store.delete(key);
+		await f.redis.set(key, '1', 'EX', REMOTE_JOIN_TTL_SECONDS);
+		const people = [{ identity: 'https://local.test/users/u1', screenSharing: false }];
+		await f.service.storeRemoteSnapshot(room, people, TEST_CLOCK);
+		expect(JSON.parse(f.redis.store.get('chatVoice:state:r1')!).participants).toHaveLength(1);
+
+		await vi.advanceTimersByTimeAsync((REMOTE_JOIN_TTL_SECONDS + 1) * 1000);
+		await f.service.storeRemoteSnapshot(room, people, TEST_CLOCK + REMOTE_JOIN_TTL_SECONDS * 1000 + 1000);
+
+		expect(JSON.parse(f.redis.store.get('chatVoice:state:r1')!).participants).toEqual([]);
 	});
 
 	test('reads the authoritative policy once for one stored and announced mirror snapshot, and filters participant hosts with it', async () => {
@@ -338,6 +386,7 @@ describe('ChatVoiceService', () => {
 		f.liveKitService.listParticipants.mockResolvedValue([{ identity: 'i1', userId: 'u1', screenSharing: false, micTrackSid: null }]);
 		await f.service.refresh('r1');
 		f.rooms.set('m1', { ...mirrorRoom(), id: 'm1' });
+		f.redis.store.set(remoteJoinKeyOf('m1', 'u1'), '1');
 		await f.service.storeRemoteSnapshot({ ...mirrorRoom(), id: 'm1' }, [{ identity: 'https://local.test/users/u1', screenSharing: false }], 990_000);
 
 		expect(f.globalEventService.publishMainStream.mock.calls.map(([, , packed]) => [packed.roomId, packed.updatedAt])).toEqual(expect.arrayContaining([['r1', 1_000_000], ['m1', 990_000]]));
@@ -957,7 +1006,7 @@ describe('ChatVoiceService', () => {
 			await f.service.clearMirrorSnapshots();
 
 			// 残るのは、このサーバーのルームの現況と、ほかの記録と、止めた回数 (世代) だけ
-			expect([...f.redis.store.keys()].sort()).toEqual(['chatVoice:federated:r1', 'chatVoice:remoteGeneration', 'chatVoice:state:r1']);
+			expect([...f.redis.store.keys()].filter(key => !key.startsWith('chatVoice:remoteJoin:')).sort()).toEqual(['chatVoice:federated:r1', 'chatVoice:remoteGeneration', 'chatVoice:state:r1']);
 			expect(f.chatRoomsRepository.find.mock.calls.length).toBeGreaterThan(1);
 			// 何度消しても同じ (ほかのワーカーも同じように消す)
 			await expect(f.service.clearMirrorSnapshots()).resolves.toBeUndefined();
@@ -1248,7 +1297,7 @@ describe('ChatVoiceService', () => {
 			}
 
 			// 残っているのは、このサーバーの (空になった) 現況と、その時刻の列だけ
-			expect([...f.redis.store.keys()].sort()).toEqual(['chatVoice:localStamp:r1', 'chatVoice:state:r1']);
+			expect([...f.redis.store.keys()].filter(key => !key.startsWith('chatVoice:remoteJoin:')).sort()).toEqual(['chatVoice:localStamp:r1', 'chatVoice:state:r1']);
 			expect(JSON.parse(f.redis.store.get('chatVoice:state:r1')!).participants).toEqual([]);
 			expect(vi.getTimerCount()).toBe(0);
 			expect(f.queueService.deliver).not.toHaveBeenCalled();
@@ -2619,6 +2668,7 @@ describe('ChatVoiceService storing mirror snapshots in Redis', () => {
 		vi.useFakeTimers({ now: TEST_CLOCK, toFake: ['Date'] });
 		f = createFixture(redis as any);
 		await redis.del('chatVoice:mirrorPublished:r1', 'chatVoice:state:r1', 'chatVoice:lastSeen:r1', 'chatVoice:remoteGeneration', 'chatVoice:federated:r1', 'chatVoice:federateGate:r1', 'chatVoice:federateEmptyGate:r1', 'chatVoice:federateLock:r1', 'chatVoice:federateDecided:r1', 'chatVoice:localStamp:r1', 'chatVoice:active');
+		for (const userId of REMOTE_JOINED_USER_IDS) await redis.set(remoteJoinKeyOf('r1', userId), '1', 'EX', REMOTE_JOIN_TTL_SECONDS);
 	});
 
 	afterEach(() => {
@@ -2627,7 +2677,7 @@ describe('ChatVoiceService storing mirror snapshots in Redis', () => {
 	});
 
 	afterAll(async () => {
-		await redis.del('chatVoice:mirrorPublished:r1', 'chatVoice:state:r1', 'chatVoice:lastSeen:r1', 'chatVoice:remoteGeneration', 'chatVoice:federated:r1', 'chatVoice:federateGate:r1', 'chatVoice:federateEmptyGate:r1', 'chatVoice:federateLock:r1', 'chatVoice:federateDecided:r1', 'chatVoice:localStamp:r1', 'chatVoice:active');
+		await redis.del('chatVoice:mirrorPublished:r1', 'chatVoice:state:r1', 'chatVoice:lastSeen:r1', 'chatVoice:remoteGeneration', 'chatVoice:federated:r1', 'chatVoice:federateGate:r1', 'chatVoice:federateEmptyGate:r1', 'chatVoice:federateLock:r1', 'chatVoice:federateDecided:r1', 'chatVoice:localStamp:r1', 'chatVoice:active', ...REMOTE_JOINED_USER_IDS.map(userId => remoteJoinKeyOf('r1', userId)));
 		redis.disconnect();
 		raw.disconnect();
 	});

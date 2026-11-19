@@ -6,7 +6,7 @@
 import { Injectable } from '@nestjs/common';
 import { toBoolean, toInt, unflattenFormBody } from '@/server/api/mastodon/argsUtils.js';
 import { MastodonClientService } from '@/server/api/mastodon/MastodonClientService.js';
-import { FilterNotFoundError, MastodonFilterService } from '@/server/api/mastodon/MastodonFilterService.js';
+import { FilterInputError, FilterNotFoundError, MastodonFilterService } from '@/server/api/mastodon/MastodonFilterService.js';
 import type { FilterInput } from '@/server/api/mastodon/MastodonFilterService.js';
 import type { MiLocalUser } from '@/models/User.js';
 import type { MastodonEntity } from 'megalodon';
@@ -16,10 +16,6 @@ interface FilterParams {
 	Params: { id: string },
 	Body?: Record<string, unknown>,
 	Querystring: Record<string, unknown>,
-}
-
-class FilterInputError extends Error {
-	override name = this.constructor.name;
 }
 
 function toText(value: unknown): string | undefined {
@@ -212,7 +208,6 @@ export class ApiFilterMastodon {
 
 				const expiresIn = toInt(toText(body.expires_in));
 				const created = await this.filterService.create(me, request, {
-					title: phrase,
 					context: toTextList(body.context),
 					action: toFlag(body.irreversible) ? 'hide' : 'warn',
 					expiresIn: expiresIn ?? null,

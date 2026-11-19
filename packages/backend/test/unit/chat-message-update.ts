@@ -47,6 +47,7 @@ function createFixture(overrides: { deletedAt?: Date | null } = {}) {
 		chatRoomMembershipsRepository: { findBy: vi.fn() },
 		driveFilesRepository: { countBy: vi.fn(async ({ id }: { id: { value: string[] } }) => id.value.length) },
 		usersRepository: {
+			findOneBy: vi.fn(async ({ id }: { id: string }) => users.get(id) ?? null),
 			findOneByOrFail: vi.fn(async ({ id }: { id: string }) => users.get(id)),
 			findBy: vi.fn(async ({ id }: { id: { value: string[] } }) => id.value.map(value => users.get(value)).filter(Boolean)),
 		},
@@ -61,6 +62,8 @@ function createFixture(overrides: { deletedAt?: Date | null } = {}) {
 			isRemoteUser: () => false,
 		},
 		userBlockingService: { checkBlocked: vi.fn().mockResolvedValue(false) },
+		roleService: { getUserPolicies: vi.fn().mockResolvedValue({ chatAvailability: 'available' }) },
+		chatApprovalsRepository: { createQueryBuilder: () => ({ where() { return this; }, orWhere() { return this; }, take() { return this; }, getMany: async () => [] }) },
 		customEmojiService: {
 			populateEmojis: vi.fn(async (names: string[]) => Object.fromEntries(names.map(name => [name, `https://remote.test/${name}.png`]))),
 		},

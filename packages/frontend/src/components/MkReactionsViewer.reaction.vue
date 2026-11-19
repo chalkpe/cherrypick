@@ -84,7 +84,13 @@ const reactionName = computed(() => {
 
 const alternative: ComputedRef<string | null> = computed(() => prefer.s.reactableRemoteReactionEnabled ? (customEmojis.value.find(it => it.name === reactionName.value)?.name ?? null) : null);
 
-const canSteal = computed(() => props.note.user.host && $i && ($i.isAdmin || $i.policies.canManageCustomEmojis));
+// リアクション文字列(`:name@host:`)に含まれる絵文字の配信元ホスト。ローカル絵文字・Unicode絵文字は null
+const reactionHost = computed(() => {
+	const m = /^:[^@:]+@([^:]+):$/.exec(props.reaction);
+	return m != null && m[1] !== '.' ? m[1] : null;
+});
+
+const canSteal = computed(() => reactionHost.value != null && $i && ($i.isAdmin || $i.policies.canManageCustomEmojis));
 
 const longTouchEmoji = ref(false);
 
@@ -224,7 +230,7 @@ function stealReaction(ev: Event) {
 			action: async () => {
 				await os.apiWithDialog('admin/emoji/steal', {
 					name: reactionName.value,
-					host: props.note.user.host ?? '',
+					host: reactionHost.value ?? '',
 				});
 			},
 		}, {
@@ -233,7 +239,7 @@ function stealReaction(ev: Event) {
 			action: async () => {
 				await os.apiWithDialog('admin/emoji/steal', {
 					name: reactionName.value,
-					host: props.note.user.host ?? '',
+					host: reactionHost.value ?? '',
 				});
 
 				await misskeyApi('notes/reactions/create', {
@@ -318,7 +324,7 @@ async function menu(ev: PointerEvent) {
 			action: async () => {
 				await os.apiWithDialog('admin/emoji/steal', {
 					name: reactionName.value,
-					host: props.note.user.host ?? '',
+					host: reactionHost.value ?? '',
 				});
 			},
 		}, {
@@ -327,7 +333,7 @@ async function menu(ev: PointerEvent) {
 			action: async () => {
 				await os.apiWithDialog('admin/emoji/steal', {
 					name: reactionName.value,
-					host: props.note.user.host ?? '',
+					host: reactionHost.value ?? '',
 				});
 
 				await misskeyApi('notes/reactions/create', {

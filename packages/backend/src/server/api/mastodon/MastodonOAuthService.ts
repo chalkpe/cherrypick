@@ -16,6 +16,8 @@ import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import { MASTODON_OAUTH_PREFIX, mastodonOAuthPendingKey, type MastodonPendingAuthorization } from '@/misc/mastodon-oauth.js';
 import { secureRndstr } from '@/misc/secure-rndstr.js';
+import { getIpHash } from '@/misc/get-ip-hash.js';
+import { RateLimiterService } from '@/server/api/RateLimiterService.js';
 import type { FastifyReply } from 'fastify';
 
 export type MastodonOAuthParameters = Record<string, string | string[] | undefined>;
@@ -26,6 +28,9 @@ const OOB_REDIRECT_URI = 'urn:ietf:wg:oauth:2.0:oob';
 // Redirecting to these schemes after authorization would run code in, or leak data from, this server's origin.
 // Keep in sync with MASTODON_FORBIDDEN_REDIRECT_PROTOCOLS in the frontend auth page.
 const FORBIDDEN_REDIRECT_PROTOCOLS = ['javascript:', 'data:', 'vbscript:', 'file:', 'blob:'];
+
+// Sessions are created for anyone who knows a client_id, so they are limited per client address
+export const AUTHORIZATION_IP_LIMIT = { key: 'mastodonAuthorizationIp', duration: 60 * 60 * 1000, max: 60 };
 
 // Authorization requests are kept until the user finishes signing in and approving the app.
 const AUTHORIZATION_TTL_SECONDS = 60 * 60;
@@ -196,6 +201,7 @@ export class MastodonOAuthService {
 
 		private readonly idService: IdService,
 		loggerService: LoggerService,
+		private readonly rateLimiterService: RateLimiterService,
 	) {
 		this.logger = loggerService.getLogger('masto-oauth');
 	}
@@ -217,6 +223,10 @@ export class MastodonOAuthService {
 	@bindThis
 	public async authorize(params: MastodonOAuthParameters, reply: FastifyReply): Promise<void> {
 		try {
+			if (this.config.enableIpRateLimit && await this.rateLimiterService.limit(AUTHORIZATION_IP_LIMIT, getIpHash(reply.request.ip)) != null) {
+				throw new MastodonOAuthError('rate_limited', 'Too many authorization requests. Please try again later.', 429);
+			}
+
 			const app = await this.findApp(params);
 
 			const responseType = firstValue(params.response_type);

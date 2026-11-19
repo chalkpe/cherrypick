@@ -39,6 +39,14 @@ export namespace Converter {
 		}
 	}
 
+	// The same image as the Mastodon-compatible API of the server uses for an account without a header
+	const TRANSPARENT_IMAGE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
+
+	// The identicon of the server for a local account without an avatar, when the server is known
+	const defaultAvatar = (u: { username: string; host?: string | null }, host: string | null): string => {
+		return host && !u.host ? `https://${host}/identicon/${u.username.toLowerCase()}@${host}` : TRANSPARENT_IMAGE
+	}
+
 	export const user = (u: Entity.User, host: string | null = null): MegalodonEntity.Account => {
 		let acct = u.username;
 		host ? host = host.replace("https://", "") : undefined;
@@ -67,10 +75,10 @@ export namespace Converter {
 			statuses_count: u.notesCount ? u.notesCount : 0,
 			note: u.description ? u.description : '',
 			url: u.uri ?? acctUrl,
-			avatar: u.avatarUrl ? u.avatarUrl : 'https://dev.joinsharkey.org/static-assets/avatar.png',
-			avatar_static: u.avatarUrl ? u.avatarUrl : 'https://dev.joinsharkey.org/static-assets/avatar.png',
-			header: u.bannerUrl ? u.bannerUrl : 'https://dev.joinsharkey.org/static-assets/transparent.png',
-			header_static: u.bannerUrl ? u.bannerUrl : 'https://dev.joinsharkey.org/static-assets/transparent.png',
+			avatar: u.avatarUrl ? u.avatarUrl : defaultAvatar(u, host),
+			avatar_static: u.avatarUrl ? u.avatarUrl : defaultAvatar(u, host),
+			header: u.bannerUrl ? u.bannerUrl : TRANSPARENT_IMAGE,
+			header_static: u.bannerUrl ? u.bannerUrl : TRANSPARENT_IMAGE,
 			emojis: mapEmojis(u.emojis),
 			moved: null,
 			fields: [],
@@ -102,10 +110,10 @@ export namespace Converter {
 			statuses_count: u.notesCount,
 			note: u.description ? u.description.replace(/\n|\\n/g, "<br>") : '',
 			url: u.uri ?? acctUrl,
-			avatar: u.avatarUrl ? u.avatarUrl : 'https://dev.joinsharkey.org/static-assets/avatar.png',
-			avatar_static: u.avatarUrl ? u.avatarUrl : 'https://dev.joinsharkey.org/static-assets/avatar.png',
-			header: u.bannerUrl ? u.bannerUrl : 'https://dev.joinsharkey.org/static-assets/transparent.png',
-			header_static: u.bannerUrl ? u.bannerUrl : 'https://dev.joinsharkey.org/static-assets/transparent.png',
+			avatar: u.avatarUrl ? u.avatarUrl : defaultAvatar(u, host),
+			avatar_static: u.avatarUrl ? u.avatarUrl : defaultAvatar(u, host),
+			header: u.bannerUrl ? u.bannerUrl : TRANSPARENT_IMAGE,
+			header_static: u.bannerUrl ? u.bannerUrl : TRANSPARENT_IMAGE,
 			emojis: mapEmojis(u.emojis),
 			moved: null,
 			fields: [],

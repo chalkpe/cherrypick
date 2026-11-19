@@ -144,14 +144,20 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 			).map(u => [u.id, u]));
 
 			return birthdayUsers
-				.map(item => {
+				.flatMap(item => {
 					// birthday_date is encoded as mmdd (for example, August 30 is 830).
-					const birthdayStr = getNextBirthdayDate(Math.floor(item.birthday_date / 100), item.birthday_date % 100);
-					return {
+					// 日付として成り立たない誕生日 (例: 2月30日) のユーザーは結果から除く
+					let birthdayStr: string;
+					try {
+						birthdayStr = getNextBirthdayDate(Math.floor(item.birthday_date / 100), item.birthday_date % 100);
+					} catch {
+						return [];
+					}
+					return [{
 						id: item.user_id,
 						birthday: birthdayStr,
 						user: users.get(item.user_id),
-					};
+					}];
 				})
 				.filter(item => item.user != null)
 				.map(item => item as { id: string; birthday: string; user: Packed<'UserLite'> });

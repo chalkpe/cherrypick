@@ -822,8 +822,10 @@ export class DriveService {
 			const keys = [file.accessKey!];
 			if (file.thumbnailUrl) keys.push(file.thumbnailAccessKey!);
 			if (file.webpublicUrl) keys.push(file.webpublicAccessKey!);
+			// 동기 삭제 경로와 같이 원격 사용자의 파일인지를 작업 접수 시점에 정한다
+			const isRemote = file.userHost != null;
 			for (const key of keys) {
-				const job = this.queueService.createDeleteObjectStorageFileJob(key);
+				const job = this.queueService.createDeleteObjectStorageFileJob(key, isRemote);
 				// 일부만 접수되면 모든 키를 가진 DB 행을 남겨 새 확인 뒤 다시 접수할 수 있게 한다.
 				if (options.awaitStorageQueue) await job;
 			}

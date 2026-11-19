@@ -43,7 +43,7 @@ async function fixture(options: { blocked?: boolean; suspended?: boolean; federa
 		getAuthUserFromKeyId: async (id: string) => id === keyId ? { user: { ...actor, isSuspended: options.suspended === true }, key: { keyPem: keys.publicKey } } : null,
 	};
 	const access = new ActivityPubAccessControlService(
-		meta as never, { findOneBy: async () => null } as never, utility,
+		config, meta as never, { findOneBy: async () => null } as never, utility,
 		{ getLogger: () => logger } as never, resolver as never,
 	);
 	const service = Object.assign(Object.create(ActivityPubServerService.prototype), {

@@ -135,6 +135,8 @@ export type ObjectStorageJobData = ObjectStorageFileJobData | Record<string, unk
 
 export type ObjectStorageFileJobData = {
 	key: string;
+	// 원격 사용자의 파일이면 true. 없으면(이전 작업) 로컬 버킷으로 처리한다
+	isRemote?: boolean;
 };
 
 export type EndedPollNotificationJobData = {

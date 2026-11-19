@@ -89,6 +89,7 @@ function fixture(options: { beforeInsert?: () => Promise<void>; resolveImage?: (
 			}),
 		},
 		userEntityService: { isLocalUser: (user: { host: string | null }) => user.host == null },
+		usersRepository: { findOneBy: async ({ id }: { id: string }) => [...users.values()].find(user => user.id === id) ?? null },
 		roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
 		userBlockingService: { checkBlocked: async () => false },
 		idService: { gen: () => `message${++sequence}` },

@@ -143,7 +143,7 @@ describe('Mastodon app registration', () => {
 				return data;
 			},
 		};
-		new ApiAppsMastodon(appsRepository as never, {} as never, { gen: () => 'app-id' } as never, {} as never).register(app);
+		new ApiAppsMastodon(appsRepository as never, {} as never, { gen: () => 'app-id' } as never, {} as never, {} as never, {} as never).register(app);
 		return app;
 	}
 
@@ -194,6 +194,7 @@ describe('Mastodon authorization', () => {
 			{} as never,
 			{} as never,
 			{ getLogger: () => ({ info: () => {}, error: () => {} }) } as never,
+			{} as never,
 		);
 		const reply = {
 			status: 0,
@@ -260,7 +261,7 @@ describe('Mastodon app registration edge cases', () => {
 				return data;
 			},
 		};
-		new ApiAppsMastodon(appsRepository as never, {} as never, { gen: () => 'app-id' } as never, {} as never).register(app);
+		new ApiAppsMastodon(appsRepository as never, {} as never, { gen: () => 'app-id' } as never, {} as never, {} as never, {} as never).register(app);
 		return app;
 	}
 
@@ -331,6 +332,7 @@ describe('Mastodon authorization code grant', () => {
 			{ insertOne: async (data: { permission: string[]; token: string }) => { issued.push(data); return data; } } as never,
 			{ gen: () => '0000000000', parse: () => ({ date: new Date(0) }) } as never,
 			{ getLogger: () => ({ info: () => {}, error: () => {} }) } as never,
+			{} as never,
 		);
 		return { oauth, issued, sessions: () => sessions };
 	}

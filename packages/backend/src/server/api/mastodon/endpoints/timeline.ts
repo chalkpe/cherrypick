@@ -7,6 +7,7 @@ import { Injectable } from '@nestjs/common';
 import { MastodonClientService } from '@/server/api/mastodon/MastodonClientService.js';
 import { attachMinMaxPagination, sortNewestFirst } from '@/server/api/mastodon/pagination.js';
 import { promiseMap } from '@/misc/promise-map.js';
+import { RoleService } from '@/core/RoleService.js';
 import { convertList, MastodonConverters } from '../MastodonConverters.js';
 import { parseTimelineArgs, TimelineArgs, toBoolean, unflattenFormBody } from '../argsUtils.js';
 import type { Entity } from 'megalodon';
@@ -26,7 +27,7 @@ function getListAccountIds(request: FastifyRequest<ListAccountsRoute>): string[]
 	const body = unflattenFormBody(request.body ?? {}) as { account_ids?: unknown };
 	const value = body.account_ids ?? request.query.account_ids;
 	const ids = Array.isArray(value) ? value : [value];
-	return ids.filter((id): id is string => typeof id === 'string' && id !== '');
+	return [...new Set(ids.filter((id): id is string => typeof id === 'string' && id !== ''))];
 }
 
 @Injectable()
@@ -34,7 +35,17 @@ export class ApiTimelineMastodon {
 	constructor(
 		private readonly clientService: MastodonClientService,
 		private readonly mastoConverters: MastodonConverters,
+		private readonly roleService: RoleService,
 	) {}
+
+	/**
+	 * Whether a request changes more members of a list than the policy of the user lets a list hold.
+	 */
+	private async exceedsListLimit(request: FastifyRequest, count: number): Promise<boolean> {
+		const me = await this.clientService.getAuth(request);
+		if (me == null) return false;
+		return count > (await this.roleService.getUserPolicies(me.id)).userEachUserListsLimit;
+	}
 
 	public register(fastify: FastifyInstance): void {
 		fastify.get<{ Querystring: TimelineArgs }>('/v1/timelines/public', async (request, reply) => {
@@ -160,6 +171,8 @@ export class ApiTimelineMastodon {
 			const accountIds = getListAccountIds(_request);
 			if (accountIds.length === 0) return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'Missing required property "account_ids"' });
 
+			if (await this.exceedsListLimit(_request, accountIds.length)) return reply.code(422).send({ error: 'Validation failed: Too many accounts' });
+
 			const client = this.clientService.getClient(_request);
 			const data = await client.addAccountsToList(_request.params.id, accountIds);
 
@@ -170,6 +183,8 @@ export class ApiTimelineMastodon {
 			if (!_request.params.id) return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'Missing required parameter "id"' });
 			const accountIds = getListAccountIds(_request);
 			if (accountIds.length === 0) return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'Missing required property "account_ids"' });
+
+			if (await this.exceedsListLimit(_request, accountIds.length)) return reply.code(422).send({ error: 'Validation failed: Too many accounts' });
 
 			const client = this.clientService.getClient(_request);
 			const data = await client.deleteAccountsFromList(_request.params.id, accountIds);

@@ -397,6 +397,17 @@ describe('ChatService chat federation delivery', () => {
 			},
 			roleService: {
 				isModerator: vi.fn(async (user: { id: string }) => user.id === 'moderator'),
+				getUserPolicies: vi.fn(async () => ({ chatAvailability: 'available' })),
+			},
+			chatApprovalsRepository: {
+				createQueryBuilder: () => {
+					const query = { where: () => query, andWhere: () => query, orWhere: () => query, take: () => query, getMany: async () => [] };
+					return query;
+				},
+			},
+			userFollowingService: {
+				isFollowing: vi.fn(async () => false),
+				isMutual: vi.fn(async () => false),
 			},
 			moderationLogService: {
 				log: vi.fn(),
@@ -868,6 +879,36 @@ describe('ChatService chat federation delivery', () => {
 		expect(results.slice(0, 1000).every(stored => stored)).toBe(true);
 		expect(results[1000]).toBe(false);
 		expect(await f.service.storePendingChatReaction('bob', 'https://remote.test/chat/messages/m0', '👍', false)).toBe(true);
+	});
+
+	test('does not defer a reaction whose target URI is longer than a message id can be', async () => {
+		const f = createService();
+		const long = `https://remote.test/chat/messages/${'x'.repeat(1024)}`;
+		const wide = `https://remote.test/chat/messages/${'가'.repeat(512)}`;
+
+		expect(await f.service.storePendingChatReaction('carol', long, '👍', false)).toBe(false);
+		expect(await f.service.storePendingChatReaction('carol', wide, '👍', false)).toBe(false);
+		expect(await f.service.storePendingChatReaction('carol', `https://remote.test/chat/messages/${'x'.repeat(400)}`, '👍', false)).toBe(true);
+
+		f.roomMessage.uri = long;
+		await f.service.applyPendingChatReactions(f.roomMessage as never);
+		expect(f.roomMessage.reactions).toEqual([]);
+	});
+
+	test('caps deferred reactions per sending server across actors', async () => {
+		const f = createService();
+		const hosts = new Map([['other1', 'other.test']]);
+		Object.assign((f.service as never as { usersRepository: object }).usersRepository, {
+			findOneBy: async ({ id }: { id: string }) => ({ id, host: hosts.get(id) ?? 'remote.test' }),
+		});
+		const results = [];
+		for (let i = 0; i < 5001; i++) {
+			results.push(await f.service.storePendingChatReaction(`remote${Math.floor(i / 1000)}`, `https://remote.test/chat/messages/m${i}`, '👍', false));
+		}
+
+		expect(results.slice(0, 5000).every(stored => stored)).toBe(true);
+		expect(results[5000]).toBe(false);
+		expect(await f.service.storePendingChatReaction('other1', 'https://other.test/chat/messages/m0', '👍', false)).toBe(true);
 	});
 
 	test('does not track or render a reaction when every participant is local', async () => {

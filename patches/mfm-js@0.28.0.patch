@@ -1,0 +1,26 @@
+diff --git a/built/index.cjs b/built/index.cjs
+index 204516146d2f43feccd38df6f3ca64d08a3475d1..7a1e4cafbfb8f203dc9c909c3273ec3bd9ab6ab5 100644
+--- a/built/index.cjs
++++ b/built/index.cjs
+@@ -895,7 +895,7 @@ const language = createLanguage({
+ 		});
+ 	},
+ 	search: () => {
+-		const button = alt([regexp(/\[(検索|search)\]/i), regexp(/(検索|search)/i)]);
++		const button = alt([regexp(/\[(検索|search|검색)\]/i)]);
+ 		return seq(newLine.option(), lineBegin, until(alt([newLine, seq(space, button, lineEnd)]), 1), space, button, lineEnd, newLine.option()).map((result) => {
+ 			const query = result[2];
+ 			return SEARCH(query, `${query}${result[3]}${result[4]}`);
+diff --git a/built/index.mjs b/built/index.mjs
+index e8206771e02fc2e7992c7a4ec7a922b5b0e3acb8..e70fabf1f8207c9b430a78cdf7f1d1722b88da71 100644
+--- a/built/index.mjs
++++ b/built/index.mjs
+@@ -894,7 +894,7 @@ const language = createLanguage({
+ 		});
+ 	},
+ 	search: () => {
+-		const button = alt([regexp(/\[(検索|search)\]/i), regexp(/(検索|search)/i)]);
++		const button = alt([regexp(/\[(検索|search|검색)\]/i)]);
+ 		return seq(newLine.option(), lineBegin, until(alt([newLine, seq(space, button, lineEnd)]), 1), space, button, lineEnd, newLine.option()).map((result) => {
+ 			const query = result[2];
+ 			return SEARCH(query, `${query}${result[3]}${result[4]}`);

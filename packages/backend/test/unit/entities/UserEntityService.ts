@@ -4,7 +4,7 @@
  */
 
 import { Test, TestingModule } from '@nestjs/testing';
-import { describe, expect, beforeAll, afterAll, test } from 'vitest';
+import { describe, expect, beforeAll, afterAll, test, vi } from 'vitest';
 import type { MiUser } from '@/models/User.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { GlobalModule } from '@/GlobalModule.js';
@@ -12,6 +12,7 @@ import { CoreModule } from '@/core/CoreModule.js';
 import { secureRndstr } from '@/misc/secure-rndstr.js';
 import { genAidx } from '@/misc/id/aidx.js';
 import {
+	AvatarDecorationsRepository,
 	BlockingsRepository,
 	FollowingsRepository, FollowRequestsRepository,
 	MiUserProfile, MutingsRepository, RenoteMutingsRepository,
@@ -200,6 +201,108 @@ describe('UserEntityService', () => {
 
 		afterAll(async () => {
 			await app.close();
+		});
+
+		describe('avatarDecorations', () => {
+			async function createDecorations(count: number) {
+				const decorationRepository = app.get<AvatarDecorationsRepository>(DI.avatarDecorationsRepository);
+				const rows = [...Array(count)].map((_, i) => ({
+					id: genAidx(Date.now()) + String(i).padStart(4, '0'),
+					name: `decoration${i}`,
+					description: '',
+					url: `https://example.com/decoration${i}.png`,
+					roleIdsThatCanBeUsedThisDecoration: [],
+				}));
+				await decorationRepository.insert(rows);
+				app.get(AvatarDecorationService).cacheWithRemote.delete();
+				return rows;
+			}
+
+			const asUsed = (rows: { id: string }[]) => rows.map(r => ({ id: r.id, angle: 0.1, flipH: true, offsetX: 0, offsetY: 0, scale: 1, opacity: 1 }));
+
+			test('shows the decorations of a user as stored', async () => {
+				const rows = await createDecorations(3);
+				const who = await createUser({ avatarDecorations: asUsed(rows) });
+
+				const actual = await service.pack(who, null, { schema: 'UserLite' }) as any;
+
+				expect(actual.avatarDecorations).toEqual(rows.map(r => ({ id: r.id, angle: 0.1, flipH: true, scale: 1, opacity: 1, url: r.url })));
+			});
+
+			test('shows at most 16 decorations of a user stored with more', async () => {
+				const rows = await createDecorations(40);
+				const who = await createUser({ avatarDecorations: asUsed(rows) });
+
+				const actual = await service.pack(who, null, { schema: 'UserLite' }) as any;
+
+				expect(actual.avatarDecorations.map((d: { id: string }) => d.id)).toEqual(rows.slice(0, 16).map(r => r.id));
+			});
+
+			test('reflects a decoration edited by an administrator as soon as the edit is saved', async () => {
+				const rows = await createDecorations(1);
+				const who = await createUser({ avatarDecorations: asUsed(rows) });
+				await service.pack(who, null, { schema: 'UserLite' });
+
+				await app.get(AvatarDecorationService).update(rows[0].id, { url: 'https://example.com/edited.png' });
+
+				const actual = await service.pack(who, null, { schema: 'UserLite' }) as any;
+				expect(actual.avatarDecorations[0].url).toBe('https://example.com/edited.png');
+			});
+
+			test('stops showing a decoration deleted by an administrator as soon as it is deleted', async () => {
+				const rows = await createDecorations(2);
+				const who = await createUser({ avatarDecorations: asUsed(rows) });
+				await service.pack(who, null, { schema: 'UserLite' });
+
+				await app.get(AvatarDecorationService).delete(rows[0].id);
+
+				const actual = await service.pack(who, null, { schema: 'UserLite' }) as any;
+				expect(actual.avatarDecorations.map((d: { id: string }) => d.id)).toEqual([rows[1].id]);
+			});
+
+			test('looks up only the decorations a user wears, however many other rows the table holds', async () => {
+				const decorationRepository = app.get<AvatarDecorationsRepository>(DI.avatarDecorationsRepository);
+				await decorationRepository.insert([...Array(3000)].map((_, i) => ({
+					id: genAidx(Date.now()) + 'u' + String(i).padStart(5, '0'),
+					name: `unrelated${i}`,
+					description: '',
+					url: `https://example.com/unrelated${i}.png`,
+					roleIdsThatCanBeUsedThisDecoration: [],
+				})));
+				const rows = await createDecorations(2);
+				const who = await createUser({ avatarDecorations: asUsed(rows) });
+				const find = vi.spyOn(decorationRepository, 'find');
+
+				try {
+					const actual = await service.pack(who, null, { schema: 'UserLite' }) as any;
+
+					expect(actual.avatarDecorations.map((d: { id: string }) => d.id)).toEqual(rows.map(r => r.id));
+					expect(find).toHaveBeenCalled();
+					for (const [options] of find.mock.calls) {
+						const ids = (options as { where?: { id?: { value?: string[] } } } | undefined)?.where?.id?.value;
+						expect(ids).toBeDefined();
+						expect(ids!.every(id => rows.some(r => r.id === id))).toBe(true);
+					}
+				} finally {
+					find.mockRestore();
+				}
+			});
+
+			test('looks up the decorations of many users together', async () => {
+				const decorationRepository = app.get<AvatarDecorationsRepository>(DI.avatarDecorationsRepository);
+				const rows = await createDecorations(10);
+				const users = await Promise.all(rows.map(row => createUser({ avatarDecorations: asUsed([row]) })));
+				const find = vi.spyOn(decorationRepository, 'find');
+
+				try {
+					const actual = await service.packMany(users, null, { schema: 'UserLite' }) as any[];
+
+					expect(actual.map(u => u.avatarDecorations[0].id)).toEqual(rows.map(r => r.id));
+					expect(find).toHaveBeenCalledTimes(1);
+				} finally {
+					find.mockRestore();
+				}
+			});
 		});
 
 		test('UserLite', async() => {

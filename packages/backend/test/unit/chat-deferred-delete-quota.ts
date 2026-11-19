@@ -7,8 +7,8 @@ import { describe, expect, test } from 'vitest';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import type { MiRemoteUser } from '@/models/User.js';
 
-const actor = { id: 'actor1', uri: 'https://author.test/users/actor1' } as MiRemoteUser;
-const otherActor = { id: 'actor2', uri: 'https://author.test/users/actor2' } as MiRemoteUser;
+const actor = { id: 'actor1', host: 'author.test', uri: 'https://author.test/users/actor1' } as MiRemoteUser;
+const otherActor = { id: 'actor2', host: 'author.test', uri: 'https://author.test/users/actor2' } as MiRemoteUser;
 const firstUri = 'https://author.test/chat/messages/first';
 const secondUri = 'https://author.test/chat/messages/second';
 
@@ -73,8 +73,9 @@ describe('deferred chat delete quotas', () => {
 		expect(await f.inbox.storeDeferredChatDelete(actor, firstUri, 'room1')).toBe(true);
 		expect(await f.inbox.storeDeferredChatDelete(actor, firstUri, 'room2')).toBe(true);
 
-		expect([...f.sets.values()].map(set => set.size).sort()).toEqual([1, 2]);
-		expect([...f.expirations.values()]).toEqual([{ seconds: 21600, mode: 'NX' }, { seconds: 21600, mode: 'NX' }]);
+		// 행위자별과 서버별 집계가 같은 모양으로 쌓인다
+		expect([...f.sets.values()].map(set => set.size).sort()).toEqual([1, 1, 2, 2]);
+		expect([...f.expirations.values()]).toEqual(Array.from({ length: 4 }, () => ({ seconds: 21600, mode: 'NX' })));
 		expect([...f.values.keys()].sort()).toEqual([
 			`chat_delete_upon_arrival:${firstUri}:https%3A%2F%2Fauthor.test%2Fusers%2Factor1`,
 			`chat_delete_upon_arrival:${firstUri}:https%3A%2F%2Fauthor.test%2Fusers%2Factor1:room:room1`,

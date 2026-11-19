@@ -183,6 +183,8 @@ export class VoiceRelayConsumerService implements OnModuleInit, OnApplicationShu
 		try { const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()); if (typeof payload.exp === 'number') expires = Math.min(expires, payload.exp * 1000); } catch {}
 		this.cache(createHash('sha256').update(token).digest('hex'), { roomId: call.roomId, generation: call.generation, expires });
 	}
+	/** トークンが確かめ済みで、まだ覚えている間は true */
+	hasVerifiedToken(token: string): boolean { const cached = this.tokenCache.get(createHash('sha256').update(token).digest('hex')); return cached != null && cached.roomId != null && cached.expires > Date.now(); }
 	private cache(key: string, value: { roomId: string | null; generation?: string; expires: number }): void { if (this.tokenCache.size >= 2048) this.tokenCache.delete(this.tokenCache.keys().next().value!); this.tokenCache.set(key, value); }
 	async join(roomId: string, params: { identity: string; userId: string; allowScreenShare: boolean }, includeIceServers?: false): Promise<{ token: string; iceServers: IceServer[] | null; mediaProvider: string; screenShareLimits?: ScreenShareLimits }> {
 		const call = await this.get(roomId); if (!call || call.state !== 'active') throw new VoiceRelayError('ALLOCATION_CONFLICT', 409);

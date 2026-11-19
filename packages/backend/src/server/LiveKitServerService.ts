@@ -10,6 +10,8 @@ import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { bindThis } from '@/decorators.js';
 import { getIpHash } from '@/misc/get-ip-hash.js';
+import { clientAddressOf } from '@/misc/client-address.js';
+import { VoiceRelayError } from '@/core/voice-relay/error.js';
 import { VoiceBackendService } from '@/core/VoiceBackendService.js';
 import { LiveKitService } from '@/core/LiveKitService.js';
 import { HttpRequestService } from '@/core/HttpRequestService.js';
@@ -38,7 +40,6 @@ const FORWARDED_UPGRADE_HEADERS = [
 	'sec-websocket-version',
 	'sec-websocket-extensions',
 	'sec-websocket-protocol',
-	'authorization',
 	'user-agent',
 ];
 
@@ -173,12 +174,10 @@ export class LiveKitServerService {
 				const target = this.targetOf(request.url);
 				if (target == null) return reply.code(404).send();
 
-				const headers: Record<string, string> = {};
-				if (request.headers.authorization) headers.authorization = request.headers.authorization;
-
+				// 検査したのは access_token だけなので、クライアントの Authorization は LiveKit に渡さない
 				let res: Response;
 				try {
-					res = await fetch(target, { headers, redirect: 'manual', signal: AbortSignal.timeout(this.upstreamTimeoutMs) });
+					res = await fetch(target, { redirect: 'manual', signal: AbortSignal.timeout(this.upstreamTimeoutMs) });
 				} catch (err) {
 					return reply.code(err instanceof DOMException && err.name === 'TimeoutError' ? 504 : 502).send();
 				}
@@ -205,7 +204,7 @@ export class LiveKitServerService {
 		if (!this.liveKitService.isEnabled) { socket.end(statusLine(404, 'Not Found') + 'Connection: close\r\nContent-Length: 0\r\n\r\n'); return; }
 		if (this.liveKitService.withRtcAdmission) {
 			socket.pause(); socket.on('error', () => socket.destroy());
-			this.liveKitService.withRtcAdmission(request.url ?? '/', target => new Promise<void>((resolve, reject) => { this.proxyUpgrade(request, socket, head, target ?? undefined, error => error ? reject(error) : resolve()); }), request.socket.remoteAddress, this.chatVoiceService.canParticipantJoin).catch(() => { if (socket.writable) socket.end(statusLine(403, 'Forbidden') + 'Connection: close\r\nContent-Length: 0\r\n\r\n'); });
+			this.liveKitService.withRtcAdmission(request.url ?? '/', target => new Promise<void>((resolve, reject) => { this.proxyUpgrade(request, socket, head, target ?? undefined, error => error ? reject(error) : resolve()); }), clientAddressOf(request, this.config.trustProxy), this.chatVoiceService.canParticipantJoin).catch(error => { if (socket.writable) socket.end((error instanceof VoiceRelayError && error.code === 'SIGNALING_IN_PROGRESS' ? statusLine(429, 'Too Many Requests') : statusLine(403, 'Forbidden')) + 'Connection: close\r\nContent-Length: 0\r\n\r\n'); });
 			return;
 		}
 
@@ -214,9 +213,14 @@ export class LiveKitServerService {
 
 	private proxyUpgrade(request: http.IncomingMessage, socket: stream.Duplex, head: Buffer, delegated?: { url: URL; headers: Record<string, string> }, admitted?: (error?: Error) => void): void {
 		let completed = false;
-		const deadline = admitted ? setTimeout(() => socket.destroy(new Error('Signaling admission timed out')), this.upstreamTimeoutMs + 1000) : undefined;
+		// ソケットの破棄とは別に、期限が来たら直接完了させる
+		const deadline = admitted ? setTimeout(() => { socket.destroy(new Error('Signaling admission timed out')); finish(new Error('Signaling admission timed out')); }, this.upstreamTimeoutMs + 1000) : undefined;
 		const finish = (error?: Error) => { if (completed) return; completed = true; if (deadline) clearTimeout(deadline); admitted?.(error); };
-		if (admitted) socket.once('close', () => finish(new Error('Signaling closed before admission')));
+		if (admitted) {
+			// 入場検査の間に破棄されたソケットは close を再び出さない
+			if (socket.destroyed) { finish(new Error('Signaling closed before admission')); return; }
+			socket.once('close', () => finish(new Error('Signaling closed before admission')));
+		}
 		// 拒否応答の書き込みも EPIPE になりうる。バッファの監視とは分け、close までは必ずエラーを受ける。
 		const onSocketError = () => socket.destroy();
 		socket.on('error', onSocketError);
@@ -229,7 +233,6 @@ export class LiveKitServerService {
 
 		const headers: http.OutgoingHttpHeaders = { host: target.host, ...delegated?.headers };
 		for (const name of FORWARDED_UPGRADE_HEADERS) {
-			if (delegated && name === 'authorization') continue;
 			const value = request.headers[name];
 			if (value != null) headers[name] = value;
 		}

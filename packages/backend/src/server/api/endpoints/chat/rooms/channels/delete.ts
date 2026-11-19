@@ -4,6 +4,7 @@
  */
 
 import { Injectable } from '@nestjs/common';
+import ms from 'ms';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { ApiError } from '@/server/api/error.js';
 import { chatChannelApiErrors } from '@/server/api/chat-channel-errors.js';
@@ -16,7 +17,7 @@ export const meta = {
 	requireCredential: true,
 	kind: 'write:chat',
 	prohibitMoved: true,
-	limit: { duration: 60000, max: 500 },
+	limit: { key: 'chat/rooms/channels', duration: ms('10minutes'), max: 300 },
 	errors: chatChannelApiErrors,
 } as const;
 

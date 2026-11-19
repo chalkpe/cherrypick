@@ -7,6 +7,7 @@ import { URL } from 'node:url';
 import { Inject, Injectable } from '@nestjs/common';
 import httpSignature from '@peertube/http-signature';
 import { DI } from '@/di-symbols.js';
+import type { Config } from '@/config.js';
 import type { InstancesRepository, MiMeta } from '@/models/_.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { ApDbResolverService } from '@/core/activitypub/ApDbResolverService.js';
@@ -104,6 +105,9 @@ export class ActivityPubAccessControlService {
 	private logger: Logger;
 
 	constructor(
+		@Inject(DI.config)
+		private config: Config,
+
 		@Inject(DI.meta)
 		private meta: MiMeta,
 
@@ -146,6 +150,12 @@ export class ActivityPubAccessControlService {
 
 		if (!hasSignedDate(signature) || !isSignedDateFresh(request)) {
 			this.logger.debug('Rejected a signed request without a fresh signed Date header');
+			return null;
+		}
+
+		// 署名対象に含まれる host がこのサーバー宛てでなければ、別のサーバー宛ての署名リクエストとして扱う。
+		if (request.headers.host !== this.config.host) {
+			this.logger.debug(`Rejected a signed request addressed to ${request.headers.host}`);
 			return null;
 		}
 

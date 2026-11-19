@@ -29,6 +29,10 @@ function muteListOf(action: FilterAction): MuteList {
 // Misskey word mutes apply everywhere, so every filter reports every context
 const ALL_CONTEXTS = ['home', 'notifications', 'public', 'thread', 'account'];
 
+const MAX_TITLE_LENGTH = 256;
+const MAX_FILTERS_PER_USER = 200;
+const MAX_KEYWORDS_PER_FILTER = 200;
+
 interface StoredKeyword {
 	id: string;
 	keyword: string;
@@ -59,6 +63,50 @@ export interface FilterInput {
 
 export class FilterNotFoundError extends Error {
 	override name = this.constructor.name;
+}
+
+/**
+ * The input is not a valid filter. It is answered with a validation error (422).
+ */
+export class FilterInputError extends Error {
+	override name = this.constructor.name;
+}
+
+/**
+ * The contexts of a filter without duplicates. Only the contexts Mastodon defines are valid.
+ */
+function validateContext(context: string[] | undefined): string[] | undefined {
+	if (context == null) return undefined;
+	const trimmed = context.map(c => c.trim()).filter(c => c !== '');
+	if (!trimmed.every(c => ALL_CONTEXTS.includes(c))) {
+		throw new FilterInputError('Validation failed: Context contains an unknown context');
+	}
+	return [...new Set(trimmed)];
+}
+
+/**
+ * The keywords of a filter without duplicates, compared by the word mute they become.
+ * A filter that grows beyond the limit is refused. A filter that already is beyond it can still shrink.
+ */
+function uniqueKeywords(keywords: StoredKeyword[], currentCount = 0): StoredKeyword[] {
+	const seen = new Set<string>();
+	const unique = keywords.filter(k => {
+		const key = JSON.stringify(keywordEntry(k));
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+	if (unique.length > MAX_KEYWORDS_PER_FILTER && unique.length > currentCount) {
+		throw new FilterInputError(`Validation failed: Too many keywords (maximum is ${MAX_KEYWORDS_PER_FILTER})`);
+	}
+	return unique;
+}
+
+function validateTitle(title: string | undefined): string | undefined {
+	if (title != null && title.length > MAX_TITLE_LENGTH) {
+		throw new FilterInputError(`Validation failed: Title is too long (maximum is ${MAX_TITLE_LENGTH} characters)`);
+	}
+	return title;
 }
 
 function escapeRegExp(text: string): string {
@@ -246,13 +294,18 @@ export class MastodonFilterService {
 	}
 
 	public async create(me: MiLocalUser, request: FastifyRequest, input: FilterInput): Promise<MastodonEntity.FilterV2> {
+		const title = validateTitle(input.title);
+		const context = validateContext(input.context);
+		await this.assertRoomForFilter(me.id);
+
 		const filter: StoredFilter = {
 			id: this.idService.gen(),
-			title: input.title ?? input.keywords?.[0]?.keyword ?? '',
-			context: input.context?.length ? input.context : ALL_CONTEXTS,
+			// A title taken from a keyword is cut to the length of a title
+			title: title ?? input.keywords?.[0]?.keyword.slice(0, MAX_TITLE_LENGTH) ?? '',
+			context: context?.length ? context : ALL_CONTEXTS,
 			expiresAt: input.expiresIn ? Date.now() + input.expiresIn * 1000 : null,
 			action: input.action ?? 'warn',
-			keywords: (input.keywords ?? []).filter(k => !k.destroy && k.keyword !== '').map(k => ({ id: this.idService.gen(), keyword: k.keyword, wholeWord: k.wholeWord })),
+			keywords: uniqueKeywords((input.keywords ?? []).filter(k => !k.destroy && k.keyword !== '').map(k => ({ id: this.idService.gen(), keyword: k.keyword, wholeWord: k.wholeWord }))),
 		};
 
 		await this.updateWordMutes(request, { remove: [], add: this.entriesOf(filter) }, me.id);
@@ -261,11 +314,28 @@ export class MastodonFilterService {
 	}
 
 	/**
+	 * Filters kept in Redis are limited per user. Word mutes that are not stored yet and expired filters do not count.
+	 */
+	private async assertRoomForFilter(userId: MiUser['id']): Promise<void> {
+		const active = (await this.loadStored(userId)).filter(f => f.expiresAt == null || f.expiresAt > Date.now());
+		if (active.length >= MAX_FILTERS_PER_USER) {
+			throw new FilterInputError(`Validation failed: Too many filters (maximum is ${MAX_FILTERS_PER_USER})`);
+		}
+	}
+
+	/**
 	 * Updates a filter. A filter that only exists as a word mute becomes a stored filter.
 	 */
 	public async update(me: MiLocalUser, request: FastifyRequest, id: string, input: FilterInput): Promise<MastodonEntity.FilterV2> {
+		const title = validateTitle(input.title);
+		const context = validateContext(input.context);
+
 		const current = (await this.resolve(me.id, request)).find(f => f.id === id);
 		if (!current) throw new FilterNotFoundError();
+		// Removing keywords only never makes room for another filter, so it is not held to the limit
+		const onlyRemoves = input.title === undefined && input.context === undefined && input.action === undefined && input.expiresIn === undefined
+			&& input.keywords != null && input.keywords.length > 0 && input.keywords.every(k => k.destroy);
+		if (this.parseSyntheticId(id) && !onlyRemoves) await this.assertRoomForFilter(me.id);
 
 		let keywords = current.keywords;
 		for (const change of input.keywords ?? []) {
@@ -281,11 +351,11 @@ export class MastodonFilterService {
 
 		const updated: StoredFilter = {
 			id: this.parseSyntheticId(id) ? this.idService.gen() : current.id,
-			title: input.title ?? current.title,
-			context: input.context?.length ? input.context : current.context,
+			title: title ?? current.title,
+			context: context?.length ? context : current.context,
 			expiresAt: input.expiresIn !== undefined ? (input.expiresIn ? Date.now() + input.expiresIn * 1000 : null) : current.expiresAt,
 			action: input.action ?? current.action,
-			keywords,
+			keywords: uniqueKeywords(keywords, current.keywords.length),
 		};
 
 		await this.updateWordMutes(request, { remove: this.entriesOf(current), add: this.entriesOf(updated) }, me.id);

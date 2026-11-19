@@ -9,7 +9,8 @@ import * as assert from 'assert';
 import { afterAll, beforeAll, describe, test } from 'vitest';
 import { ChatMessageAccessError, ChatService } from '@/core/ChatService.js';
 import { MiChatMessage } from '@/models/ChatMessage.js';
-import type { MiUser } from '@/models/User.js';
+import { MiChatApproval } from '@/models/ChatApproval.js';
+import { MiUser } from '@/models/User.js';
 import { api, createAppToken, failedApiCall, initTestDb, signup } from '../utils.js';
 import { waitForChatNotificationTurn } from '../misc/chat-notification-drain.js';
 import type * as misskey from 'cherrypick-js';
@@ -340,6 +341,9 @@ describe('chat/messages/update', () => {
 			const events: unknown[] = [];
 			const service = Object.assign(Object.create(ChatService.prototype), {
 				chatMessagesRepository: messages,
+				usersRepository: db.getRepository(MiUser),
+				chatApprovalsRepository: db.getRepository(MiChatApproval),
+				roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
 				customEmojiService: { populateEmojis: async () => ({}) },
 				userBlockingService: { checkBlocked: async () => false },
 				globalEventService: { publishChatUserStream: (...args: unknown[]) => events.push(args) },
@@ -379,6 +383,9 @@ describe('chat/messages/update', () => {
 					},
 					update: messages.update.bind(messages),
 				},
+				usersRepository: db.getRepository(MiUser),
+				chatApprovalsRepository: db.getRepository(MiChatApproval),
+				roleService: { getUserPolicies: async () => ({ chatAvailability: 'available' }) },
 				customEmojiService: { populateEmojis: async () => ({}) },
 				userBlockingService: { checkBlocked: async () => false },
 				globalEventService: { publishChatUserStream: (...args: unknown[]) => events.push(args) },

@@ -780,9 +780,10 @@ export class QueueService {
 	}
 
 	@bindThis
-	public createDeleteObjectStorageFileJob(key: string) {
+	public createDeleteObjectStorageFileJob(key: string, isRemote = false) {
 		return this.objectStorageQueue.add('deleteFile', {
 			key: key,
+			isRemote: isRemote,
 		}, {
 			removeOnComplete: {
 				age: 3600 * 24 * 7, // keep up to 7 days

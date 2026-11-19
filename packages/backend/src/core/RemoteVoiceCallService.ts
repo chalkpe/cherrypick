@@ -15,7 +15,7 @@ import type Logger from '@/logger.js';
 import { StatusError } from '@/misc/status-error.js';
 import { checkHttps } from '@/misc/check-https.js';
 import { MAX_ROOM_MEMBERS } from '@/core/ChatService.js';
-import { ChatVoiceService, isRemoteVoiceCallEnabled } from '@/core/ChatVoiceService.js';
+import { ChatVoiceService, isRemoteVoiceCallEnabled, remoteJoinKeyOf, REMOTE_JOIN_TTL_SECONDS } from '@/core/ChatVoiceService.js';
 import type { JoinCredentials } from '@/core/ChatVoiceService.js';
 import { parseScreenShareLimits, type ScreenShareLimits } from '@/core/voice-relay/screen-share-limits.js';
 import { HostPolicyService } from '@/core/HostPolicyService.js';
@@ -131,6 +131,9 @@ export class RemoteVoiceCallService {
 		const response = parseTokenResponse(body, `${origin}/livekit`);
 		if (response == null) throw new RemoteVoiceCallError('unreachable');
 
+		// 応答に載っていた現況に自分が残るよう、現況を保存する前に、入る要求に成功した記録を残す
+		await this.rememberJoin(me, room);
+
 		// 現況は一覧の表示に使うだけなので、保存を待たずに参加させ、失敗しても参加は止めない。
 		// 次の参加やホストから届く現況で埋まるので、記録だけ残す
 		this.chatVoiceService.storeRemoteSnapshot(room, response.participants, response.updatedAt).catch(err => {
@@ -163,6 +166,16 @@ export class RemoteVoiceCallService {
 			}, TOKEN_REQUEST_TIMEOUT_MS, { redirect: 'manual', size: TOKEN_RESPONSE_SIZE_LIMIT });
 		} catch (err) {
 			throw await this.errorOf(err, owner.host, false);
+		}
+		await this.rememberJoin(me, room);
+	}
+
+	/** このサーバーを通って通話に入る要求が成功した記録を、寿命ごと書き直す。残せなくても通話は止めない */
+	private async rememberJoin(me: MiLocalUser, room: MiChatRoom): Promise<void> {
+		try {
+			await this.redisClient.set(remoteJoinKeyOf(room.id, me.id), '1', 'EX', REMOTE_JOIN_TTL_SECONDS);
+		} catch (err) {
+			this.logger.warn(`Failed to record the join of ${me.id} to the voice call of ${room.id}`, { error: err });
 		}
 	}
 

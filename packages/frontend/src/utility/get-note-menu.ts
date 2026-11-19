@@ -25,6 +25,7 @@ import { isSupportShare } from '@/utility/navigator.js';
 import { getAppearNote } from '@/utility/get-appear-note.js';
 import { genEmbedCode } from '@/utility/get-embed-code.js';
 import { prefer } from '@/preferences.js';
+import { openExternalUrl } from '@/utility/open-external-url.js';
 import { getPluginHandlers } from '@/plugin.js';
 import { globalEvents } from '@/events.js';
 import { addDividersBetweenMenuSections } from '@/utility/add-dividers-between-menu-sections.js';
@@ -599,7 +600,7 @@ export function getNoteMenu(props: {
 						icon: 'ti ti-external-link',
 						text: i18n.ts.showOnRemote,
 						action: () => {
-							window.open(link, '_blank', 'noopener');
+							openExternalUrl(link);
 						},
 					});
 				} else {
@@ -819,7 +820,7 @@ export function getNoteMenu(props: {
 						icon: 'ti ti-external-link',
 						text: i18n.ts.showOnRemote,
 						action: () => {
-							window.open(link, '_blank', 'noopener');
+							openExternalUrl(link);
 						},
 					});
 				} else {

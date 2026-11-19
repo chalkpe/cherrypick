@@ -76,6 +76,17 @@ const ROOM_BANNED = 'skip: banned from the room';
 const ROOM_BLOCKED = 'skip: blocked by the room owner';
 const CHAT_ROOM_URI = /\/chat\/rooms\/([a-zA-Z0-9]+)$/;
 const MAX_DEFERRED_CHAT_DELETES_PER_ACTOR = 1000;
+// A server can make as many actors as it likes, so the stores are bounded per host as well.
+// A room that is not known yet holds a handful of activities, so 1000 per host leaves ordinary use untouched.
+const MAX_PENDING_ROOM_ACTIVITIES_PER_HOST = 1000;
+const MAX_DEFERRED_CHAT_DELETES_PER_HOST = 5000;
+// The most a deferred activity may take when serialized.
+const MAX_PENDING_ROOM_ACTIVITY_LENGTH = 16384;
+
+/** The message URI column holds at most 512 characters. */
+function isChatMessageIdLength(uri: string): boolean {
+	return uri.length <= 1024 && Array.from(uri).length <= 512;
+}
 
 /** Whether the inbox queue will try this activity again if it fails now. */
 export type ActivityAttempt = { isLastAttempt?: boolean };
@@ -1228,7 +1239,7 @@ export class ApInboxService {
 		if (typeof object !== 'object') return 'skip: object is not an object';
 		if (typeof object.id !== 'string') return 'skip: object has no id';
 		// The message URI column holds at most 512 characters; reject before resolving recipients or files.
-		if (object.id.length > 1024 || Array.from(object.id).length > 512) return 'skip: chat message id is too long';
+		if (!isChatMessageIdLength(object.id)) return 'skip: chat message id is too long';
 		if (object.attributedTo == null || getOneApId(object.attributedTo) !== actor.uri) return 'skip: actor.uri !== object.attributedTo';
 		if (!this.isOnActorHost(object.id, actor)) return 'skip: host in actor.uri !== object.id';
 
@@ -2241,13 +2252,21 @@ export class ApInboxService {
 	}
 
 	private async storeDeferredChatDelete(actor: MiRemoteUser, uri: string, roomId?: string): Promise<boolean> {
+		// A target longer than a message id allows could never name a stored message.
+		if (!isChatMessageIdLength(uri)) return false;
 		// Relays share one bounded budget across rooms, separate from the author's own deletes.
-		const indexKey = `chat_delete_upon_arrival_index:${actor.id}:${roomId == null ? 'direct' : 'relay'}`;
+		const kind = roomId == null ? 'direct' : 'relay';
+		const indexKey = `chat_delete_upon_arrival_index:${actor.id}:${kind}`;
+		const hostIndexKey = `chat_delete_upon_arrival_host_index:${actor.host}:${kind}`;
+		const member = roomId == null ? uri : `${uri}:room:${roomId}`;
 		const count = await this.redisClient.scard(indexKey);
 		if (count >= MAX_DEFERRED_CHAT_DELETES_PER_ACTOR) return false;
-		await this.redisClient.sadd(indexKey, roomId == null ? uri : `${uri}:room:${roomId}`);
+		if (await this.redisClient.scard(hostIndexKey) >= MAX_DEFERRED_CHAT_DELETES_PER_HOST) return false;
+		await this.redisClient.sadd(indexKey, member);
+		await this.redisClient.sadd(hostIndexKey, member);
 		// NX keeps this a fixed window: extended on every call, the set of an actor that stays active never empties until it reaches the cap.
 		await this.redisClient.expire(indexKey, DEFERRED_CHAT_DELETE_TTL, 'NX');
+		await this.redisClient.expire(hostIndexKey, DEFERRED_CHAT_DELETE_TTL, 'NX');
 		await this.redisClient.setex(`chat_delete_upon_arrival:${uri}:${encodeURIComponent(actor.uri)}${roomId == null ? '' : `:room:${roomId}`}`, DEFERRED_CHAT_DELETE_TTL, actor.uri);
 		return true;
 	}
@@ -2259,6 +2278,10 @@ export class ApInboxService {
 		// Only the owner sends these, and the room lives on the owner's server.
 		// Without this another server could fill the room's slots before the owner's activities arrive.
 		if (!this.isOnActorHost(roomUri, actor)) return false;
+		if (!isChatMessageIdLength(roomUri)) return false;
+
+		const entry = JSON.stringify({ actorId: actor.id, activity, attempts: 0 });
+		if (entry.length > MAX_PENDING_ROOM_ACTIVITY_LENGTH) return false;
 
 		const indexKey = `chat_pending_room_activities_index:${actor.id}`;
 		if (await this.redisClient.scard(indexKey) >= MAX_PENDING_ROOMS_PER_ACTOR) return false;
@@ -2266,14 +2289,40 @@ export class ApInboxService {
 		const key = this.pendingRoomActivitiesKey(roomUri);
 		const count = await this.redisClient.llen(key);
 		if (count >= MAX_PENDING_ROOM_ACTIVITIES) return false;
+
+		// Counted last so that a refusal above does not hold a slot. The count falls when the room's activities are applied.
+		const hostKey = this.pendingRoomActivitiesHostKey(roomUri);
+		if (hostKey != null) {
+			const hostCount = await this.redisClient.incr(hostKey);
+			await this.redisClient.expire(hostKey, PENDING_ROOM_ACTIVITY_TTL, 'NX');
+			if (hostCount > MAX_PENDING_ROOM_ACTIVITIES_PER_HOST) {
+				await this.redisClient.decr(hostKey);
+				return false;
+			}
+		}
 		await this.redisClient.sadd(indexKey, roomUri);
 		// NX keeps this a fixed window: extended on every call, the set of an actor that stays active never empties until it reaches the cap.
 		await this.redisClient.expire(indexKey, PENDING_ROOM_ACTIVITY_TTL, 'NX');
 		await this.redisClient.multi()
-			.rpush(key, JSON.stringify({ actorId: actor.id, activity, attempts: 0 }))
+			.rpush(key, entry)
 			.expire(key, PENDING_ROOM_ACTIVITY_TTL)
 			.exec();
 		return true;
+	}
+
+	/** The room lives on the host of the actor that stores its activities, so the room URI names the host. */
+	private pendingRoomActivitiesHostKey(roomUri: string): string | null {
+		try {
+			return `chat_pending_room_activities_host:${this.utilityService.punyHost(roomUri)}`;
+		} catch {
+			return null;
+		}
+	}
+
+	private async releasePendingRoomActivities(roomUri: string, count: number): Promise<void> {
+		const hostKey = this.pendingRoomActivitiesHostKey(roomUri);
+		if (hostKey == null || count <= 0) return;
+		if (await this.redisClient.decrby(hostKey, count) <= 0) await this.redisClient.del(hostKey);
 	}
 
 	private pendingRoomActivitiesKey(roomUri: string): string {
@@ -2288,6 +2337,7 @@ export class ApInboxService {
 		if (results[0][0] != null) throw results[0][0];
 		const entries = results[0][1] as string[];
 		if (entries.length === 0) return false;
+		await this.releasePendingRoomActivities(roomUri, entries.length);
 
 		const pending: { actorId: string; activity: IAdd | IUpdate | IDelete | IUndo; attempts: number; }[] = [];
 		for (const entry of entries) {
@@ -2333,6 +2383,12 @@ export class ApInboxService {
 
 		// Retrying the Invite replays these. The attempt limit stops one bad activity from losing the invitation.
 		if (!deleted && failed.length > 0) {
+			const hostKey = this.pendingRoomActivitiesHostKey(roomUri);
+			if (hostKey != null) {
+				await this.redisClient.incrby(hostKey, failed.length);
+				// The key may have been deleted when the count reached zero above, so it needs its expiry again.
+				await this.redisClient.expire(hostKey, PENDING_ROOM_ACTIVITY_TTL, 'NX');
+			}
 			await this.redisClient.multi()
 				.rpush(key, ...failed.map(entry => JSON.stringify(entry)))
 				.expire(key, PENDING_ROOM_ACTIVITY_TTL)

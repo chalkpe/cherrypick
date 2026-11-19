@@ -84,6 +84,10 @@ const MAX_REACTIONS_PER_MESSAGE = 100;
 const PENDING_CHAT_REACTION_TTL = 6 * 60 * 60;
 const MAX_PENDING_CHAT_REACTIONS = 100;
 const MAX_PENDING_CHAT_REACTIONS_PER_ACTOR = 1000;
+const MAX_PENDING_CHAT_REACTIONS_PER_HOST = 5000;
+// Same bounds as a chat message URI that can be stored (see ApInboxService.createChatMessage).
+const MAX_CHAT_MESSAGE_URI_LENGTH = 1024;
+const MAX_CHAT_MESSAGE_URI_CODE_POINTS = 512;
 const MAX_PENDING_CHAT_REACTION_LENGTH = 256;
 const MAX_PENDING_CHAT_ACTIVITY_LENGTH = 8192;
 const CHAT_REACTION_ACTIVITY_ID_TTL = 30 * 24 * 60 * 60;
@@ -777,7 +781,7 @@ export class ChatService {
 		if (message.fromUserId !== userId) throw new ChatMessageAccessError('cannot edit');
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
 		if (message.dice != null) throw new ChatMessageAccessError('dice message is immutable');
-		await this.assertCanStillEdit(message);
+		await this.assertCanStillEdit(message, { id: userId, host: null });
 		await this.assertMessageRoomNotArchived(message);
 
 		const trimmed = text.trim();
@@ -2050,7 +2054,7 @@ export class ChatService {
 		if (message.deletedAt != null) throw new ChatMessageAccessError('deleted');
 		if (message.dice != null) throw new ChatMessageAccessError('dice message is immutable');
 		if (message.editedAt != null && message.editedAt >= editedAt) return message;
-		await this.assertCanStillEdit(message);
+		await this.assertCanStillEdit(message, actor);
 		const room = message.toRoomId != null ? await this.chatRoomsRepository.findOneBy({ id: message.toRoomId }) : null;
 		if (room != null) await this.assertRemoteWriteAllowed(room);
 
@@ -2282,6 +2286,8 @@ export class ChatService {
 	@bindThis
 	public async storePendingChatReaction(actorId: MiUser['id'], messageUri: string, reaction: string, undo: boolean, activityId?: string, options?: { roomId?: MiChatRoom['id']; activity?: IObject }): Promise<boolean> {
 		if (reaction.length > MAX_PENDING_CHAT_REACTION_LENGTH) return false;
+		// A message with a longer URI is never stored, so there is nothing for this reaction to wait for.
+		if (messageUri.length > MAX_CHAT_MESSAGE_URI_LENGTH || Array.from(messageUri).length > MAX_CHAT_MESSAGE_URI_CODE_POINTS) return false;
 		if (activityId != null && (typeof activityId !== 'string' || activityId.length === 0 || activityId.length > MAX_REMOTE_REACTION_ACTIVITY_ID_LENGTH)) return false;
 
 		// Any actor can name any URI here, so bound what one actor can keep in Redis until the TTL.
@@ -2289,6 +2295,15 @@ export class ChatService {
 		const counted = await this.redisClient.multi().incr(countKey).expire(countKey, PENDING_CHAT_REACTION_TTL, 'NX').exec();
 		const count = counted?.[0]?.[1];
 		if (typeof count !== 'number' || count > MAX_PENDING_CHAT_REACTIONS_PER_ACTOR) return false;
+
+		// Actors are cheap to make, so also bound what one server can keep.
+		const host = (await this.usersRepository.findOneBy({ id: actorId }))?.host;
+		if (host != null) {
+			const hostCountKey = `chat_pending_reaction_host_count:${host}`;
+			const hostCounted = await this.redisClient.multi().incr(hostCountKey).expire(hostCountKey, PENDING_CHAT_REACTION_TTL, 'NX').exec();
+			const hostCount = hostCounted?.[0]?.[1];
+			if (typeof hostCount !== 'number' || hostCount > MAX_PENDING_CHAT_REACTIONS_PER_HOST) return false;
+		}
 
 		const activity = options?.activity != null && JSON.stringify(options.activity).length <= MAX_PENDING_CHAT_ACTIVITY_LENGTH ? options.activity : undefined;
 
@@ -2380,13 +2395,20 @@ export class ChatService {
 	}
 
 	/** Creating a message checks these too; an edit must not be a way around them. */
-	private async assertCanStillEdit(message: MiChatMessage): Promise<void> {
+	private async assertCanStillEdit(message: MiChatMessage, editor: { id: MiUser['id']; host: MiUser['host']; }): Promise<void> {
 		if (message.fromUserId == null) throw new ChatMessageAccessError('cannot edit');
 		if (message.toRoomId != null) {
 			const room = await this.chatRoomsRepository.findOneBy({ id: message.toRoomId });
 			if (room == null || !(await this.isRoomMember(room, message.fromUserId))) throw new ChatMessageAccessError('cannot edit');
-		} else if (message.toUserId != null && await this.userBlockingService.checkBlocked(message.toUserId, message.fromUserId)) {
-			throw new ChatMessageAccessError('cannot edit');
+		} else if (message.toUserId != null) {
+			const toUser = await this.usersRepository.findOneBy({ id: message.toUserId });
+			if (toUser == null) throw new ChatMessageAccessError('cannot edit');
+			try {
+				await this.assertCanSendToUser(editor, toUser);
+			} catch (err) {
+				if (err instanceof ChatMessageAccessError) throw new ChatMessageAccessError('cannot edit');
+				throw err;
+			}
 		}
 	}
 

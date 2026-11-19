@@ -12,6 +12,7 @@ import { ChatRoomHistorySyncProcessorService } from '@/queue/processors/ChatRoom
 import { ChatService } from '@/core/ChatService.js';
 import { buildChatHistoryPage } from '@/core/activitypub/misc/chat-history.js';
 import { StatusError } from '@/misc/status-error.js';
+import { IdentifiableError } from '@/misc/identifiable-error.js';
 import type { IObject } from '@/core/activitypub/type.js';
 
 vi.mock('@/misc/distributed-lock.js', () => ({ acquireApObjectLock: async () => async () => {} }));
@@ -50,7 +51,15 @@ type Setup = {
 	signers?: unknown[];
 	pass?: number;
 	channel?: (value: unknown) => string | null | undefined;
+	refusedHosts?: Set<string>;
+	/** 이 수를 넘는 조회를 하는 Resolver는 조회 횟수 한도 예외를 낸다 (페이지를 받는 Resolver 제외) */
+	resolverLimit?: number;
+	/** 처음 보는 계정 하나를 만들 때 Resolver로 하는 조회 수 */
+	personLookups?: number;
+	knownEmojis?: Set<string>;
 };
+
+const resolverLimitId = 'd592da9f-822f-4d91-83d7-4ceefabcf3d2';
 
 function setup(options: Setup = {}) {
 	const state = { roomId: 'room1', status: 'running', nextUri: null as string | null, pass: options.pass ?? 1 };
@@ -59,7 +68,7 @@ function setup(options: Setup = {}) {
 	const history = {
 		getState: vi.fn(async () => ({ ...state })),
 		localMembers: vi.fn(async () => options.signers ?? [signer]),
-		findExistingCopy: vi.fn(async (_roomId: string, sourceUri: string) => options.existing?.has(sourceUri) ? { uri: sourceUri } : null),
+		findExistingCopy: vi.fn(async (_roomId: string, sourceUri: string) => options.existing?.has(sourceUri) || imported.some(input => input.sourceUri === sourceUri) ? { uri: sourceUri } : null),
 		importMessage: vi.fn(async (_room: unknown, input: Record<string, unknown>) => {
 			imported.push(input);
 			return { id: `stored-${imported.length}` };
@@ -85,13 +94,40 @@ function setup(options: Setup = {}) {
 		if (page != null) return page;
 		throw new StatusError('Not Found', 404);
 	});
+	const resolvers: object[] = [];
+	const createResolver = vi.fn(async () => {
+		let signed = false;
+		let used = 0;
+		const resolver = {
+			signAs: (user: { id: string }) => {
+				signed = true;
+				signAs(user);
+			},
+			resolve: async (url: string) => {
+				if (!signed && options.resolverLimit != null && used++ >= options.resolverLimit) throw new IdentifiableError(resolverLimitId, 'hit recursion limit');
+				return resolve(url);
+			},
+		};
+		resolvers.push(resolver);
+		return resolver;
+	});
 	const accounts = options.accounts ?? new Map<string, unknown>([[author.uri, author], [reactor.uri, reactor]]);
-	const resolvePerson = vi.fn(async (uri: string) => {
+	const resolvePerson = vi.fn(async (uri: string, resolver?: { resolve(url: string): Promise<unknown> }) => {
 		const account = accounts.get(uri);
+		for (let i = 0; i < (options.personLookups ?? 0) && resolver != null; i++) {
+			try {
+				await resolver.resolve(i === 0 ? uri : `${uri}/part${i}`);
+			} catch (err) {
+				if (i === 0 && err instanceof IdentifiableError) throw err;
+			}
+		}
 		if (account instanceof Error) throw account;
 		if (account == null) throw new StatusError('Gone', 410);
 		return account;
 	});
+	const getUserFromApId = vi.fn(async (uri: string) => options.cachedAccounts?.get(uri) ?? null);
+	const isRefusedRemoteHost = vi.fn(async (host: string | null) => host != null && (options.refusedHosts?.has(host) ?? false));
+	const refusedRemoteHostsOf = vi.fn(async (hosts: string[]) => new Map(hosts.map(host => [host, options.refusedHosts?.has(host) ?? false])));
 	const syncRoom = vi.fn(async () => 'ok');
 	const applyPendingChatReactions = vi.fn(async () => {});
 	const service = Object.assign(Object.create(ChatRoomHistorySyncProcessorService.prototype), {
@@ -100,7 +136,10 @@ function setup(options: Setup = {}) {
 		redisClient: redis,
 		chatRoomsRepository: { findOneBy: vi.fn(async () => room), findOneByOrFail: vi.fn(async () => room) },
 		usersRepository: { findOneBy: vi.fn(async () => owner) },
-		emojisRepository: { findBy: vi.fn(async () => []), existsBy: vi.fn(async () => false) },
+		emojisRepository: {
+				findBy: vi.fn(async ({ name }: { name: { value: string[] } }) => name.value.filter(n => options.knownEmojis?.has(n)).map(n => ({ name: n }))),
+				existsBy: vi.fn(async ({ name }: { name: string }) => options.knownEmojis?.has(name) ?? false),
+			},
 		chatService: { applyPendingChatReactions, normalizeRemoteReaction: ChatService.prototype.normalizeRemoteReaction },
 		chatRoomChannelService: {
 			remoteChannel: vi.fn(async (_room: unknown, value: unknown) => options.channel != null ? options.channel(value) : null),
@@ -108,8 +147,8 @@ function setup(options: Setup = {}) {
 		},
 		chatRoomHistoryService: history,
 		chatRoomRosterSyncProcessorService: { syncRoom },
-		apResolverService: { createResolver: async () => ({ signAs, resolve }) },
-		apDbResolverService: { getUserFromApId: vi.fn(async (uri: string) => options.cachedAccounts?.get(uri) ?? null) },
+		apResolverService: { createResolver },
+		apDbResolverService: { getUserFromApId },
 		apPersonService: { resolvePerson },
 		apInboxService: { resolveChatAttachments: vi.fn(async () => ({ files: [], failed: true, temporarilyFailed: false })) },
 		apNoteService: { extractEmojis: vi.fn() },
@@ -120,13 +159,13 @@ function setup(options: Setup = {}) {
 			isSelfHost: (host: string) => host === 'here.test',
 			extractDbHost: (uri: string) => new URL(uri).host,
 		},
-		hostPolicyService: { isRefusedRemoteHost: vi.fn(async () => false) },
+		hostPolicyService: { isRefusedRemoteHost, refusedRemoteHostsOf },
 		idService: { isSafeT: () => true },
 	}) as ChatRoomHistorySyncProcessorService;
 
 	const moveToDelayed = vi.fn(async () => {});
 	const run = (attemptsMade = 0) => service.process({ data: { roomId: 'room1' }, attemptsMade, opts: { attempts: 8 }, token: 'job-token', moveToDelayed } as never);
-	return { service, run, state, history, imported, resolve, resolvePerson, syncRoom, applyPendingChatReactions, moveToDelayed, signAs };
+	return { service, run, state, history, imported, resolve, resolvePerson, createResolver, resolvers, getUserFromApId, isRefusedRemoteHost, refusedRemoteHostsOf, syncRoom, applyPendingChatReactions, moveToDelayed, signAs };
 }
 
 const lockKey = 'chat_room_history_lock:room1';
@@ -373,11 +412,199 @@ describe('과거 기록 가져오기 작업', () => {
 				{ actor: reactor.uri, reaction: ':blob:' },
 			],
 		})], null));
-		const { run, imported } = setup({ pages });
+		const { run, imported } = setup({ pages, cachedAccounts: new Map([[reactor.uri, reactor]]) });
 
 		await run();
 
 		expect(imported[0].reactions).toEqual([`${reactor.id}/👍`, `${reactor.id}/:blob@third.test:`]);
+	});
+
+	test('리액션한 계정이 이 서버가 모르는 계정이면 원격 조회 없이 그 리액션만 버린다', async () => {
+		const strangers = Array.from({ length: 150 }, (_, n) => ({ actor: `https://stranger.test/users/u${n}`, reaction: '👍' }));
+		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
+			_misskey_chatReactions: [...strangers, { actor: reactor.uri, reaction: '🎉' }],
+		})], null));
+		const { run, imported, resolvePerson, resolve } = setup({ pages, cachedAccounts: new Map([[reactor.uri, reactor]]) });
+
+		await run();
+
+		expect(imported[0].reactions).toEqual([`${reactor.id}/🎉`]);
+		// 작성자 한 명만 원격에서 가져온다
+		expect(resolvePerson).toHaveBeenCalledTimes(1);
+		expect(resolvePerson).toHaveBeenCalledWith(author.uri, expect.anything());
+		expect(resolve.mock.calls.map(call => call[0])).toEqual([first]);
+	});
+
+	test('거부 대상 서버의 계정은 조회하기 전에 거른다', async () => {
+		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
+			_misskey_chatReactions: [{ actor: reactor.uri, reaction: '👍' }],
+		})], null));
+		const { run, imported, getUserFromApId, refusedRemoteHostsOf } = setup({ pages, cachedAccounts: new Map([[reactor.uri, reactor]]), refusedHosts: new Set(['third.test']) });
+
+		await run();
+
+		expect(imported[0].reactions).toEqual([]);
+		expect(refusedRemoteHostsOf).toHaveBeenCalledWith(['third.test']);
+		expect(getUserFromApId).not.toHaveBeenCalledWith(reactor.uri);
+	});
+
+	describe('커스텀 이모지 확인', () => {
+		const emojiTag = (n: number) => ({ id: `https://member.test/emojis/e${n}`, type: 'Emoji', name: `:e${n}:`, icon: { type: 'Image', url: `https://member.test/files/e${n}.png` } });
+		const emojiLookups = (calls: unknown[][]) => calls.map(call => String(call[0])).filter(url => url.startsWith('https://member.test/emojis/'));
+
+		test('태그가 많아도 글 하나에 본문에 쓰인 이름 16개까지만 확인한다', async () => {
+			const tags = Array.from({ length: 60 }, (_, n) => emojiTag(n));
+			const content = tags.map(tag => tag.name).join(' ');
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', { _misskey_content: content, tag: tags })], null));
+			const { run, resolve } = setup({ pages });
+
+			await run();
+
+			expect(emojiLookups(resolve.mock.calls)).toEqual(Array.from({ length: 16 }, (_, n) => `https://member.test/emojis/e${n}`));
+		});
+
+		test('본문에 쓰이지 않은 이름은 확인하지 않는다', async () => {
+			const tags = Array.from({ length: 10 }, (_, n) => emojiTag(n));
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', { _misskey_content: 'text :e3: and :e7:', tag: tags })], null));
+			const { run, resolve } = setup({ pages });
+
+			await run();
+
+			expect(emojiLookups(resolve.mock.calls)).toEqual(['https://member.test/emojis/e3', 'https://member.test/emojis/e7']);
+		});
+
+		test('작성자 조회와 이모지 조회는 한 페이지 안에서 각각 Resolver 하나를 쓴다', async () => {
+			const tags = Array.from({ length: 10 }, (_, n) => emojiTag(n));
+			const content = tags.map(tag => tag.name).join(' ');
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', { _misskey_content: content, tag: tags }), note('m2', { _misskey_content: ':e0: :e1:', tag: tags })], null));
+			const { run, createResolver, resolvePerson, resolvers } = setup({ pages });
+
+			await run();
+
+			// 페이지를 받는 Resolver 하나, 작성자 조회용 하나, 이모지 조회용 하나
+			expect(createResolver).toHaveBeenCalledTimes(3);
+			expect(resolvePerson.mock.calls[0][1]).toBe(resolvers[1]);
+		});
+	});
+
+	describe('조회 횟수 한도', () => {
+		const accountOf = (n: number) => ({ id: `a${n}`, host: 'member.test', uri: `https://member.test/users/a${n}`, isSuspended: false });
+		const emojiTag = (n: number) => ({ id: `https://member.test/emojis/e${n}`, type: 'Emoji', name: `:e${n}:`, icon: { type: 'Image', url: `https://member.test/files/e${n}.png` } });
+
+		function manyAuthors() {
+			const accounts = new Map<string, unknown>(Array.from({ length: 8 }, (_, n) => [accountOf(n).uri, accountOf(n)]));
+			const tags = Array.from({ length: 16 }, (_, n) => emojiTag(n));
+			const items = Array.from({ length: 8 }, (_, n) => note(`m${n}`, {
+				attributedTo: accountOf(n).uri,
+				...(n === 0 ? { _misskey_content: tags.map(tag => tag.name).join(' '), tag: tags } : {}),
+			}));
+			return { accounts, items };
+		}
+
+		test('한도 때문에 확인하지 못한 글쓴이의 글은 보관 작성자로 저장하지 않고 다음 실행에서 이어 받는다', async () => {
+			const { accounts, items } = manyAuthors();
+			pages.set(first, buildChatHistoryPage(roomUri, null, items, null));
+			const ctx = setup({ pages, accounts, resolverLimit: 20, personLookups: 5 });
+
+			await expect(ctx.run()).rejects.toBeInstanceOf(DelayedError);
+
+			// 이미 저장한 글은 정상 글쓴이로 저장돼 있고, 그 페이지는 끝난 것으로 치지 않는다
+			expect(ctx.imported.length).toBeGreaterThan(0);
+			expect(ctx.imported.length).toBeLessThan(8);
+			expect(ctx.imported.every(input => input.authorId != null && input.archivedAuthor == null)).toBe(true);
+			expect(ctx.state.status).toBe('running');
+			expect(ctx.state.nextUri).toBeNull();
+			expect(ctx.history.advance).not.toHaveBeenCalled();
+			expect(ctx.moveToDelayed).toHaveBeenCalledWith(expect.any(Number), 'job-token');
+
+			expect(await ctx.run()).toBe('ok: completed');
+
+			expect(ctx.imported.map(input => input.sourceUri)).toEqual(items.map(item => item.id));
+			expect(ctx.imported.every(input => input.authorId != null && input.archivedAuthor == null)).toBe(true);
+		});
+
+		test('글을 하나도 저장하지 못한 채 한도가 차면 보관 작성자로 저장하지 않고 오류로 다시 시도한다', async () => {
+			const { accounts, items } = manyAuthors();
+			pages.set(first, buildChatHistoryPage(roomUri, null, items, null));
+			const ctx = setup({ pages, accounts, resolverLimit: 0, personLookups: 5 });
+
+			const error = await ctx.run().catch(err => err);
+
+			expect(error).toBeInstanceOf(Error);
+			expect(error).not.toBeInstanceOf(DelayedError);
+			expect(ctx.imported).toEqual([]);
+			expect(ctx.state.status).toBe('running');
+		});
+	});
+
+	test('리액션 항목은 글마다 상한의 2배까지만 살펴보고 호스트 판정은 글 단위로 한 번에 묻는다', async () => {
+		const strangers = Array.from({ length: 999 }, (_, n) => ({ actor: `https://stranger${n % 50}.test/users/u${n}`, reaction: '👍' }));
+		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
+			_misskey_chatReactions: [...strangers, { actor: reactor.uri, reaction: '🎉' }],
+		})], null));
+		const { run, imported, getUserFromApId, isRefusedRemoteHost, refusedRemoteHostsOf } = setup({ pages, cachedAccounts: new Map([[reactor.uri, reactor]]) });
+
+		await run();
+
+		const lookups = getUserFromApId.mock.calls.filter(([uri]) => String(uri).includes('stranger'));
+		expect(lookups.length).toBeLessThanOrEqual(200);
+		expect(refusedRemoteHostsOf).toHaveBeenCalledTimes(1);
+		expect(isRefusedRemoteHost.mock.calls.length).toBeLessThanOrEqual(2);
+		expect(imported[0].reactions).toEqual([]);
+	});
+
+	test('상한 안에서 확인된 리액션은 모르는 계정이 섞여 있어도 그대로 저장한다', async () => {
+		const reactors = Array.from({ length: 120 }, (_, n) => ({ id: `r${n}`, host: 'third.test', uri: `https://third.test/users/r${n}`, isSuspended: false }));
+		const strangers = Array.from({ length: 50 }, (_, n) => ({ actor: `https://stranger.test/users/u${n}`, reaction: '👍' }));
+		pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
+			_misskey_chatReactions: [...strangers, ...reactors.map(r => ({ actor: r.uri, reaction: '👍' }))],
+		})], null));
+		const { run, imported } = setup({ pages, cachedAccounts: new Map(reactors.map(r => [r.uri, r])) });
+
+		await run();
+
+		expect(imported[0].reactions).toEqual(reactors.slice(0, 100).map(r => `${r.id}/👍`));
+	});
+
+	describe('이모지 상한', () => {
+		const emojiTag = (n: number, host = 'member.test') => ({ id: `https://${host}/emojis/e${n}`, type: 'Emoji', name: `:e${n}:`, icon: { type: 'Image', url: `https://${host}/files/e${n}.png` } });
+		const emojiLookups = (calls: unknown[][], host = 'member.test') => calls.map(call => String(call[0])).filter(url => url.startsWith(`https://${host}/emojis/`));
+
+		test('이 서버가 이미 가진 이모지는 개수와 관계없이 모두 이름 목록에 싣는다', async () => {
+			const tags = Array.from({ length: 20 }, (_, n) => emojiTag(n));
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', { _misskey_content: tags.map(tag => tag.name).join(' '), tag: tags })], null));
+			const { run, imported, resolve } = setup({ pages, knownEmojis: new Set(tags.map(tag => tag.name.replaceAll(':', ''))) });
+
+			await run();
+
+			expect(imported[0].emojis).toHaveLength(20);
+			expect(emojiLookups(resolve.mock.calls)).toEqual([]);
+		});
+
+		test('처음 보는 이모지의 원격 조회만 글마다 16번까지 센다', async () => {
+			const tags = Array.from({ length: 40 }, (_, n) => emojiTag(n));
+			const known = new Set(tags.slice(0, 20).map(tag => tag.name.replaceAll(':', '')));
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', { _misskey_content: tags.map(tag => tag.name).join(' '), tag: tags })], null));
+			const { run, imported, resolve } = setup({ pages, knownEmojis: known });
+
+			await run();
+
+			expect(imported[0].emojis).toHaveLength(20);
+			expect(emojiLookups(resolve.mock.calls)).toEqual(Array.from({ length: 16 }, (_, n) => `https://member.test/emojis/e${n + 20}`));
+		});
+
+		test('리액션의 이모지도 이 서버가 이미 아는 것은 조회 횟수에 세지 않는다', async () => {
+			const tags = Array.from({ length: 25 }, (_, n) => emojiTag(n, 'third.test'));
+			const known = new Set(tags.slice(0, 20).map(tag => tag.name.replaceAll(':', '')));
+			pages.set(first, buildChatHistoryPage(roomUri, null, [note('m1', {
+				_misskey_chatReactions: tags.map(tag => ({ actor: reactor.uri, reaction: tag.name, tag })),
+			})], null));
+			const { run, resolve } = setup({ pages, cachedAccounts: new Map([[reactor.uri, reactor]]), knownEmojis: known });
+
+			await run();
+
+			expect(emojiLookups(resolve.mock.calls, 'third.test')).toEqual(tags.slice(20).map(tag => tag.id));
+		});
 	});
 
 	test('모르는 채널은 그룹 객체를 한 번 다시 읽고 그래도 없으면 그 글만 버린다', async () => {
@@ -439,7 +666,7 @@ describe('과거 기록 가져오기 작업', () => {
 				],
 				_misskey_chatReactions: [{ actor: reactor.uri, reaction: '👍' }],
 			})], null));
-			const { run, imported } = setup({ pages });
+			const { run, imported } = setup({ pages, cachedAccounts: new Map([[reactor.uri, reactor]]) });
 
 			await run();
 

@@ -88,8 +88,9 @@ export class UrlPreviewService implements OnApplicationShutdown {
 		try {
 			const fetcher = async () => {
 				// 그룹 초대 링크면 참여 카드 정보를 싣는다. 초대 링크가 아니거나 발급 서버의 응답이 맞지 않으면 일반 미리보기로 넘어간다.
-				// 어느 쪽이든 결과는 기존 미리보기와 같은 캐시를 탄다
-				const invite = await this.chatInviteLinkService.summarize(url).catch(err => {
+				// 어느 쪽이든 결과는 기존 미리보기와 같은 캐시를 탄다.
+				// 요약 프록시를 쓰는 서버는 다른 서버의 초대 링크도 직접 가져오지 않고 프록시에 맡긴다
+				const invite = await this.chatInviteLinkService.summarize(url, { remote: !this.meta.urlPreviewSummaryProxyUrl }).catch(err => {
 					this.logger.warn(`Failed to get the invite preview of ${url}: ${err}`);
 					return null;
 				});

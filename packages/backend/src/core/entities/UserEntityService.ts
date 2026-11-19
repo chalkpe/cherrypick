@@ -57,6 +57,9 @@ import { toArray } from '@/misc/prelude/array.js';
 const Ajv = _Ajv.default;
 const ajv = new Ajv();
 
+// 사용자 응답에 싣는 장식의 최대 수. i/update가 받아들이는 수와 같다
+const MAX_AVATAR_DECORATIONS = 16;
+
 function isLocalUser(user: MiUser): user is MiLocalUser;
 function isLocalUser<T extends { host: MiUser['host'] }>(user: T): user is (T & { host: null; });
 
@@ -497,16 +500,21 @@ export class UserEntityService implements OnModuleInit {
 			host: user.host,
 			avatarUrl: (user.avatarId == null ? null : user.avatarUrl) ?? this.getIdenticonUrl(user),
 			avatarBlurhash: (user.avatarId == null ? null : user.avatarBlurhash),
-			avatarDecorations: user.avatarDecorations.length > 0 ? this.avatarDecorationService.getAll(false, true).then(decorations => user.avatarDecorations.filter(ud => decorations.some(d => d.id === ud.id)).map(ud => ({
-				id: ud.id,
-				angle: ud.angle || undefined,
-				flipH: ud.flipH || undefined,
-				offsetX: ud.offsetX || undefined,
-				offsetY: ud.offsetY || undefined,
-				scale: ud.scale || undefined,
-				opacity: ud.opacity || undefined,
-				url: decorations.find(d => d.id === ud.id)!.url,
-			}))) : [],
+			avatarDecorations: user.avatarDecorations.length > 0 ? this.avatarDecorationService.findUrlsByIds(user.avatarDecorations.slice(0, MAX_AVATAR_DECORATIONS).map(ud => ud.id)).then(byId => {
+				return user.avatarDecorations.slice(0, MAX_AVATAR_DECORATIONS).flatMap(ud => {
+					const decoration = byId.get(ud.id);
+					return decoration == null ? [] : [{
+						id: ud.id,
+						angle: ud.angle || undefined,
+						flipH: ud.flipH || undefined,
+						offsetX: ud.offsetX || undefined,
+						offsetY: ud.offsetY || undefined,
+						scale: ud.scale || undefined,
+						opacity: ud.opacity || undefined,
+						url: decoration.url,
+					}];
+				});
+			}) : [],
 			isLocked: user.isLocked,
 			isBot: user.isBot,
 			isCat: user.isCat,
@@ -736,6 +744,9 @@ export class UserEntityService implements OnModuleInit {
 				}
 			}
 		}
+
+		// 장식을 단 사용자들의 장식은 사용자마다 따로 조회하지 않고 한 번에 읽어 캐시에 올려 둔다
+		await this.avatarDecorationService.findUrlsByIds(_users.flatMap(u => u.avatarDecorations.slice(0, MAX_AVATAR_DECORATIONS).map(ud => ud.id)));
 
 		return Promise.all(
 			_users.map(u => this.pack(

@@ -4,7 +4,8 @@
  */
 
 import { Inject, Injectable } from '@nestjs/common';
-import type { UserGroupsRepository, UserGroupJoiningsRepository } from '@/models/_.js';
+import type { AntennasRepository, UserGroupsRepository, UserGroupJoiningsRepository } from '@/models/_.js';
+import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { DI } from '@/di-symbols.js';
 import { ApiError } from '../../../error.js';
@@ -49,6 +50,11 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 
 		@Inject(DI.userGroupJoiningsRepository)
 		private userGroupJoiningsRepository: UserGroupJoiningsRepository,
+
+		@Inject(DI.antennasRepository)
+		private antennasRepository: AntennasRepository,
+
+		private globalEventService: GlobalEventService,
 	) {
 		super(meta, paramDef, async (ps, me) => {
 			// Fetch the group
@@ -64,7 +70,15 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				throw new ApiError(meta.errors.youAreOwner);
 			}
 
+			// 加入行の削除で一緒に消えるアンテナを、削除の前に控えておく
+			const joining = await this.userGroupJoiningsRepository.findOneBy({ userGroupId: userGroup.id, userId: me.id });
+			const antennas = joining ? await this.antennasRepository.findBy({ userGroupJoiningId: joining.id }) : [];
+
 			await this.userGroupJoiningsRepository.delete({ userGroupId: userGroup.id, userId: me.id });
+
+			for (const antenna of antennas) {
+				this.globalEventService.publishInternalEvent('antennaDeleted', antenna);
+			}
 		});
 	}
 }

@@ -153,19 +153,29 @@ export class NodeinfoServerService {
 			return document;
 		};
 
-		// User-Agentによって異なる応答を返すため、キャッシュを使用しない
-		//const cache = new MemorySingleCache<Awaited<ReturnType<typeof nodeinfo2>>>(1000 * 60 * 10); // 10m
+		// User-Agentによって応答が変わるため、変形(バージョン × JoinMisskey判定)ごとにキャッシュする
+		const cache = new Map<string, MemorySingleCache<Awaited<ReturnType<typeof nodeinfo2>>>>();
+		const fetchCached = (version: number, userAgent?: string) => {
+			const isJoinMisskey = userAgent?.includes('JoinMisskey') ?? false;
+			const key = `${version}:${isJoinMisskey}`;
+			let entry = cache.get(key);
+			if (entry == null) {
+				entry = new MemorySingleCache<Awaited<ReturnType<typeof nodeinfo2>>>(1000 * 60 * 10); // 10m
+				cache.set(key, entry);
+			}
+			return entry.fetch(() => nodeinfo2(version, userAgent));
+		};
 
 		fastify.get(nodeinfo2_1path, async (request, reply) => {
 			const userAgent = request.headers['user-agent'];
-			//const base = await cache.fetch(() => nodeinfo2(21));
-			const base = await nodeinfo2(21, userAgent);
+			const base = await fetchCached(21, userAgent);
 
 			reply
 				.type(
 					'application/json; profile="http://nodeinfo.diaspora.software/ns/schema/2.1#"',
 				)
 				.header('Cache-Control', 'public, max-age=600')
+				.header('Vary', 'User-Agent')
 				.header('Access-Control-Allow-Headers', 'Accept')
 				.header('Access-Control-Allow-Methods', 'GET, OPTIONS')
 				.header('Access-Control-Allow-Origin', '*')
@@ -175,8 +185,8 @@ export class NodeinfoServerService {
 
 		fastify.get(nodeinfo2_0path, async (request, reply) => {
 			const userAgent = request.headers['user-agent'];
-			//const base = await cache.fetch(() => nodeinfo2(20));
-			const base = await nodeinfo2(20, userAgent);
+			const cached = await fetchCached(20, userAgent);
+			const base = { ...cached, software: { ...cached.software } };
 
 			delete (base as any).software.repository;
 
@@ -185,6 +195,7 @@ export class NodeinfoServerService {
 					'application/json; profile="http://nodeinfo.diaspora.software/ns/schema/2.0#"',
 				)
 				.header('Cache-Control', 'public, max-age=600')
+				.header('Vary', 'User-Agent')
 				.header('Access-Control-Allow-Headers', 'Accept')
 				.header('Access-Control-Allow-Methods', 'GET, OPTIONS')
 				.header('Access-Control-Allow-Origin', '*')

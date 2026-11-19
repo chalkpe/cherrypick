@@ -174,6 +174,45 @@ describe('사본 서버의 참여 요청', () => {
 		expect(Object.keys(summary!.chatInvite).sort()).toEqual(['code', 'description', 'host', 'iconBlurhash', 'iconDecorations', 'iconUrl', 'isLocal', 'membersCount', 'name', 'url']);
 	});
 
+	test('원격 카드의 장식은 저장하지 않고 표시할 값만 싣는다', async () => {
+		const { service, signedGetJson } = createFixture();
+		const written = vi.fn();
+		const insertOne = vi.fn(async (row: Record<string, unknown>) => ({ id: 'row1', ...row }));
+		const avatar = (service as unknown as { avatarDecorationService: Record<string, unknown> }).avatarDecorationService;
+		Object.assign(avatar, {
+			avatarDecorationsRepository: { findOneBy: vi.fn(async () => null), insertOne, update: written, findBy: vi.fn(async () => []) },
+			idService: { gen: () => 'row1' },
+			globalEventService: { publishInternalEvent: written },
+			cacheWithRemote: { delete: written },
+		});
+		const frame = 'https://a.example/files/frame.png';
+		signedGetJson.mockResolvedValue(previewDoc({ object: { ...previewDoc().object, _misskey_chatIconDecorations: [
+			{ id: 'frame1', url: frame, name: '틀', angle: 0.1, flipH: true, scale: 1.2 },
+			{ id: 'frame2', url: 'http://a.example/files/plain.png', name: '틀' },
+			{ id: 'frame3', url: frame, name: '틀', angle: 9 },
+		] } }));
+
+		vi.stubEnv('NODE_ENV', 'production');
+		let summary;
+		try {
+			summary = await service.summarize(inviteUrl);
+		} finally {
+			vi.unstubAllEnvs();
+		}
+
+		expect(insertOne).not.toHaveBeenCalled();
+		expect(written).not.toHaveBeenCalled();
+		const shown = summary!.chatInvite.iconDecorations.map(({ id: _id, ...rest }) => rest);
+		expect(shown).toEqual([{ angle: 0.1, flipH: true, scale: 1.2, opacity: 1, url: `https://b.example/proxy/avatar.webp?url=${encodeURIComponent(frame)}&avatar=1` }]);
+	});
+
+	test('다른 서버의 링크를 가져오지 않게 하면 요청 없이 일반 미리보기에 넘긴다', async () => {
+		const { service, signedGetJson } = createFixture();
+
+		expect(await service.summarize(inviteUrl, { remote: false })).toBeNull();
+		expect(signedGetJson).not.toHaveBeenCalled();
+	});
+
 	test('의사를 기록한 뒤 새로 받은 미리보기의 받은편지함으로 서명된 Join을 보낸다', async () => {
 		const { service, deliver, signedGetJson, sentJoins } = createFixture();
 
@@ -515,6 +554,62 @@ describe('그룹 서버가 받은 Join', () => {
 
 		expect(await service.receiveJoin(joiner, activity)).toMatch(/^skip:/);
 		expect(deliver).not.toHaveBeenCalled();
+	});
+
+	describe('초대장 수', () => {
+		const joinFor = (n: number) => ({ id: `https://b.example/activities/join${n}`, type: 'Join', actor: `https://b.example/users/n${n}`, object: `https://a.example/chat/invite/${code}` });
+		const actorFor = (n: number) => ({ id: `r${n}`, host: 'b.example', uri: `https://b.example/users/n${n}`, inbox: `https://b.example/users/n${n}/inbox` }) as MiRemoteUser;
+
+		function inviteFixture(invitations: number, existingActor?: string) {
+			const base = createFixture({ baseUrl: 'https://a.example' });
+			const owner = { id: 'owner1', host: null };
+			const inserted: Record<string, unknown>[] = [];
+			const tx = {
+				findOne: vi.fn(async () => ({ id: 'room1', ownerId: owner.id, isArchived: false })),
+				existsBy: vi.fn(async (entity: { name: string }) => entity.name === 'MiChatRoomInviteLink'),
+				countBy: vi.fn(async (entity: { name: string }) => entity.name === 'MiChatRoomInvitation' ? invitations + inserted.length : 1),
+				findOneBy: vi.fn(async (_entity: unknown, where: { userId: string }) => where.userId === existingActor ? { id: 'inv0' } : null),
+				insert: vi.fn(async (_entity: unknown, row: Record<string, unknown>) => { inserted.push(row); }),
+			};
+			const deliverRoomInvite = vi.fn();
+			Object.assign(base.service, {
+				db: { transaction: async <T>(callback: (manager: typeof tx) => Promise<T>) => await callback(tx) },
+				chatRoomInviteLinksRepository: { findOneBy: vi.fn(async () => ({ id: 'link1', roomId: 'room1', code })) },
+				chatRoomsRepository: { findOneBy: vi.fn(async () => ({ id: 'room1', ownerId: owner.id })) },
+				chatRoomMembershipsRepository: { countBy: vi.fn(async () => 1) },
+				usersRepository: { findOneBy: vi.fn(async () => owner) },
+				chatRoomBanService: { isBanned: vi.fn(async () => false) },
+				chatService: { deliverRoomInvite },
+			});
+			return { ...base, inserted, deliverRoomInvite };
+		}
+
+		const rejection = (f: ReturnType<typeof inviteFixture>) => f.deliver.mock.calls.map(([, activity]) => activity as { type: string; _misskey_chatJoinRefusal?: string }).find(a => a.type === 'Reject');
+
+		test('상한 전에는 초대장을 만들고 초대를 보낸다', async () => {
+			const f = inviteFixture(199);
+
+			expect(await f.service.receiveJoin(actorFor(1), joinFor(1))).toBe('ok: invited');
+			expect(f.inserted).toHaveLength(1);
+			expect(f.deliverRoomInvite).toHaveBeenCalledTimes(1);
+		});
+
+		test('상한에 이르면 새 행위자의 Join은 정원 초과로 거절하고 초대장을 만들지 않는다', async () => {
+			const f = inviteFixture(200);
+
+			expect(await f.service.receiveJoin(actorFor(1), joinFor(1))).toBe('ok: Join refused (full)');
+			expect(f.inserted).toEqual([]);
+			expect(f.deliverRoomInvite).not.toHaveBeenCalled();
+			expect(rejection(f)?._misskey_chatJoinRefusal).toBe('full');
+		});
+
+		test('상한에 이르러도 이미 초대장이 있는 행위자의 Join은 같은 초대장으로 다시 초대한다', async () => {
+			const f = inviteFixture(200, 'r1');
+
+			expect(await f.service.receiveJoin(actorFor(1), joinFor(1))).toBe('ok: invited');
+			expect(f.inserted).toEqual([]);
+			expect(f.deliverRoomInvite).toHaveBeenCalledTimes(1);
+		});
 	});
 
 	test('없는 코드면 대표 계정이 서명한 폐기 사유의 거절을 보낸다', async () => {

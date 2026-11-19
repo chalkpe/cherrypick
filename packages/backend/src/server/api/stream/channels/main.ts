@@ -11,6 +11,7 @@ import { ChatService } from '@/core/ChatService.js';
 import type { GlobalEvents } from '@/core/GlobalEventService.js';
 import { isInstanceMuted, isUserFromMutedInstance } from '@/misc/is-instance-muted.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
+import { omitLoginIp } from '@/misc/omit-notification-ip.js';
 import { bindThis } from '@/decorators.js';
 import type { JsonObject } from '@/misc/json-value.js';
 import type { MainEventTypes, EventTypesToEventPayload } from '@/core/GlobalEventService.js';
@@ -96,6 +97,20 @@ export class MainChannel extends Channel {
 						detail: true,
 					});
 					data.body.note = note;
+				}
+
+				// アプリのトークンには、ログイン通知の接続元IPを渡さない
+				if (this.connection.token != null) {
+					this.send(data.type, omitLoginIp(data.body));
+					return;
+				}
+				break;
+			}
+			case 'unreadNotification': {
+				// アプリのトークンには、ログイン通知の接続元IPを渡さない
+				if (this.connection.token != null) {
+					this.send(data.type, omitLoginIp(data.body));
+					return;
 				}
 				break;
 			}

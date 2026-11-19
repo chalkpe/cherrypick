@@ -10,6 +10,8 @@ import { FanoutTimelineService } from '@/core/FanoutTimelineService.js';
 import type { GlobalEvents } from '@/core/GlobalEventService.js';
 import { GlobalEventService } from '@/core/GlobalEventService.js';
 import { UtilityService } from '@/core/UtilityService.js';
+import { LoggerService } from '@/core/LoggerService.js';
+import type Logger from '@/logger.js';
 import { bindThis } from '@/decorators.js';
 import { DI } from '@/di-symbols.js';
 import * as Acct from '@/misc/acct.js';
@@ -26,6 +28,7 @@ import type { OnApplicationShutdown } from '@nestjs/common';
 export class AntennaService implements OnApplicationShutdown {
 	private antennasFetched: boolean;
 	private antennas: MiAntenna[];
+	private logger: Logger;
 
 	constructor(
 		@Inject(DI.redisForTimelines)
@@ -47,7 +50,9 @@ export class AntennaService implements OnApplicationShutdown {
 		private utilityService: UtilityService,
 		private globalEventService: GlobalEventService,
 		private fanoutTimelineService: FanoutTimelineService,
+		private loggerService: LoggerService,
 	) {
+		this.logger = this.loggerService.getLogger('antenna');
 		this.antennasFetched = false;
 		this.antennas = [];
 
@@ -85,7 +90,11 @@ export class AntennaService implements OnApplicationShutdown {
 	@bindThis
 	public async addNoteToAntennas(note: MiNote, noteUser: { id: MiUser['id']; username: string; host: string | null; isBot: boolean; }): Promise<MiAntenna[]> {
 		const antennas = await this.getAntennas();
-		const antennasWithMatchResult = await Promise.all(antennas.map(antenna => this.checkHitAntenna(antenna, note, noteUser).then(hit => [antenna, hit] as const)));
+		const antennasWithMatchResult = await Promise.all(antennas.map(antenna => this.checkHitAntenna(antenna, note, noteUser).then(hit => [antenna, hit] as const).catch(err => {
+			// 1つのアンテナの判定失敗で他のアンテナへの配達を止めない
+			this.logger.error(`Failed to check antenna ${antenna.id}`, { error: err });
+			return [antenna, false] as const;
+		})));
 		const matchedAntennas = antennasWithMatchResult.filter(([, hit]) => hit).map(([antenna]) => antenna);
 
 		const redisPipeline = this.redisForTimelines.pipeline();
@@ -135,9 +144,10 @@ export class AntennaService implements OnApplicationShutdown {
 			});
 			if (!exists) return false;
 		} else if (antenna.src === 'group') {
-			const joining = await this.userGroupJoiningsRepository.findOneByOrFail({ id: antenna.userGroupJoiningId! });
-
 			if (antenna.userGroupJoiningId == null) return false;
+			const joining = await this.userGroupJoiningsRepository.findOneBy({ id: antenna.userGroupJoiningId });
+			if (joining == null) return false;
+
 			const exists = await this.userGroupJoiningsRepository.exists({
 				where: {
 					userGroupId: joining.userGroupId,

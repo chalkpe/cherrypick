@@ -8,6 +8,7 @@ import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { Readable } from 'node:stream';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { Redis } from 'ioredis';
 import { afterAll, afterEach, beforeAll, expect, test, vi } from 'vitest';
@@ -235,9 +236,17 @@ test('a file read error does not consume the kept download and a later retry suc
 	const storage = makeStorage();
 	const record = await keptFile(storage);
 
-	// 파일 자리에 디렉터리를 두어 읽기 스트림이 첫 본문 전에 오류(EISDIR)를 내게 한다
-	fs.rmSync(record.path);
-	fs.mkdirSync(record.path);
+	// 읽기 스트림이 첫 본문 전에 오류(EIO)를 내게 한다
+	const open = fs.promises.open.bind(fs.promises);
+	vi.spyOn(fs.promises, 'open').mockImplementationOnce(async (...args: Parameters<typeof fs.promises.open>) => {
+		const handle = await open(...args);
+		handle.createReadStream = () => {
+			const stream = new Readable({ read() { this.destroy(Object.assign(new Error('read failure'), { code: 'EIO' })); } });
+			stream.once('close', () => { void handle.close(); });
+			return stream as any;
+		};
+		return handle;
+	});
 
 	const res = await get(`/recording-download/${record.id}`, { headers: { Authorization: 'Bearer native-owner' } });
 	expect(res.status).toBe(500);
@@ -249,12 +258,35 @@ test('a file read error does not consume the kept download and a later retry suc
 	expect(fs.existsSync(record.path)).toBe(true);
 
 	// 오류가 회복되면 같은 ID로 다시 받을 수 있어야 한다
-	fs.rmSync(record.path, { recursive: true });
-	fs.writeFileSync(record.path, Buffer.alloc(record.size, 3));
 	const retry = await get(`/recording-download/${record.id}`, { headers: { Authorization: 'Bearer native-owner' } });
 	expect(retry.status).toBe(200);
 	expect(Buffer.from(await retry.arrayBuffer()).length).toBe(record.size);
 
 	await waitUntil(async () => (await storage.getDownload(record.id)) == null);
 	expect(fs.existsSync(record.path)).toBe(false);
+});
+
+test('a kept file replaced by a symbolic link is not served', async () => {
+	const kept = await keptFile(storage, 2048);
+	const secret = path.join(tmpRoot, `secret-${randomUUID()}.txt`);
+	fs.writeFileSync(secret, 'not for download');
+	fs.rmSync(kept.path);
+	fs.symlinkSync(secret, kept.path);
+
+	const res = await get(`/recording-download/${kept.id}`, { headers: { Authorization: 'Bearer native-owner' } });
+
+	expect(res.status).toBe(404);
+	expect(await res.text()).not.toContain('not for download');
+	expect(fs.existsSync(secret)).toBe(true);
+});
+
+test('a kept file that is not a regular file is not served', async () => {
+	const kept = await keptFile(storage, 2048);
+	fs.rmSync(kept.path);
+	fs.mkdirSync(kept.path);
+
+	const res = await get(`/recording-download/${kept.id}`, { headers: { Authorization: 'Bearer native-owner' } });
+
+	expect(res.status).toBe(404);
+	fs.rmSync(kept.path, { recursive: true });
 });

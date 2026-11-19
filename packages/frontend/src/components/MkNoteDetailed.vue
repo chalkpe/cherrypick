@@ -421,6 +421,7 @@ import { deviceKind } from '@/utility/device-kind.js';
 import { haptic, hapticConfirm } from '@/utility/haptic.js';
 import { store } from '@/store.js';
 import detectLanguage from '@/utility/detect-language.js';
+import { openExternalUrl } from '@/utility/open-external-url.js';
 import MkInfo from '@/components/MkInfo.vue';
 import MkNoteHistory from '@/components/MkNoteHistory.vue';
 import MkSwitch from '@/components/MkSwitch.vue';
@@ -919,7 +920,8 @@ function loadConversation() {
 if (appearNote.reply && appearNote.reply.replyId && prefer.s.autoLoadMoreConversation) loadConversation();
 
 function showOnRemote() {
-	if (props.note.user.instance !== undefined) window.open(props.note.url ?? props.note.uri, '_blank', 'noopener');
+	const remoteUrl = props.note.url ?? props.note.uri;
+	if (props.note.user.instance !== undefined && remoteUrl != null) openExternalUrl(remoteUrl);
 }
 
 function loadHistories() {

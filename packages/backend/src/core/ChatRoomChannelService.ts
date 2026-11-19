@@ -102,19 +102,20 @@ export class ChatRoomChannelService {
 		return channel.roomId;
 	}
 
-	public async rename(userId: string, channelId: string, name: string): Promise<MiChatRoomChannel> {
+	public async rename(userId: string, channelId: string, name: string): Promise<{ channel: MiChatRoomChannel; changed: boolean }> {
 		const normalized = normalizeChatChannelName(name);
 		const roomId = await this.channelRoomId(channelId);
 		return this.db.transaction(async manager => {
 			await this.ownerRoom(manager, userId, roomId);
 			const channel = await manager.findOneBy(MiChatRoomChannel, { id: channelId, roomId });
 			if (channel == null) throw new ChatChannelError('NO_SUCH_CHANNEL');
+			if (channel.name === normalized) return { channel, changed: false };
 			await manager.update(MiChatRoomChannel, channel.id, { name: normalized });
-			return { ...channel, name: normalized };
+			return { channel: { ...channel, name: normalized }, changed: true };
 		});
 	}
 
-	public async reorder(userId: string, roomId: string, channelIds: string[]): Promise<MiChatRoomChannel[]> {
+	public async reorder(userId: string, roomId: string, channelIds: string[]): Promise<{ channels: MiChatRoomChannel[]; changed: boolean }> {
 		return this.db.transaction(async manager => {
 			await this.ownerRoom(manager, userId, roomId);
 			const channels = await manager.findBy(MiChatRoomChannel, { roomId });
@@ -123,11 +124,13 @@ export class ChatRoomChannelService {
 			const rank = new Map(channelIds.map((id, index) => [id, index]));
 			const sections = await manager.find(MiChatRoomChannelSection, { where: { roomId }, order: { position: 'ASC', id: 'ASC' } });
 			const ranked = [...channels].sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
-			return this.applyDisplayOrder(manager, chatChannelDisplayOrder(ranked, sections.map(section => section.id)));
+			const ordered = chatChannelDisplayOrder(ranked, sections.map(section => section.id));
+			if (ordered.every((channel, position) => channel.position === position)) return { channels: ordered, changed: false };
+			return { channels: await this.applyDisplayOrder(manager, ordered), changed: true };
 		});
 	}
 
-	public async arrange(userId: string, roomId: string, ungrouped: string[], sectionOrders: { sectionId: string; channelIds: string[] }[]): Promise<MiChatRoomChannel[]> {
+	public async arrange(userId: string, roomId: string, ungrouped: string[], sectionOrders: { sectionId: string; channelIds: string[] }[]): Promise<{ channels: MiChatRoomChannel[]; changed: boolean }> {
 		return this.db.transaction(async manager => {
 			await this.ownerRoom(manager, userId, roomId);
 			const channels = await manager.findBy(MiChatRoomChannel, { roomId });
@@ -141,11 +144,14 @@ export class ChatRoomChannelService {
 				...ungrouped.map(id => ({ ...byId.get(id)!, sectionId: null })),
 				...sectionOrders.flatMap(order => order.channelIds.map(id => ({ ...byId.get(id)!, sectionId: order.sectionId }))),
 			];
+			const unchanged = ordered.every((channel, position) => byId.get(channel.id)!.position === position && byId.get(channel.id)!.sectionId === channel.sectionId) &&
+				sectionOrders.every((order, position) => sections.find(section => section.id === order.sectionId)!.position === position);
+			if (unchanged) return { channels: ordered, changed: false };
 			for (const [position, order] of sectionOrders.entries()) await manager.update(MiChatRoomChannelSection, order.sectionId, { position });
 			for (const channel of ordered) {
 				if (byId.get(channel.id)!.sectionId !== channel.sectionId) await manager.update(MiChatRoomChannel, channel.id, { sectionId: channel.sectionId });
 			}
-			return this.applyDisplayOrder(manager, ordered);
+			return { channels: await this.applyDisplayOrder(manager, ordered), changed: true };
 		});
 	}
 
@@ -180,15 +186,16 @@ export class ChatRoomChannelService {
 		return section.roomId;
 	}
 
-	public async renameSection(userId: string, sectionId: string, name: string): Promise<MiChatRoomChannelSection> {
+	public async renameSection(userId: string, sectionId: string, name: string): Promise<{ section: MiChatRoomChannelSection; changed: boolean }> {
 		const normalized = normalizeChatSectionName(name);
 		const roomId = await this.sectionRoomId(sectionId);
 		return this.db.transaction(async manager => {
 			await this.ownerRoom(manager, userId, roomId);
 			const section = await manager.findOneBy(MiChatRoomChannelSection, { id: sectionId, roomId });
 			if (section == null) throw new ChatChannelError('NO_SUCH_SECTION');
+			if (section.name === normalized) return { section, changed: false };
 			await manager.update(MiChatRoomChannelSection, section.id, { name: normalized });
-			return { ...section, name: normalized };
+			return { section: { ...section, name: normalized }, changed: true };
 		});
 	}
 

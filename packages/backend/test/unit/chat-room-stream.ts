@@ -23,7 +23,7 @@ function deferred<T>() {
 	return { promise, resolve };
 }
 
-function fixture() {
+function fixture(userId = 'member', read = vi.fn(async (..._args: unknown[]) => {})) {
 	const subscriber = new EventEmitter();
 	const send = vi.fn();
 	const room = { id: 'r1', ownerId: 'owner', hasChannels: false, legacyChannelId: 'general' as string | null };
@@ -36,10 +36,9 @@ function fixture() {
 	Object.defineProperty(permissions, 'isRoomMember', { value: isMember });
 	const permission = vi.fn(permissions.hasPermissionToViewRoomTimeline.bind(permissions));
 	const shouldNotify = vi.fn(async () => false);
-	const read = vi.fn(async () => {});
 	const channel = new ChatRoomChannel({
 		id: 'channel-1',
-		connection: { user: { id: 'member' }, subscriber, sendMessageToWs: send },
+		connection: { user: { id: userId }, subscriber, sendMessageToWs: send },
 	} as unknown as ChannelRequest, rooms as unknown as ChatRoomsRepository, {
 		hasPermissionToViewRoomTimeline: permission,
 		shouldNotifyRoomMessage: shouldNotify,
@@ -63,12 +62,12 @@ describe('수신자별 알림과 읽음 경계', () => {
 	});
 
 	test('읽음 요청은 실제로 받은 메시지 경계를 전달한다', async () => {
-		const f = fixture();
+		const f = fixture('reader-boundary');
 		await f.channel.init({ roomId: 'r1' });
 
 		f.channel.onMessage('read', { id: 'seen' });
 
-		expect(f.read).toHaveBeenCalledWith('member', 'r1', undefined, 'seen');
+		expect(f.read).toHaveBeenCalledWith('reader-boundary', 'r1', undefined, 'seen');
 	});
 
 	test('개인 설정 조회 실패는 이벤트를 중단하지 않고 소리만 억제한다', async () => {
@@ -374,4 +373,299 @@ test('모드 갱신 통지를 놓친 연결도 새 채널 본문을 받지 않�
 	await f.publish({ type: 'message', body: { id: 'new-channel-message', toRoomChannelId: 'other', text: '갱신 전 연결에 비공개' } });
 
 	expect(JSON.stringify(f.send.mock.calls)).not.toContain('비공개');
+});
+
+describe('스트림의 읽음 요청 묶기', () => {
+	const flush = () => vi.advanceTimersByTimeAsync(0);
+	let seq = 0;
+	const newUser = () => `reader-${++seq}`;
+	const ids = (f: { read: { mock: { calls: unknown[][] } } }) => f.read.mock.calls.map(call => call[3]);
+
+	/** 같은 사용자가 연결·채널을 여러 개 열었을 때처럼, 읽음 처리 함수 하나를 공유하는 채널들을 만든다 */
+	async function open(userId: string, channelIds: (string | undefined)[], read = vi.fn(async (..._args: unknown[]) => {})) {
+		const channels = [];
+		for (const channelId of channelIds) {
+			const f = fixture(userId, read);
+			await f.channel.init({ roomId: 'r1', ...(channelId != null ? { channelId } : {}) });
+			channels.push(f.channel);
+		}
+		return { channels, read };
+	}
+
+	test('연달아 보낸 읽음은 동시에 하나만 처리하고 마지막 id를 이어서 처리한다', async () => {
+		vi.useFakeTimers();
+		const user = newUser();
+		const f = fixture(user);
+		const first = deferred<void>();
+		f.read.mockImplementationOnce(() => first.promise);
+		await f.channel.init({ roomId: 'r1' });
+
+		for (let i = 0; i < 500; i++) f.channel.onMessage('read', { id: `m${i}` });
+		await flush();
+		expect(f.read).toHaveBeenCalledTimes(1);
+		expect(f.read).toHaveBeenLastCalledWith(user, 'r1', undefined, 'm0');
+
+		first.resolve();
+		await vi.advanceTimersByTimeAsync(999);
+		expect(f.read).toHaveBeenCalledTimes(1);
+
+		await vi.advanceTimersByTimeAsync(1);
+		expect(f.read).toHaveBeenCalledTimes(2);
+		expect(f.read).toHaveBeenLastCalledWith(user, 'r1', undefined, 'm499');
+
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(f.read).toHaveBeenCalledTimes(2);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	test('처리가 끝난 뒤 기다리는 동안 온 읽음도 마지막 id 하나로 합친다', async () => {
+		vi.useFakeTimers();
+		const f = fixture(newUser());
+		await f.channel.init({ roomId: 'r1' });
+
+		f.channel.onMessage('read', { id: 'a' });
+		await flush();
+		f.channel.onMessage('read', { id: 'b' });
+		f.channel.onMessage('read', { id: 'c' });
+		expect(f.read).toHaveBeenCalledTimes(1);
+
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(ids(f)).toEqual(['a', 'c']);
+	});
+
+	test('한 사용자가 채널 인스턴스를 여러 개 만들어도 동시에 도는 읽음 처리는 하나다', async () => {
+		vi.useFakeTimers();
+		const user = newUser();
+		let active = 0;
+		let maxActive = 0;
+		const gates: ReturnType<typeof deferred<void>>[] = [];
+		const read = vi.fn(async (..._args: unknown[]) => {
+			active++;
+			maxActive = Math.max(maxActive, active);
+			const gate = deferred<void>();
+			gates.push(gate);
+			await gate.promise;
+			active--;
+		});
+		const { channels } = await open(user, ['c1', 'c2', 'c3', undefined], read);
+
+		channels.forEach((channel, i) => channel.onMessage('read', { id: `m${i}` }));
+		await flush();
+		expect(read).toHaveBeenCalledTimes(1);
+
+		// 다른 채널의 대기 읽음은 앞의 처리가 끝나고 사용자 단위 최소 간격(100ms)이 지나면 1초를 기다리지 않고 이어서 처리한다
+		for (let i = 1; i < channels.length; i++) {
+			gates[i - 1].resolve();
+			await vi.advanceTimersByTimeAsync(100);
+			expect(read).toHaveBeenCalledTimes(i + 1);
+		}
+		gates[channels.length - 1].resolve();
+		await vi.advanceTimersByTimeAsync(10_000);
+
+		expect(maxActive).toBe(1);
+		expect(read).toHaveBeenCalledTimes(channels.length);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	test('같은 채널 id로 다시 만든 인스턴스도 앞의 처리가 끝나고 1초가 지나기 전에는 새 처리를 띄우지 못한다', async () => {
+		vi.useFakeTimers();
+		const user = newUser();
+		const first = deferred<void>();
+		const read = vi.fn(async (..._args: unknown[]) => {});
+		read.mockImplementationOnce(() => first.promise);
+		const { channels } = await open(user, ['c1', 'c1'], read);
+
+		channels[0].onMessage('read', { id: 'a' });
+		await flush();
+		channels[0].dispose();
+		channels[1].onMessage('read', { id: 'b' });
+		await flush();
+		expect(read).toHaveBeenCalledTimes(1);
+
+		first.resolve();
+		await vi.advanceTimersByTimeAsync(999);
+		expect(read).toHaveBeenCalledTimes(1);
+
+		await vi.advanceTimersByTimeAsync(1);
+		expect(ids({ read })).toEqual(['a', 'b']);
+	});
+
+	test('처리가 끝난 직후 같은 채널에 다시 만든 인스턴스가 보낸 읽음은 1초 뒤에 처리한다', async () => {
+		vi.useFakeTimers();
+		const user = newUser();
+		const { channels, read } = await open(user, ['c1', 'c1']);
+
+		channels[0].onMessage('read', { id: 'a' });
+		await flush();
+		channels[0].dispose();
+		channels[1].onMessage('read', { id: 'b' });
+		await vi.advanceTimersByTimeAsync(999);
+		expect(read).toHaveBeenCalledTimes(1);
+
+		await vi.advanceTimersByTimeAsync(1);
+		expect(ids({ read })).toEqual(['a', 'b']);
+	});
+
+	test('다른 사용자의 읽음은 서로 기다리지 않는다', async () => {
+		vi.useFakeTimers();
+		const gate = deferred<void>();
+		const read = vi.fn(async (..._args: unknown[]) => {});
+		read.mockImplementationOnce(() => gate.promise);
+		const [one, two] = [newUser(), newUser()];
+		const a = (await open(one, [undefined], read)).channels[0];
+		const b = (await open(two, [undefined], read)).channels[0];
+
+		a.onMessage('read', { id: 'a' });
+		b.onMessage('read', { id: 'b' });
+		await flush();
+
+		expect(ids({ read })).toEqual(['a', 'b']);
+		gate.resolve();
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	test('읽음이 실패해도 다음 읽음을 처리한다', async () => {
+		vi.useFakeTimers();
+		const f = fixture(newUser());
+		f.read.mockRejectedValueOnce(new Error('failed'));
+		await f.channel.init({ roomId: 'r1' });
+
+		f.channel.onMessage('read', { id: 'a' });
+		f.channel.onMessage('read', { id: 'b' });
+		await vi.advanceTimersByTimeAsync(1000);
+
+		expect(ids(f)).toEqual(['a', 'b']);
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	test('다른 채널의 읽음이 실패해도 이어서 처리한다', async () => {
+		vi.useFakeTimers();
+		const read = vi.fn(async (..._args: unknown[]) => {});
+		read.mockRejectedValueOnce(new Error('failed'));
+		const { channels } = await open(newUser(), ['c1', 'c2'], read);
+
+		channels[0].onMessage('read', { id: 'a' });
+		channels[1].onMessage('read', { id: 'b' });
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(ids({ read })).toEqual(['a', 'b']);
+	});
+
+	test('닫은 뒤에도 이미 받은 마지막 읽음을 한 번 처리하고 상태와 타이머를 남기지 않는다', async () => {
+		vi.useFakeTimers();
+		const f = fixture(newUser());
+		await f.channel.init({ roomId: 'r1' });
+
+		f.channel.onMessage('read', { id: 'a' });
+		await flush();
+		f.channel.onMessage('read', { id: 'b' });
+		f.channel.onMessage('read', { id: 'c' });
+		f.channel.dispose();
+
+		await vi.advanceTimersByTimeAsync(999);
+		expect(ids(f)).toEqual(['a']);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(ids(f)).toEqual(['a', 'c']);
+
+		f.channel.onMessage('read', { id: 'd' });
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(ids(f)).toEqual(['a', 'c']);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	test('처리 중에 닫아도 기다리던 읽음은 끝난 뒤 처리하고 타이머를 남기지 않는다', async () => {
+		vi.useFakeTimers();
+		const f = fixture(newUser());
+		const first = deferred<void>();
+		f.read.mockImplementationOnce(() => first.promise);
+		await f.channel.init({ roomId: 'r1' });
+
+		f.channel.onMessage('read', { id: 'a' });
+		f.channel.onMessage('read', { id: 'b' });
+		f.channel.dispose();
+		first.resolve();
+		await vi.advanceTimersByTimeAsync(1000);
+
+		expect(ids(f)).toEqual(['a', 'b']);
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	test('한 사용자가 쌓을 수 있는 대기 읽음은 256개까지다', async () => {
+		vi.useFakeTimers();
+		const gate = deferred<void>();
+		const read = vi.fn(async (..._args: unknown[]) => {});
+		read.mockImplementationOnce(() => gate.promise);
+		const channelIds = Array.from({ length: 300 }, (_, i) => `c${i}`);
+		const { channels } = await open(newUser(), channelIds, read);
+
+		channels.forEach((channel, i) => channel.onMessage('read', { id: `m${i}` }));
+		gate.resolve();
+		await vi.runAllTimersAsync();
+
+		// 처리 중이던 1개와 대기 256개
+		expect(read).toHaveBeenCalledTimes(257);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	test('채널의 init이 끝나기 전에 온 읽음은 처리하지 않는다', async () => {
+		vi.useFakeTimers();
+		const f = fixture(newUser());
+		const check = deferred<boolean>();
+		f.permission.mockReturnValue(check.promise);
+		const pending = f.channel.init({ roomId: 'r1' });
+
+		f.channel.onMessage('read', { id: 'early' });
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(f.read).not.toHaveBeenCalled();
+
+		check.resolve(true);
+		expect(await pending).toBe(true);
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(f.read).not.toHaveBeenCalled();
+
+		f.channel.onMessage('read', { id: 'after' });
+		await flush();
+		expect(ids(f)).toEqual(['after']);
+	});
+
+	test('init이 실패한 채널의 읽음은 처리하지 않는다', async () => {
+		vi.useFakeTimers();
+		const f = fixture(newUser());
+		f.isMember.mockResolvedValue(false);
+		expect(await f.channel.init({ roomId: 'r1' })).toBe(false);
+
+		f.channel.onMessage('read', { id: 'a' });
+		await vi.advanceTimersByTimeAsync(5000);
+
+		expect(f.read).not.toHaveBeenCalled();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	test('서로 다른 채널의 읽음이 연달아 와도 처리 사이에 100ms 간격을 둔다', async () => {
+		vi.useFakeTimers();
+		const times: number[] = [];
+		const read = vi.fn(async (..._args: unknown[]) => { times.push(Date.now()); });
+		const { channels } = await open(newUser(), ['c1', 'c2', 'c3'], read);
+
+		channels.forEach((channel, i) => channel.onMessage('read', { id: `m${i}` }));
+		await flush();
+		expect(read).toHaveBeenCalledTimes(1);
+
+		await vi.advanceTimersByTimeAsync(99);
+		expect(read).toHaveBeenCalledTimes(1);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(read).toHaveBeenCalledTimes(2);
+		await vi.advanceTimersByTimeAsync(99);
+		expect(read).toHaveBeenCalledTimes(2);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(read).toHaveBeenCalledTimes(3);
+
+		expect(times[1] - times[0]).toBeGreaterThanOrEqual(100);
+		expect(times[2] - times[1]).toBeGreaterThanOrEqual(100);
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(vi.getTimerCount()).toBe(0);
+	});
 });

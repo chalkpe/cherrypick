@@ -68,6 +68,7 @@ import { DI } from '@/di.js';
 import { prefer } from '@/preferences.js';
 import { useRouter } from '@/router.js';
 import MkInstanceTicker from '@/components/MkInstanceTicker.vue';
+import { openExternalUrl } from '@/utility/open-external-url.js';
 
 const props = defineProps<{
 	note: Misskey.entities.Note;
@@ -84,7 +85,10 @@ const router = useRouter();
 
 function showOnRemote() {
 	if (props.note.user.instance === undefined) router.pushByPath(notePage(props.note));
-	else window.open(props.note.url ?? props.note.uri, '_blank', 'noopener');
+	else {
+		const remoteUrl = props.note.url ?? props.note.uri;
+		if (remoteUrl != null) openExternalUrl(remoteUrl);
+	}
 }
 </script>
 

@@ -19,7 +19,11 @@ describe('AvatarDecorationService', () => {
 	let instance: Partial<MiInstance>;
 	let decorations: Partial<MiAvatarDecoration>[];
 	let send: ReturnType<typeof vi.fn>;
+	let find: ReturnType<typeof vi.fn>;
+	let onMessage: (channel: string, data: string) => Promise<void>;
 	let updateUser: ReturnType<typeof vi.fn>;
+	let updateDecoration: ReturnType<typeof vi.fn>;
+	let publish: ReturnType<typeof vi.fn>;
 	let service: AvatarDecorationService;
 
 	function jsonResponse(body: unknown) {
@@ -27,13 +31,13 @@ describe('AvatarDecorationService', () => {
 	}
 
 	// What an instance serving the Misskey API answers for a user wearing one decoration
-	function serveDecorations() {
+	function serveDecorations(name = 'Ears') {
 		send.mockImplementation(async (url: string) => {
 			if (url === 'https://remote.example/api/users/show') {
 				return jsonResponse({ avatarDecorations: [{ id: 'remote1', url: 'https://remote.example/files/ears.png', angle: 0.1, flipH: true }] });
 			}
 			if (url === 'https://remote.example/api/get-avatar-decorations') {
-				return jsonResponse([{ id: 'remote1', name: 'Ears', description: 'Cat ears', url: 'https://remote.example/files/ears.png' }]);
+				return jsonResponse([{ id: 'remote1', name, description: 'Cat ears', url: 'https://remote.example/files/ears.png' }]);
 			}
 			throw new Error(`unexpected request to ${url}`);
 		});
@@ -43,12 +47,20 @@ describe('AvatarDecorationService', () => {
 		instance = { host: 'remote.example', softwareName: 'misskey', supportsAvatarDecorations: false };
 		decorations = [];
 		send = vi.fn();
+		find = vi.fn(async () => decorations);
 		updateUser = vi.fn().mockResolvedValue({ affected: 1 });
+		updateDecoration = vi.fn(async (id: string, params: Partial<MiAvatarDecoration>) => {
+			Object.assign(decorations.find(d => d.id === id)!, params);
+		});
+		publish = vi.fn();
 
 		service = new AvatarDecorationService(
 			{ mediaProxy: 'https://local.example/proxy' } as Config,
-			{ on: vi.fn(), off: vi.fn() } as unknown as Redis.Redis,
+			{ on: (_event: string, listener: typeof onMessage) => { onMessage = listener; }, off: vi.fn() } as unknown as Redis.Redis,
 			{
+				find,
+				update: updateDecoration,
+				findOneByOrFail: async ({ id }: { id: string }) => decorations.find(d => d.id === id),
 				findOneBy: async (where: Partial<MiAvatarDecoration>) => decorations.find(d => d.host === where.host && d.remoteId === where.remoteId) ?? null,
 				insertOne: async (decoration: Partial<MiAvatarDecoration>) => {
 					decorations.push(decoration);
@@ -59,7 +71,7 @@ describe('AvatarDecorationService', () => {
 			{ update: updateUser } as unknown as UsersRepository,
 			{ gen: () => 'local1' } as unknown as IdService,
 			{ log: vi.fn() } as unknown as ModerationLogService,
-			{ publishInternalEvent: vi.fn() } as unknown as GlobalEventService,
+			{ publishInternalEvent: publish } as unknown as GlobalEventService,
 			{ send } as unknown as HttpRequestService,
 		);
 	});
@@ -165,6 +177,55 @@ describe('AvatarDecorationService', () => {
 			expect(decorations.map(d => d.remoteId)).toEqual(['remote2']);
 		});
 
+		test('stores at most 16 decorations of a remote user', async () => {
+			const ids = Array.from({ length: 300 }, (_, i) => `remote${i}`);
+			send.mockImplementation(async (url: string) => {
+				if (url === 'https://remote.example/api/users/show') {
+					return jsonResponse({ avatarDecorations: ids.map(id => ({ id, url: `https://remote.example/files/${id}.png` })) });
+				}
+				return jsonResponse(ids.map(id => ({ id, name: id, description: '' })));
+			});
+
+			await service.remoteUserUpdate(user);
+
+			expect(decorations.map(d => d.remoteId)).toEqual(ids.slice(0, 16));
+			expect(updateUser.mock.calls[0][1].avatarDecorations).toHaveLength(16);
+		});
+
+		test('discards remote decorations whose fields are malformed', async () => {
+			const valid = { id: 'remote1', url: 'https://remote.example/files/ears.png' };
+			send.mockImplementation(async (url: string) => {
+				if (url === 'https://remote.example/api/users/show') {
+					return jsonResponse({ avatarDecorations: [
+						{ id: 'a'.repeat(33), url: 'https://remote.example/files/a.png' },
+						{ id: 'remote3', url: 'http://remote.example/files/b.png' },
+						{ id: 'remote4', url: 42 },
+						{ id: 'remote5', url: 'https://remote.example/files/c.png', flipH: 'yes' },
+						{ id: 'remote6', url: 'https://remote.example/files/d.png' },
+						valid,
+					] });
+				}
+				return jsonResponse([
+					{ id: 'remote1', name: 'Ears', description: '' },
+					{ id: 'remote6', name: 'n'.repeat(257), description: '' },
+				]);
+			});
+
+			await service.remoteUserUpdate(user);
+
+			expect(decorations.map(d => d.remoteId)).toEqual(['remote1']);
+			expect(updateUser.mock.calls[0][1].avatarDecorations).toHaveLength(1);
+		});
+
+		test('treats a decoration list that is not an array as empty', async () => {
+			send.mockResolvedValue(jsonResponse({ avatarDecorations: { length: 3 } }));
+
+			await service.remoteUserUpdate(user);
+
+			expect(decorations).toEqual([]);
+			expect(updateUser).toHaveBeenCalledWith({ id: 'user1', isDeleted: false }, { avatarDecorations: [] });
+		});
+
 		test('leaves the user alone when an instance advertising avatar decorations fails to serve them', async () => {
 			instance = { ...instance, softwareName: 'mastodon', supportsAvatarDecorations: true };
 			send.mockRejectedValue(new Error('404 Not Found'));
@@ -172,6 +233,104 @@ describe('AvatarDecorationService', () => {
 			await expect(service.remoteUserUpdate(user)).resolves.toBeUndefined();
 
 			expect(updateUser).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('remote user update', () => {
+		test('stored values that did not change neither update the decoration nor publish an event', async () => {
+			serveDecorations();
+			await service.remoteUserUpdate(user);
+			expect(publish).toHaveBeenCalledTimes(1);
+			publish.mockClear();
+
+			await service.remoteUserUpdate(user);
+
+			expect(updateDecoration).not.toHaveBeenCalled();
+			expect(publish).not.toHaveBeenCalled();
+		});
+
+		test('a changed name updates the stored decoration once', async () => {
+			serveDecorations();
+			await service.remoteUserUpdate(user);
+			publish.mockClear();
+			serveDecorations('Renamed ears');
+
+			await service.remoteUserUpdate(user);
+
+			expect(updateDecoration).toHaveBeenCalledTimes(1);
+			expect(publish).toHaveBeenCalledTimes(1);
+			expect(publish).toHaveBeenCalledWith('avatarDecorationUpdated', expect.objectContaining({ name: 'Renamed ears' }));
+		});
+	});
+
+	describe('findUrlsByIds', () => {
+		beforeEach(() => {
+			decorations = [{ id: 'd1', url: 'https://local.example/1.png' }, { id: 'd2', url: 'https://local.example/2.png' }, { id: 'd3', url: 'https://local.example/3.png' }];
+			find.mockImplementation(async (options: { where: { id: { value: string[] } } }) => decorations.filter(d => options.where.id.value.includes(d.id!)));
+		});
+
+		test('reads only the requested ids and keeps them, including ids that do not exist', async () => {
+			const found = await service.findUrlsByIds(['d1', 'd2', 'nope']);
+
+			expect([...found.keys()]).toEqual(['d1', 'd2']);
+			await service.findUrlsByIds(['d1', 'd2', 'nope']);
+			expect(find).toHaveBeenCalledTimes(1);
+			expect(find.mock.calls[0][0].where.id.value).toEqual(['d1', 'd2', 'nope']);
+		});
+
+		test('an edit drops only the cache of that id', async () => {
+			await service.findUrlsByIds(['d1', 'd2']);
+
+			await service.update('d1', { url: 'https://local.example/1b.png' });
+			const found = await service.findUrlsByIds(['d1', 'd2']);
+
+			expect(find).toHaveBeenCalledTimes(2);
+			expect(find.mock.calls[1][0].where.id.value).toEqual(['d1']);
+			expect(found.get('d1')?.url).toBe('https://local.example/1b.png');
+		});
+
+		test.each(['avatarDecorationCreated', 'avatarDecorationUpdated', 'avatarDecorationDeleted'])('%s from another process drops only the cache of that id', async type => {
+			await service.findUrlsByIds(['d1', 'd2']);
+
+			await onMessage('', JSON.stringify({ channel: 'internal', message: { type, body: { id: 'd2' } } }));
+			await service.findUrlsByIds(['d1', 'd2']);
+
+			expect(find).toHaveBeenCalledTimes(2);
+			expect(find.mock.calls[1][0].where.id.value).toEqual(['d2']);
+		});
+	});
+
+	describe('getAll', () => {
+		const local = { id: 'local1', host: null };
+		const remote = { id: 'remote1', host: 'remote.example' };
+
+		test('clearing the cache on request leaves the cache that includes remote decorations alone', async () => {
+			decorations = [local, remote];
+			await service.getAll(false, true);
+			decorations = [local];
+
+			await service.getAll(true);
+
+			expect(await service.getAll(false, true)).toEqual([local, remote]);
+		});
+
+		test.each(['avatarDecorationCreated', 'avatarDecorationUpdated', 'avatarDecorationDeleted'])('%s reaches the cache that includes remote decorations', async type => {
+			decorations = [local];
+			await service.getAll(false, true);
+			decorations = [{ ...local, url: 'https://local.example/changed.png' }];
+
+			await onMessage('', JSON.stringify({ channel: 'internal', message: { type, body: {} } }));
+
+			expect(await service.getAll(false, true)).toEqual(decorations);
+		});
+
+		test('lists only remote decorations without reusing the cache of all decorations', async () => {
+			decorations = [local, remote];
+			await service.getAll(false, true);
+			find.mockImplementationOnce(async () => [remote]);
+
+			expect(await service.getAll(true, false, true)).toEqual([remote]);
+			expect(await service.getAll(false, true)).toEqual([local, remote]);
 		});
 	});
 });

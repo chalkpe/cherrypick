@@ -76,3 +76,5 @@ overrides:
 engineStrict: true
 saveExact: true
 shellEmulator: true
+patchedDependencies:
+  mfm-js@0.28.0: patches/mfm-js@0.28.0.patch

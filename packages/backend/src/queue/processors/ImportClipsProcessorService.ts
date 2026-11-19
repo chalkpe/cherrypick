@@ -9,6 +9,7 @@ import type { DriveFilesRepository, MiClip, MiNote, NotesRepository, UsersReposi
 import type Logger from '@/logger.js';
 import { ClipService } from '@/core/ClipService.js';
 import { DriveService } from '@/core/DriveService.js';
+import { RoleService } from '@/core/RoleService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { NoteEntityService } from '@/core/entities/NoteEntityService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
@@ -35,6 +36,7 @@ export class ImportClipsProcessorService {
 		private notesRepository: NotesRepository,
 
 		private clipService: ClipService,
+		private roleService: RoleService,
 		private driveService: DriveService,
 		private apNoteService: ApNoteService,
 		private noteEntityService: NoteEntityService,
@@ -65,6 +67,11 @@ export class ImportClipsProcessorService {
 			return;
 		}
 
+		// 원격 조회는 성공 여부와 관계없이 시도 횟수를 세어, 클립당·작업 전체 상한을 넘으면 건너뛴다
+		const policies = await this.roleService.getUserPolicies(user.id);
+		const noteLimitEachClip = policies.noteEachClipsLimit;
+		let remainingAttempts = policies.clipLimit * noteLimitEachClip;
+
 		for (const exported of clips) {
 			// 同名のクリップがあっても常に新規作成する (エクスポート元のクリップと取り違えないため)
 			let clip: MiClip;
@@ -78,7 +85,14 @@ export class ImportClipsProcessorService {
 				throw err;
 			}
 
+			let attemptsInClip = 0;
 			for (const clipNote of exported.clipNotes) {
+				if (attemptsInClip >= noteLimitEachClip || remainingAttempts <= 0) {
+					this.logger.warn(`Lookup limit reached, remaining notes of clip ${clip.id} are skipped`);
+					break;
+				}
+				attemptsInClip++;
+				remainingAttempts--;
 				const label = clipNote.note.uri ?? clipNote.note.id;
 				try {
 					const note = await this.resolveNote(clipNote.note);

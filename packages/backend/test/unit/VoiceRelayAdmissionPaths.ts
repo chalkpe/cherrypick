@@ -4,6 +4,7 @@
  */
 import * as http from 'node:http';
 import { EventEmitter } from 'node:events';
+import { Duplex } from 'node:stream';
 import pg from 'pg';
 import { DataSource } from 'typeorm';
 import Fastify from 'fastify';
@@ -25,6 +26,7 @@ function directDatabase() {
    const key = `${values?.[0]}:${values?.[1]}`;
    if (sql.startsWith('INSERT INTO voice_token_generation') && !rows.has(key)) rows.set(key, values[2]);
    if (sql.startsWith('SELECT generation')) return rows.has(key) ? [{ generation: rows.get(key) }] : [];
+   if (sql.startsWith('SELECT pg_try_advisory_lock')) return [{ pg_try_advisory_lock: true }];
    return [];
   },
  }) } as any;
@@ -315,4 +317,203 @@ test.each(['direct', 'relay'])('%s RTC rechecks current participant authorizatio
   if (mode === 'direct') expect(roomRequests).toContainEqual(['chatRoom:room']);
   else expect(roomRequests).toHaveLength(0);
  } finally { await app.close(); await new Promise<void>(resolve => upstream.close(() => resolve())); }
+});
+
+/** advisory lock の保持と待ちを再現するデータベース。取得した接続の数も数える。 */
+function lockingDatabase() {
+ const rows = new Map<string, string>();
+ const held = new Set<string>();
+ const waiting = new Map<string, Array<() => void>>();
+ const state = { held, created: 0, released: 0, lockedElsewhere: false };
+ const db = { driver: { master: { options: { max: 100 } } }, createQueryRunner: () => {
+  state.created++;
+  return {
+   connect: async () => {},
+   release: async () => { state.released++; },
+   query: async (sql: string, values: string[]) => {
+    const key = `${values?.[0]}:${values?.[1]}`;
+    if (sql.startsWith('INSERT INTO voice_token_generation') && !rows.has(key)) rows.set(key, values[2]);
+    if (sql.startsWith('SELECT generation')) return rows.has(key) ? [{ generation: rows.get(key), pending: false }] : [];
+    if (sql.startsWith('SELECT pg_try_advisory_lock')) {
+     if (state.lockedElsewhere || held.has(values[0])) return [{ pg_try_advisory_lock: false }];
+     held.add(values[0]);
+     return [{ pg_try_advisory_lock: true }];
+    }
+    if (sql.startsWith('SELECT pg_advisory_lock')) {
+     while (held.has(values[0])) await new Promise<void>(resolve => { const queue = waiting.get(values[0]) ?? []; queue.push(resolve); waiting.set(values[0], queue); });
+     held.add(values[0]);
+     return [];
+    }
+    if (sql.startsWith('SELECT pg_advisory_unlock')) {
+     held.delete(values[0]);
+     waiting.get(values[0])?.shift()?.();
+     return [];
+    }
+    return [];
+   },
+  };
+ } } as any;
+ return { db, state };
+}
+
+/** ListRooms と RemoveParticipant だけを受け付ける LiveKit。 */
+async function startRoomService(): Promise<{ internalUrl: string; close: () => Promise<void> }> {
+ const server = http.createServer((request, response) => {
+  if (serveListRooms(request, response, [])) return;
+  if (request.method === 'POST' && request.url === '/twirp/livekit.RoomService/RemoveParticipant') {
+   request.resume();
+   request.on('end', () => { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end('{}'); });
+   return;
+  }
+  response.writeHead(404);
+  response.end();
+ });
+ await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+ return {
+  internalUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+  close: () => new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }),
+ };
+}
+
+describe('direct signaling admission does not wait while holding a database connection', () => {
+ const direct = async () => {
+  const sfu = await startRoomService();
+  const config = { url: 'https://local.test', voiceCall: { livekit: { internalUrl: sfu.internalUrl, apiKey: 'key', apiSecret: 'x'.repeat(32) } } } as any;
+  const { db, state } = lockingDatabase();
+  const voice = new VoiceBackendService(config, { isEnabled: false, hasRetainedCalls: false } as any, db);
+  const params = { roomId: 'room1', identity: 'https://local.test/users/u1', userId: 'u1', canScreenShare: false };
+  const url = (token: string) => `/livekit/rtc?access_token=${encodeURIComponent(token)}`;
+  return { sfu, voice, state, params, url };
+ };
+
+ test('concurrent upgrades with the same token are refused without taking connections, and a kick still completes', async () => {
+  const { sfu, voice, state, params, url } = await direct();
+  try {
+   const token = await voice.createJoinToken(params);
+   let open!: () => void; const gate = new Promise<void>(resolve => { open = resolve; });
+   const first = voice.withRtcAdmission(url(token), async () => { await gate; return 'connected'; });
+   await vi.waitFor(() => expect(state.held.size).toBe(1));
+   const createdBefore = state.created;
+
+   const duplicates = Array.from({ length: 20 }, () => voice.withRtcAdmission(url(token), async () => 'duplicate'));
+   const outcome = await Promise.race([Promise.allSettled(duplicates), new Promise<'hung'>(resolve => setTimeout(() => resolve('hung'), 1500))]);
+   expect(outcome).not.toBe('hung');
+   for (const result of outcome as PromiseSettledResult<string>[]) expect(result).toMatchObject({ status: 'rejected', reason: { status: 429 } });
+   expect(state.created).toBe(createdBefore);
+
+   const kick = voice.removeParticipant(params.roomId, params.identity);
+   open();
+   expect(await first).toBe('connected');
+   await kick;
+   expect(state.held.size).toBe(0);
+   expect(state.released).toBe(state.created);
+
+   const renewed = await voice.createJoinToken(params);
+   expect(await voice.withRtcAdmission(url(renewed), async () => 'connected')).toBe('connected');
+   expect(state.held.size).toBe(0);
+  } finally { await sfu.close(); }
+ });
+
+ test('an upgrade is refused at once when another process holds the lock', async () => {
+  const { sfu, voice, state, params, url } = await direct();
+  try {
+   const token = await voice.createJoinToken(params);
+   state.lockedElsewhere = true;
+   const outcome = await Promise.race([
+    voice.withRtcAdmission(url(token), async () => 'connected').then(() => 'connected', error => error),
+    new Promise<'hung'>(resolve => setTimeout(() => resolve('hung'), 1500)),
+   ]);
+   expect(outcome).toMatchObject({ status: 429 });
+   expect(state.released).toBe(state.created);
+  } finally { await sfu.close(); }
+ });
+
+ test('an upgrade for another participant of the same room is not refused by a busy one', async () => {
+  const { sfu, voice, state, params, url } = await direct();
+  try {
+   const first = await voice.createJoinToken(params);
+   const second = await voice.createJoinToken({ ...params, identity: 'https://local.test/users/u2', userId: 'u2' });
+   let open!: () => void; const gate = new Promise<void>(resolve => { open = resolve; });
+   const busy = voice.withRtcAdmission(url(first), async () => { await gate; return 'connected'; });
+   await vi.waitFor(() => expect(state.held.size).toBe(1));
+   expect(await voice.withRtcAdmission(url(second), async () => 'connected')).toBe('connected');
+   open();
+   expect(await busy).toBe('connected');
+  } finally { await sfu.close(); }
+ });
+});
+
+describe('relay signaling budget follows the client address', () => {
+ const upgrade = (service: LiveKitServerService, token: string, socketAddress: string, forwardedFor?: string) => {
+  const writes: string[] = [];
+  const socket = new Duplex({ read() {}, write(chunk, _encoding, done) { writes.push(Buffer.from(chunk).toString()); done(); } });
+  const request = { url: `/livekit/rtc?access_token=${token}`, headers: { ...(forwardedFor ? { 'x-forwarded-for': forwardedFor } : {}) }, socket: { remoteAddress: socketAddress } } as unknown as http.IncomingMessage;
+  service.handleUpgrade(request, socket, Buffer.alloc(0));
+  return vi.waitFor(() => { expect(writes.join('')).toContain('HTTP/1.1'); return writes.join('').split('\r\n')[0]; });
+ };
+ const relayed = (trustProxy: unknown) => {
+  const lookup = vi.fn(async () => null);
+  const voice = new VoiceBackendService({ url: 'https://local.test' } as any, { isEnabled: true, storage: { pool: { options: { max: 6 } } }, rtc: lookup } as any, new DataSource({ type: 'postgres' }));
+  const service = new LiveKitServerService({ url: 'https://local.test', trustProxy } as any, voice, {} as any, {} as any, {} as any);
+  return { service, lookup };
+ };
+
+ test('clients behind a trusted proxy use separate budgets', async () => {
+  const { service, lookup } = relayed(['10.0.0.0/8']);
+  for (let i = 0; i < 600; i++) await upgrade(service, `n${i}`, '10.0.0.1', '203.0.113.5');
+  expect(lookup).toHaveBeenCalledTimes(600);
+  expect(await upgrade(service, 'next', '10.0.0.1', '203.0.113.5')).toContain('403');
+  expect(lookup).toHaveBeenCalledTimes(600);
+  expect(await upgrade(service, 'other', '10.0.0.1', '203.0.113.6')).toContain('403');
+  expect(lookup).toHaveBeenCalledTimes(601);
+ });
+
+ test('a forwarded address from an untrusted peer is ignored', async () => {
+  const { service, lookup } = relayed(['10.0.0.0/8']);
+  for (let i = 0; i < 600; i++) await upgrade(service, `n${i}`, '198.51.100.9', `192.0.2.${i % 200}`);
+  await upgrade(service, 'next', '198.51.100.9', '192.0.2.250');
+  expect(lookup).toHaveBeenCalledTimes(600);
+ });
+
+ test('without a trusted proxy the socket address is the key', async () => {
+  const { service, lookup } = relayed(false);
+  for (let i = 0; i < 600; i++) await upgrade(service, `n${i}`, '10.0.0.1', '203.0.113.5');
+  await upgrade(service, 'next', '10.0.0.1', '203.0.113.6');
+  expect(lookup).toHaveBeenCalledTimes(600);
+ });
+
+ test('a numeric trustProxy does not trust the forwarded address', async () => {
+  const { service, lookup } = relayed(1);
+  for (let i = 0; i < 600; i++) await upgrade(service, `n${i}`, '198.51.100.9', `192.0.2.${i % 200}`);
+  await upgrade(service, 'next', '198.51.100.9', '192.0.2.250');
+  expect(lookup).toHaveBeenCalledTimes(600);
+ });
+
+ test('addresses in the same IPv6 /64 share one budget', async () => {
+  const lookup = vi.fn(async () => null);
+  const voice = new VoiceBackendService({ url: 'https://local.test' } as any, { storage: { pool: { options: { max: 6 } } }, rtc: lookup } as any, new DataSource({ type: 'postgres' }));
+  for (let i = 0; i < 600; i++) await expect(voice.withRtcAdmission(`/livekit/rtc?access_token=${i}`, async () => {}, `2001:db8:0:1::${(i + 1).toString(16)}`)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  await expect(voice.withRtcAdmission('/livekit/rtc?access_token=same-prefix', async () => {}, '2001:db8:0:1:ffff::1')).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+  expect(lookup).toHaveBeenCalledTimes(600);
+  await expect(voice.withRtcAdmission('/livekit/rtc?access_token=other-prefix', async () => {}, '2001:db8:0:2::1')).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  expect(lookup).toHaveBeenCalledTimes(601);
+ });
+
+ test('IPv4 addresses keep one budget each', async () => {
+  const lookup = vi.fn(async () => null);
+  const voice = new VoiceBackendService({ url: 'https://local.test' } as any, { storage: { pool: { options: { max: 6 } } }, rtc: lookup } as any, new DataSource({ type: 'postgres' }));
+  for (let i = 0; i < 600; i++) await expect(voice.withRtcAdmission(`/livekit/rtc?access_token=${i}`, async () => {}, '203.0.113.5')).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  await expect(voice.withRtcAdmission('/livekit/rtc?access_token=next', async () => {}, '203.0.113.5')).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+  await expect(voice.withRtcAdmission('/livekit/rtc?access_token=neighbor', async () => {}, '203.0.113.6')).rejects.toMatchObject({ code: 'FORBIDDEN' });
+ });
+
+ test('a token the relay already verified does not use the budget', async () => {
+  const lookup = vi.fn(async () => null);
+  const relay = { storage: { pool: { options: { max: 6 } } }, rtc: lookup, hasVerifiedToken: (token: string) => token === 'known' } as any;
+  const voice = new VoiceBackendService({ url: 'https://local.test' } as any, relay, new DataSource({ type: 'postgres' }));
+  for (let i = 0; i < 700; i++) await expect(voice.withRtcAdmission('/livekit/rtc?access_token=known', async () => 'connected', 'address-one')).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  expect(lookup).toHaveBeenCalledTimes(700);
+  for (let i = 0; i < 600; i++) await expect(voice.withRtcAdmission(`/livekit/rtc?access_token=fresh${i}`, async () => {}, 'address-one')).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  await expect(voice.withRtcAdmission('/livekit/rtc?access_token=fresh-next', async () => {}, 'address-one')).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+ });
 });

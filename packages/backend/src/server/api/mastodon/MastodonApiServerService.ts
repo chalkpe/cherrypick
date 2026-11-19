@@ -148,6 +148,8 @@ export class MastodonApiServerService {
 		});
 
 		fastify.post('/v1/media', async (_request, reply) => {
+			// Check the token before the file is read
+			await this.clientService.requireAuth(_request, 'write:drive');
 			const multipartData = _request.savedRequestFiles?.[0];
 			if (!multipartData) {
 				return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'No image' });
@@ -162,6 +164,8 @@ export class MastodonApiServerService {
 		});
 
 		fastify.post<{ Body: { description?: string; focus?: string } }>('/v2/media', async (_request, reply) => {
+			// Check the token before the file is read
+			await this.clientService.requireAuth(_request, 'write:drive');
 			const multipartData = _request.savedRequestFiles?.[0];
 			if (!multipartData) {
 				return reply.code(400).send({ error: 'BAD_REQUEST', error_description: 'No image' });

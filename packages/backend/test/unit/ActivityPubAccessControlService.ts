@@ -149,6 +149,25 @@ describe('ActivityPubAccessControlService', () => {
 			expect(mockApDbResolverService.getAuthUserFromKeyId).toHaveBeenCalledWith(keyId);
 		});
 
+		test('returns null when the signed Host is not this server', async () => {
+			const keypair = await genRsaKeyPair();
+			const keyId = 'https://allowed.example/users/alice#main-key';
+
+			mockApDbResolverService.getAuthUserFromKeyId.mockResolvedValue({
+				user: { uri: 'https://allowed.example/users/alice', host: 'allowed.example' },
+				key: { keyPem: keypair.publicKey },
+			});
+
+			// 다른 서버를 향해 서명된 요청이 그대로 도착한 경우
+			const signed = await ApRequestCreator.createSignedGet({
+				key: { keyId, privateKeyPem: keypair.privateKey },
+				url: 'https://other.example/notes/note1',
+				additionalHeaders: {},
+			});
+
+			expect(await service.resolveRemoteHostFromRequest(toRequest(signed, 'other.example'))).toBeNull();
+		});
+
 		test('rejects a replay that supplies a fresh unsigned X-Date', async () => {
 			const keypair = await genRsaKeyPair();
 			const keyId = 'https://allowed.example/users/alice#main-key';

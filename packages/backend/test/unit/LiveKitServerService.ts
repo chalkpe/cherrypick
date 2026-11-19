@@ -78,6 +78,7 @@ async function listen(server: http.Server): Promise<number> {
 async function fakeLiveKit() {
 	const paths: string[] = [];
 	const headers: http.IncomingHttpHeaders[] = [];
+	const httpHeaders: http.IncomingHttpHeaders[] = [];
 	const hungClosed: Promise<void>[] = [];
 	const hungSockets: { destroy: () => void }[] = [];
 	cleanups.push(() => {
@@ -85,6 +86,7 @@ async function fakeLiveKit() {
 	});
 	const server = http.createServer((req, res) => {
 		paths.push(req.url ?? '');
+		httpHeaders.push(req.headers);
 		if (req.url?.includes('access_token=hang')) return;
 		res.writeHead(200, { 'content-type': 'text/plain' });
 		res.end('valid');
@@ -117,7 +119,7 @@ async function fakeLiveKit() {
 		wss.close();
 	});
 	const port = await listen(server);
-	return { paths, headers, hungClosed, url: `http://127.0.0.1:${port}` };
+	return { paths, headers, httpHeaders, hungClosed, url: `http://127.0.0.1:${port}` };
 }
 
 /** プロキシ経由で届いてはいけないサーバー */
@@ -336,6 +338,78 @@ describe('LiveKitServerService', () => {
 		expect(writes).toHaveLength(count);
 	});
 
+	describe('signaling admission is always released', () => {
+		const upgradeHeaders = { connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', 'sec-websocket-version': '13' };
+
+		/** 入場検査の代わりに、検査を待ってから中継を始め、終わったら資源を返す */
+		function admittedService(url: string, check: () => Promise<void>) {
+			const liveKit = liveKitService(true, url);
+			const state = { connects: 0, released: 0, error: undefined as unknown };
+			Object.assign(liveKit, {
+				withRtcAdmission: async (_url: string, connect: (route: null) => Promise<void>) => {
+					await check();
+					state.connects++;
+					try {
+						await connect(null);
+					} catch (error) {
+						state.error = error;
+					} finally {
+						state.released++;
+					}
+				},
+			});
+			return { service: createService(liveKit), state };
+		}
+
+		function fakeSocket(options: { emitClose?: boolean } = {}) {
+			const socket = new Duplex({ emitClose: options.emitClose ?? true, read() {}, write(_chunk, _encoding, done) { done(); } });
+			cleanups.push(() => { socket.destroy(); });
+			return socket;
+		}
+
+		test('releases when the client socket is destroyed during the admission check and LiveKit refuses', async () => {
+			const livekit = await fakeLiveKit();
+			let finishCheck!: () => void;
+			const { service, state } = admittedService(livekit.url, () => new Promise<void>(resolve => { finishCheck = resolve; }));
+			const socket = fakeSocket();
+			service.handleUpgrade({ url: '/livekit/rtc/v1?access_token=bad', headers: upgradeHeaders } as http.IncomingMessage, socket, Buffer.alloc(0));
+
+			socket.destroy();
+			await new Promise<void>(resolve => socket.once('close', () => resolve()));
+			finishCheck();
+
+			await vi.waitFor(() => expect(state.released).toBe(1));
+			expect(state.connects).toBe(1);
+			await new Promise<void>(resolve => setTimeout(resolve, 50));
+			expect(state.released).toBe(1);
+		});
+
+		test('releases when LiveKit refuses and the client socket is still open', async () => {
+			const livekit = await fakeLiveKit();
+			const { service, state } = admittedService(livekit.url, async () => {});
+			const socket = fakeSocket();
+			service.handleUpgrade({ url: '/livekit/rtc/v1?access_token=bad', headers: upgradeHeaders } as http.IncomingMessage, socket, Buffer.alloc(0));
+
+			await vi.waitFor(() => expect(state.released).toBe(1));
+			await vi.waitFor(() => expect(socket.destroyed).toBe(true));
+			await new Promise<void>(resolve => setTimeout(resolve, 50));
+			expect(state.released).toBe(1);
+		});
+
+		test('releases at the deadline even when the client socket never reports a close', async () => {
+			const livekit = await fakeLiveKit();
+			const { service, state } = admittedService(livekit.url, async () => {});
+			service.upstreamTimeoutMs = 20;
+			const socket = fakeSocket({ emitClose: false });
+			service.handleUpgrade({ url: '/livekit/rtc/v1?access_token=hang', headers: upgradeHeaders } as http.IncomingMessage, socket, Buffer.alloc(0));
+
+			await vi.waitFor(() => expect(state.released).toBe(1), { timeout: 5000 });
+			expect(state.error).toBeInstanceOf(Error);
+			await new Promise<void>(resolve => setTimeout(resolve, 50));
+			expect(state.released).toBe(1);
+		});
+	});
+
 	test.each(['timeout', 'head', 'chunks', 'refusal', 'path', 'upgrade'])('keeps socket error ownership through an EPIPE response write (%s)', async mode => {
 		const livekit = await fakeLiveKit();
 		const service = createService(liveKitService(true, livekit.url));
@@ -409,8 +483,42 @@ describe('LiveKitServerService', () => {
 		});
 
 		expect(livekit.headers[0].cookie).toBeUndefined();
-		expect(livekit.headers[0].authorization).toBe('Bearer lk');
+		expect(livekit.headers[0].authorization).toBeUndefined();
 		expect(livekit.headers[0]['sec-websocket-key']).toBeTruthy();
+		expect(livekit.paths[0]).toContain('access_token=t');
+	});
+
+	test('an upgrade with only the query token still reaches LiveKit', async () => {
+		const livekit = await fakeLiveKit();
+		const service = createService(liveKitService(true, livekit.url));
+		const port = await frontServer(service);
+
+		const ws = new WebSocket(`ws://127.0.0.1:${port}/livekit/rtc/v1?access_token=t`);
+		cleanups.push(() => ws.terminate());
+		await new Promise((resolve, reject) => {
+			ws.on('open', resolve);
+			ws.on('error', reject);
+		});
+		ws.send('ping');
+		const echoed = await new Promise<string>(resolve => ws.once('message', data => resolve(data.toString())));
+
+		expect(echoed).toBe('ping');
+		expect(livekit.headers[0].authorization).toBeUndefined();
+	});
+
+	test('does not forward the client Authorization header on the validation route', async () => {
+		const livekit = await fakeLiveKit();
+		const service = createService(liveKitService(true, livekit.url));
+		const app = Fastify();
+		await app.register(service.createServer, { prefix: '/livekit' });
+		cleanups.push(() => app.close());
+
+		const res = await app.inject({ method: 'GET', url: '/livekit/rtc/v1/validate?access_token=t', headers: { authorization: 'Bearer other' } });
+
+		expect(res.statusCode).toBe(200);
+		expect(res.body).toBe('valid');
+		expect(livekit.httpHeaders[0].authorization).toBeUndefined();
+		expect(livekit.paths[0]).toContain('access_token=t');
 	});
 
 	test('passes a chunked refusal through in a form the client can read', async () => {

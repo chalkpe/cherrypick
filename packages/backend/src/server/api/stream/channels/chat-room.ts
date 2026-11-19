@@ -13,6 +13,88 @@ import Channel, { type ChannelRequest } from '../channel.js';
 import { REQUEST } from '@nestjs/core';
 import type { ChatRoomsRepository, MiChatRoom } from '@/models/_.js';
 
+const READ_INTERVAL = 1000;
+// 対象(ルーム・チャンネル)が違っても、1ユーザーの既読処理の間に空ける最小間隔
+const USER_READ_INTERVAL = 100;
+// 1ユーザーが溜められる待機中の既読の上限
+const MAX_PENDING_READS = 256;
+
+type ReadTarget = { chatService: ChatService; roomId: string; channelId?: string; id: string };
+type ReadState = {
+	running: boolean;
+	// (ルーム, チャンネル) ごとに最後の id だけを持つ
+	pending: Map<string, ReadTarget>;
+	// (ルーム, チャンネル) ごとの、直前の処理が終わった時刻
+	finishedAt: Map<string, number>;
+	// ユーザー単位で直前の処理が終わった時刻
+	lastFinishedAt: number;
+	timer: NodeJS.Timeout | null;
+};
+
+// 既読処理はルームの行をロックするので、接続数・チャンネル数に関係なくユーザーごとに1つだけ動かす。
+// チャンネルを閉じても受け取り済みの既読は捨てないため、状態はチャンネルのインスタンスの外に持つ。
+const readStates = new Map<string, ReadState>();
+
+function readKey(roomId: string, channelId: string | undefined): string {
+	return JSON.stringify([roomId, channelId ?? null]);
+}
+
+function enqueueRead(userId: string, target: ReadTarget) {
+	let state = readStates.get(userId);
+	if (state == null) {
+		state = { running: false, pending: new Map(), finishedAt: new Map(), lastFinishedAt: -Infinity, timer: null };
+		readStates.set(userId, state);
+	}
+	const key = readKey(target.roomId, target.channelId);
+	if (!state.pending.has(key) && state.pending.size >= MAX_PENDING_READS) return;
+	state.pending.set(key, target);
+	pumpRead(userId, state);
+}
+
+function pumpRead(userId: string, state: ReadState) {
+	if (state.running) return;
+	if (state.timer != null) {
+		clearTimeout(state.timer);
+		state.timer = null;
+	}
+
+	const now = Date.now();
+	let wakeAt = Infinity;
+	const userReadyAt = state.lastFinishedAt + USER_READ_INTERVAL;
+	for (const [key, finished] of state.finishedAt) {
+		if (finished + READ_INTERVAL <= now) state.finishedAt.delete(key);
+		else wakeAt = Math.min(wakeAt, finished + READ_INTERVAL);
+	}
+
+	for (const [key, target] of state.pending) {
+		if (state.finishedAt.has(key)) continue;
+		if (userReadyAt > now) {
+			wakeAt = Math.min(wakeAt, userReadyAt);
+			break;
+		}
+		state.pending.delete(key);
+		state.running = true;
+		void target.chatService.readRoomChatMessage(userId, target.roomId, target.channelId, target.id).catch(() => {}).then(() => {
+			state.running = false;
+			state.lastFinishedAt = Date.now();
+			state.finishedAt.set(key, state.lastFinishedAt);
+			pumpRead(userId, state);
+		});
+		return;
+	}
+
+	if (state.pending.size === 0 && wakeAt === Infinity) {
+		// 処理するものも待つものもなければ状態を消す
+		readStates.delete(userId);
+		return;
+	}
+	state.timer = setTimeout(() => {
+		state.timer = null;
+		pumpRead(userId, state);
+	}, Math.max(wakeAt - now, 0));
+	state.timer.unref?.();
+}
+
 @Injectable({ scope: Scope.TRANSIENT })
 export class ChatRoomChannel extends Channel {
 	public readonly chName = 'chatRoom';
@@ -23,6 +105,7 @@ export class ChatRoomChannel extends Channel {
 	private channelId?: string;
 	private room: MiChatRoom | null = null;
 	private disposed = false;
+	private initialized = false;
 	private permissionVersion = 0;
 	private lastPermissionCheck = -Infinity;
 	private permissionCheck?: { version: number; promise: Promise<boolean> };
@@ -59,6 +142,7 @@ export class ChatRoomChannel extends Channel {
 				if (this.room.hasChannels || this.channelId != null) {
 					try { await this.chatService.resolveRoomChannel(this.room, this.channelId); } catch { this.dispose(); return false; }
 				}
+				this.initialized = true;
 				return true;
 			}
 		}
@@ -164,9 +248,8 @@ export class ChatRoomChannel extends Channel {
 	public onMessage(type: string, body: any) {
 		switch (type) {
 			case 'read':
-				if (this.roomId && typeof body?.id === 'string') {
-					void this.chatService.readRoomChatMessage(this.user!.id, this.roomId, this.channelId, body.id).catch(() => {});
-				}
+				if (this.disposed || !this.initialized || typeof body?.id !== 'string') break;
+				enqueueRead(this.user!.id, { chatService: this.chatService, roomId: this.roomId, channelId: this.channelId, id: body.id });
 				break;
 		}
 	}

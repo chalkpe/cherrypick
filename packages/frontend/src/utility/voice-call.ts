@@ -64,6 +64,29 @@ const ICE_REFRESH_RETRY_MS = 60 * 1000;
 type IceRefresh = { room: Room; roomId: string; url: string; mediaProvider: string; lastSuccess: number; retryDelay: number; timer: number | null; inFlight: boolean; iceServers: RTCIceServer[] };
 let iceRefresh: IceRefresh | null = null;
 
+// 他のサーバーのルームの通話では、このサーバーが覚える参加の記録 (24 時間) を、状態が変わらないままでも切らさないよう、通話のあいだ現在の状態を送り直す
+const REMOTE_JOIN_REPORT_INTERVAL_MS = 6 * 60 * 60 * 1000;
+let remoteJoinReportTimer: number | null = null;
+
+function stopRemoteJoinReport(): void {
+	if (remoteJoinReportTimer != null) window.clearTimeout(remoteJoinReportTimer);
+	remoteJoinReportTimer = null;
+}
+
+function startRemoteJoinReport(room: Room, chatRoom: Misskey.entities.ChatRoom): void {
+	stopRemoteJoinReport();
+	if (chatRoom.owner?.host == null) return;
+	const schedule = () => {
+		remoteJoinReportTimer = window.setTimeout(() => {
+			remoteJoinReportTimer = null;
+			if (current !== room) return;
+			reportStatus(room, true);
+			schedule();
+		}, REMOTE_JOIN_REPORT_INTERVAL_MS);
+	};
+	schedule();
+}
+
 function stopIceRefresh(): void {
 	if (iceRefresh?.timer != null) window.clearTimeout(iceRefresh.timer);
 	iceRefresh = null;
@@ -1003,6 +1026,7 @@ async function disconnectCurrentRoom(): Promise<void> {
 	stopRecording();
 	current = null;
 	stopIceRefresh();
+	stopRemoteJoinReport();
 	if (room != null) {
 		await room.disconnect();
 		detachAll(room);
@@ -1254,6 +1278,7 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { 
 
 	state.status = 'connected';
 	startIceRefresh(lkRoom, room.id, credentials);
+	startRemoteJoinReport(lkRoom, room);
 	state.audioBlocked = !lkRoom.canPlaybackAudio;
 
 	for (const participant of lkRoom.remoteParticipants.values()) {
@@ -1870,6 +1895,7 @@ function failToConnect(err?: unknown): void { resetState(); notifyVoiceCallFailu
 
 function resetState(): void {
 	stopIceRefresh();
+	stopRemoteJoinReport();
 	resetStatusDelivery();
 	stopRecording();
 	state.recording = false;

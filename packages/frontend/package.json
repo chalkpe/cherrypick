@@ -61,7 +61,7 @@
 		"livekit-client": "2.23.0",
 		"matter-js": "0.20.0",
 		"mediabunny": "1.65.0",
-		"mfc-js": "0.1.0",
+		"mfc-js": "npm:mfm-js@0.28.0",
 		"mfm-js": "0.28.0",
 		"misskey-bubble-game": "workspace:*",
 		"misskey-reversi": "workspace:*",

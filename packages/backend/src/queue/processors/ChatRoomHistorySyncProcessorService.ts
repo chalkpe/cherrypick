@@ -25,6 +25,7 @@ import { ApDbResolverService } from '@/core/activitypub/ApDbResolverService.js';
 import { ApInboxService } from '@/core/activitypub/ApInboxService.js';
 import { ApMfmService } from '@/core/activitypub/ApMfmService.js';
 import { ApResolverService } from '@/core/activitypub/ApResolverService.js';
+import type { Resolver } from '@/core/activitypub/ApResolverService.js';
 import { ApNoteService } from '@/core/activitypub/models/ApNoteService.js';
 import { ApPersonService } from '@/core/activitypub/models/ApPersonService.js';
 import { chatHistoryPageUri, parseChatHistoryItem, parseChatHistoryPage } from '@/core/activitypub/misc/chat-history.js';
@@ -33,6 +34,7 @@ import { chatNoteText } from '@/core/activitypub/misc/chat-payloads.js';
 import { getApType, isEmoji } from '@/core/activitypub/type.js';
 import type { IObject, IPost } from '@/core/activitypub/type.js';
 import { acquireApObjectLock } from '@/misc/distributed-lock.js';
+import { IdentifiableError } from '@/misc/identifiable-error.js';
 import { isTemporaryFetchFailure } from '@/misc/is-temporary-fetch-failure.js';
 import { toArray } from '@/misc/prelude/array.js';
 import { StatusError } from '@/misc/status-error.js';
@@ -57,15 +59,32 @@ const MAX_PAGES_WITHOUT_PROGRESS = 100;
 const PROGRESS_TTL = 7 * 24 * 60 * 60;
 // 메시지당 리액션 한도와 같다
 const MAX_REACTIONS_PER_MESSAGE = 100;
+// 글 하나에서 원격에 확인하는 커스텀 이모지 수 (본문과 리액션 각각)
+const MAX_EMOJI_LOOKUPS_PER_MESSAGE = 16;
+// 한 글에서 살펴보는 리액션 항목 수. 확인된 리액션의 상한(MAX_REACTIONS_PER_MESSAGE)의 2배까지 본다
+const MAX_REACTION_ENTRIES_PER_MESSAGE = MAX_REACTIONS_PER_MESSAGE * 2;
+// Resolver의 조회 횟수 한도에 걸렸을 때의 오류 ID
+const RESOLVER_LIMIT_ERROR_ID = 'd592da9f-822f-4d91-83d7-4ceefabcf3d2';
 
 type ImportRun = {
 	lastAttempt: boolean;
 	accounts: Map<string, MiRemoteUser | null>;
+	/** 리액션한 계정 중 이 서버가 이미 아는 계정. 모르면 null */
+	knownAccounts: Map<string, MiRemoteUser | null>;
 	checkedEmojis: Set<string>;
+	/** 한 페이지의 이모지 조회가 함께 쓰는 Resolver. 조회 횟수 한도가 페이지마다 걸린다 */
+	resolver: Resolver | null;
+	/** 한 페이지의 작성자 조회가 함께 쓰는 Resolver. 이모지 조회와 한도를 나누어 쓰지 않는다 */
+	authorResolver: Resolver | null;
+	/** 이번 실행에서 새로 저장한 글 수 */
+	stored: number;
 	channelsRefreshed: boolean;
 };
 
 class HistoryUnavailableError extends Error {}
+
+/** 조회 횟수 한도 때문에 작성자를 확인하지 못했다. 계정이 없는 것과 구분한다 */
+class ResolverLimitError extends Error {}
 
 /**
  * 다른 서버가 소유한 그룹의 과거 기록을 소유 서버에서 서명 조회로 받아 저장한다.
@@ -140,6 +159,10 @@ export class ChatRoomHistorySyncProcessorService {
 		const run: ImportRun = {
 			lastAttempt: job.attemptsMade + 1 >= (job.opts.attempts ?? 1),
 			accounts: new Map(),
+			knownAccounts: new Map(),
+			resolver: null,
+			authorResolver: null,
+			stored: 0,
 			checkedEmojis: new Set(),
 			channelsRefreshed: false,
 		};
@@ -164,8 +187,19 @@ export class ChatRoomHistorySyncProcessorService {
 					throw new HistoryUnavailableError('the history has made no progress');
 				}
 
-				for (const item of page.items) {
-					await this.importItem(room, item, run);
+				run.resolver = null;
+				run.authorResolver = null;
+				try {
+					for (const item of page.items) {
+						await this.importItem(room, item, run);
+					}
+				} catch (err) {
+					if (!(err instanceof ResolverLimitError)) throw err;
+					// 확인하지 못한 작성자의 글은 저장하지 않고 이 페이지를 끝내지 않는다. 다음 실행(새 Resolver)이 같은 페이지를 이어 받는다.
+					// 이번 실행에서 하나도 저장하지 못했다면 같은 일이 되풀이될 뿐이므로 오류로 다루어 큐의 재시도 횟수를 쓴다.
+					if (run.stored === 0) throw err;
+					await job.moveToDelayed(Date.now() + CONTINUE_DELAY, job.token);
+					throw new DelayedError();
 				}
 
 				if (!await this.chatRoomHistoryService.advance(room.id, state.pass, page.next)) return 'skip: started over';
@@ -288,7 +322,7 @@ export class ChatRoomHistorySyncProcessorService {
 		}
 		if ((text == null || text.trim() === '') && fileIds.length === 0 && unavailableFileCount === 0) return;
 
-		const emojis = await this.confirmedEmojis(item.note, author?.host ?? host, run);
+		const emojis = await this.confirmedEmojis(item.note, text, author?.host ?? host, run);
 		// 리액션과 작성자 스냅샷은 소유 서버만 아는 기록이므로 기록 항목의 것을 유지한다.
 		const reactions = await this.resolveReactions(item, author, run);
 		const channelRefs = room.hasChannels ? await this.chatRoomChannelService.remoteRefs(room, text ?? '', item.note._misskey_chatChannelRefs) : [];
@@ -313,6 +347,7 @@ export class ChatRoomHistorySyncProcessorService {
 			});
 			// 가져오는 동안 먼저 도착해 보류된 실시간 리액션과 취소를 기존 처리로 적용한다
 			if (stored != null) {
+				run.stored++;
 				await this.chatService.applyPendingChatReactions(stored).catch(err => {
 					this.logger.warn(`Failed to apply deferred chat reactions: ${err}`);
 				});
@@ -348,30 +383,70 @@ export class ChatRoomHistorySyncProcessorService {
 		if (run.accounts.has(uri)) return run.accounts.get(uri)!;
 		let account: MiRemoteUser | null = null;
 		try {
-			const user = await this.apDbResolverService.getUserFromApId(uri) ?? await this.apPersonService.resolvePerson(uri, await this.apResolverService.createResolver());
+			const user = await this.apDbResolverService.getUserFromApId(uri) ?? await this.apPersonService.resolvePerson(uri, await this.authorResolver(run));
 			account = this.userEntityService.isRemoteUser(user) && !user.isDeleted ? user : null;
 		} catch (err) {
+			if (err instanceof IdentifiableError && err.id === RESOLVER_LIMIT_ERROR_ID) throw new ResolverLimitError(`${err}`);
 			this.logger.info(`Could not resolve ${uri} in a chat room history: ${err}`);
 		}
 		run.accounts.set(uri, account);
 		return account;
 	}
 
+	private async pageResolver(run: ImportRun): Promise<Resolver> {
+		return run.resolver ??= await this.apResolverService.createResolver();
+	}
+
+	private async authorResolver(run: ImportRun): Promise<Resolver> {
+		return run.authorResolver ??= await this.apResolverService.createResolver();
+	}
+
+	/** 리액션한 계정. 이 서버가 이미 아는 계정만 쓰고 원격에서 새로 가져오지 않는다. */
+	private async knownAccount(uri: string, run: ImportRun): Promise<MiRemoteUser | null> {
+		const resolved = run.accounts.get(uri);
+		if (resolved != null) return resolved;
+		if (run.knownAccounts.has(uri)) return run.knownAccounts.get(uri)!;
+		let account: MiRemoteUser | null = null;
+		try {
+			const user = await this.apDbResolverService.getUserFromApId(uri);
+			account = user != null && this.userEntityService.isRemoteUser(user) && !user.isDeleted ? user : null;
+		} catch (err) {
+			this.logger.info(`Could not look up ${uri} in a chat room history: ${err}`);
+		}
+		run.knownAccounts.set(uri, account);
+		return account;
+	}
+
 	private async resolveReactions(item: ChatHistoryItem, author: MiRemoteUser | null, run: ImportRun): Promise<string[]> {
 		const pairs: string[] = [];
-		for (const entry of item.reactions) {
+		const emojiBudget = { left: MAX_EMOJI_LOOKUPS_PER_MESSAGE };
+		// 한 글에서 살펴보는 항목 수를 묶고, 거부 대상 서버 판정은 글 단위로 한 번에 묻는다
+		const entries = item.reactions.slice(0, MAX_REACTION_ENTRIES_PER_MESSAGE);
+		const actorHosts = [...new Set(entries.flatMap(entry => this.hostOf(entry.actor) ?? []))];
+		const refused = actorHosts.length > 0 ? new Map(await this.hostPolicyService.refusedRemoteHostsOf(actorHosts)) : new Map<string, boolean>();
+		for (const entry of entries) {
 			if (pairs.length >= MAX_REACTIONS_PER_MESSAGE) break;
-			// 리액션한 계정을 확인할 수 없으면 그 리액션만 버린다
-			const reactor = await this.resolveAccount(entry.actor, run);
+			// 거부 대상 서버는 조회하기 전에 거른다
+			const actorHost = this.hostOf(entry.actor);
+			if (actorHost == null || (refused.get(actorHost) ?? true)) continue;
+			// 리액션한 계정을 이 서버가 모르면 그 리액션만 버린다
+			const reactor = await this.knownAccount(entry.actor, run);
 			if (reactor == null || reactor.isSuspended || reactor.id === author?.id) continue;
-			if (await this.hostPolicyService.isRefusedRemoteHost(reactor.host)) continue;
+			let reactorRefused = refused.get(reactor.host);
+			if (reactorRefused === undefined) {
+				reactorRefused = await this.hostPolicyService.isRefusedRemoteHost(reactor.host);
+				refused.set(reactor.host, reactorRefused);
+			}
+			if (reactorRefused) continue;
 			let reaction: string;
 			try {
 				reaction = this.chatService.normalizeRemoteReaction(entry.reaction, reactor.host);
 			} catch {
 				continue;
 			}
-			if (entry.tag != null && reaction.startsWith(':')) await this.confirmEmoji(entry.tag, reactor.host, run);
+			if (entry.tag != null && reaction.startsWith(':')) {
+				await this.confirmEmoji(entry.tag, reactor.host, run, emojiBudget);
+			}
 			const pair = `${reactor.id}/${reaction}`;
 			if (!pairs.includes(pair)) pairs.push(pair);
 		}
@@ -379,24 +454,41 @@ export class ChatRoomHistorySyncProcessorService {
 	}
 
 	/** 본문의 커스텀 이모지. 그림은 작성자 서버에서만 확인하고, 확인하지 못한 것은 글자로 남는다. */
-	private async confirmedEmojis(note: IPost, host: string, run: ImportRun): Promise<string[]> {
-		const tags = toArray(note.tag).filter(tag => tag != null && typeof tag === 'object' && getApType(tag) === 'Emoji');
-		for (const tag of tags) await this.confirmEmoji(tag, host, run);
-		const names = tags.map(tag => typeof tag.name === 'string' ? tag.name.replaceAll(':', '') : null).filter((name): name is string => name != null && name.length > 0 && isStorableText(name));
+	private async confirmedEmojis(note: IPost, text: string | null, host: string, run: ImportRun): Promise<string[]> {
+		// 본문에 실제로 쓰인 이름만 본다. 원격 조회는 글 하나에 정해진 수까지만 한다
+		const tags = toArray(note.tag)
+			.filter(tag => tag != null && typeof tag === 'object' && getApType(tag) === 'Emoji')
+			.filter(tag => typeof tag.name === 'string' && text != null && text.includes(`:${tag.name.replaceAll(':', '')}:`));
+		const nameOf = (tag: IObject) => typeof tag.name === 'string' ? tag.name.replaceAll(':', '') : null;
+		const names = tags.map(nameOf).filter((name): name is string => name != null && name.length > 0 && isStorableText(name));
 		if (names.length === 0) return [];
+		const stored = await this.emojisRepository.findBy({ host, name: In(names) });
+		const storedNames = new Set(stored.map(emoji => emoji.name));
+		const budget = { left: MAX_EMOJI_LOOKUPS_PER_MESSAGE };
+		for (const tag of tags) {
+			const name = nameOf(tag);
+			if (name != null && storedNames.has(name)) continue;
+			await this.confirmEmoji(tag, host, run, budget);
+		}
+		if (budget.left === MAX_EMOJI_LOOKUPS_PER_MESSAGE) return stored.map(emoji => emoji.name);
 		return (await this.emojisRepository.findBy({ host, name: In(names) })).map(emoji => emoji.name);
 	}
 
 	/** 소유 서버는 이 이름으로 아무 그림이나 내줄 수 있으므로, 그 계정의 서버에 Emoji id로 직접 묻는다 (중계된 리액션과 같은 규칙). */
-	private async confirmEmoji(tag: IObject, host: string, run: ImportRun): Promise<void> {
+	private async confirmEmoji(tag: IObject, host: string, run: ImportRun, budget: { left: number }): Promise<void> {
 		if (typeof tag.id !== 'string' || run.checkedEmojis.has(tag.id)) return;
-		run.checkedEmojis.add(tag.id);
 		try {
 			if (this.utilityService.extractDbHost(tag.id) !== host) return;
 			const name = typeof tag.name === 'string' ? tag.name.replaceAll(':', '') : null;
-			if (name != null && await this.emojisRepository.existsBy({ host, name })) return;
-			const resolver = await this.apResolverService.createResolver();
-			const emoji = await resolver.resolve(tag.id);
+			if (name != null && await this.emojisRepository.existsBy({ host, name })) {
+				run.checkedEmojis.add(tag.id);
+				return;
+			}
+			// 상한은 실제로 원격에 묻는 횟수에만 센다
+			if (budget.left <= 0) return;
+			budget.left--;
+			run.checkedEmojis.add(tag.id);
+			const emoji = await (await this.pageResolver(run)).resolve(tag.id);
 			if (emoji.id === tag.id && isEmoji(emoji)) await this.apNoteService.extractEmojis(emoji, host);
 		} catch (err) {
 			this.logger.info(`Could not confirm the emoji ${tag.id}: ${err}`);

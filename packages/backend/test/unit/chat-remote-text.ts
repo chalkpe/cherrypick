@@ -231,10 +231,10 @@ describe('받은 과거 기록 글의 이모지 이름', () => {
 		const findBy = vi.fn(async (_where: unknown) => []);
 		const service = Object.assign(Object.create(ChatRoomHistorySyncProcessorService.prototype), {
 			emojisRepository: { findBy },
-		}) as unknown as { confirmedEmojis(note: IPost, host: string, run: unknown): Promise<string[]> };
+		}) as unknown as { confirmedEmojis(note: IPost, text: string | null, host: string, run: unknown): Promise<string[]> };
 		const tags = [':smile:', ':a\u0000b:', `:c${high}:`, ':d😀:'].map(name => ({ type: 'Emoji', name }));
 
-		await service.confirmedEmojis({ tag: tags } as unknown as IPost, 'member.example', { checkedEmojis: new Set() });
+		await service.confirmedEmojis({ tag: tags } as unknown as IPost, tags.map(tag => tag.name).join(' '), 'member.example', { checkedEmojis: new Set() });
 
 		const where = findBy.mock.calls[0][0] as { name: { value: string[] } };
 		expect(where.name.value).toEqual(['smile', 'd😀']);

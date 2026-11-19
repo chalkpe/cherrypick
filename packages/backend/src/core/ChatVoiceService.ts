@@ -76,6 +76,11 @@ const REMOTE_SNAPSHOT_MAX_AGE_MS = REMOTE_SNAPSHOT_LAST_SEEN_TTL_SECONDS * 1000 
 // 表示し直さない (ホストの時計のずれの分だけ延ばす)。通話の終わり (空の現況) は REMOTE_SNAPSHOT_MAX_AGE_MS まで受け入れる
 const REMOTE_ACTIVE_SNAPSHOT_MAX_AGE_MS = REMOTE_SNAPSHOT_TTL_SECONDS * 1000 + REMOTE_SNAPSHOT_MAX_AHEAD_MS;
 
+// このサーバーのユーザーが、他のサーバーのルームの通話にこのサーバーを通って入る要求に成功した記録。ミラーの参加者にこのサーバーのユーザーを残すかの判定に使う。
+// 入る要求と設定の報告が成功するたびに、この寿命で書き直す (ホストから届く現況では延ばさない)
+export const REMOTE_JOIN_TTL_SECONDS = 24 * 60 * 60;
+export const remoteJoinKeyOf = (roomId: string, userId: string): string => `chatVoice:remoteJoin:${roomId}:${userId}`;
+
 // 他のサーバーの通話を止めたときにミラーの現況を消すとき、一度に引くルームの数
 const MIRROR_CLEAR_BATCH_SIZE = 1000;
 
@@ -921,6 +926,12 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 		}
 	}
 
+	/** このサーバーを通って、ルームの通話に入る要求に成功した記録があるユーザー */
+	private async remoteJoinedUserIdsOf(roomId: MiChatRoom['id'], userIds: string[]): Promise<Set<string>> {
+		const records = await Promise.all(userIds.map(userId => this.redisClient.get(remoteJoinKeyOf(roomId, userId))));
+		return new Set(userIds.filter((_, i) => records[i] != null));
+	}
+
 	/**
 	 * 他のサーバーが持つルーム (ミラー) について、ホストから届いた参加者の現況を保存し、このサーバーのメンバーに知らせる。
 	 * room は持ち主 (owner) を読み込んだもの。持ち主がこのサーバーのユーザーなら (ミラーでなければ) 例外を投げる。
@@ -929,7 +940,8 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 	 * 覚えておく間が過ぎた後にも古い現況を書かないよう、REMOTE_SNAPSHOT_MAX_AGE_MS より古い現況も捨てる。
 	 * 参加者のいる現況は、ミラーでの寿命に時計のずれを足した REMOTE_ACTIVE_SNAPSHOT_MAX_AGE_MS より古ければ捨てる。
 	 * inbox に届いた現況も、参加したときにホストから受け取った現況も、すべてここを通る。
-	 * 参加者は、このサーバーが知っているユーザーだけを残す。そのうちこのサーバーのユーザーは、ルームのメンバーでなければ外す。
+	 * 参加者は、このサーバーが知っているユーザーだけを残す。そのうちこのサーバーのユーザーは、ルームのメンバーでなければ外し、
+	 * このサーバーを通って通話に入る要求をして成功した記録 (remoteJoinKeyOf) が無くても外す。
 	 * 他のサーバーのユーザー (持ち主を含む) がメンバーかはこのサーバーでは分からないので、そのサーバーを断っていなければ残す。
 	 * 他のサーバーの通話を止めているあいだは保存しない。保存の途中で止められたときも、書かず (REMOTE_GENERATION_KEY)、知らせない。
 	 * 結果 (RemoteSnapshotStoreResult) を返す。
@@ -958,15 +970,17 @@ export class ChatVoiceService implements OnModuleInit, OnApplicationShutdown {
 			return true;
 		});
 		const users = await this.knownUsersOf(capped.map(p => p.identity));
-		// ホストは、このサーバーのユーザーなら誰でも参加者として送れる。このサーバーのユーザーかどうかは、送られた identity ではなく
-		// DB のユーザーで決め、メンバーでなければ外す
+		// ホストが送る参加者にこのサーバーのユーザーが含まれていても、このサーバーを通って入る要求をしていなければ外す。
+		// このサーバーのユーザーかどうかは、送られた identity ではなく DB のユーザーで決め、メンバーでなければ外す
 		const localMemberIds = await this.memberIdsOf(room, [...new Set([...users.values()].filter(user => user.host == null).map(user => user.id))]);
+		// このサーバーのユーザーは、このサーバーを通ってこのルームの通話に入る要求をして成功した記録があるときだけ残す
+		const localJoinedIds = await this.remoteJoinedUserIdsOf(room.id, [...localMemberIds]);
 		const refusedHosts = await this.hostPolicyService.refusedRemoteHostsOf([...new Set([...users.values()].flatMap(user => user.host ?? []))], policy);
 		const snapshot: VoiceSnapshot = { participants: [], updatedAt };
 		for (const p of capped) {
 			const user = users.get(p.identity);
 			if (user == null) continue;
-			if (user.host == null && !localMemberIds.has(user.id)) continue;
+			if (user.host == null && !(localMemberIds.has(user.id) && localJoinedIds.has(user.id))) continue;
 			if (user.host != null && refusedHosts.get(user.host) !== false) continue;
 			snapshot.participants.push({ identity: p.identity, userId: user.id, screenSharing: p.screenSharing, ...reportedVoiceStatus(p) });
 		}

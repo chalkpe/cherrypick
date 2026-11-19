@@ -507,7 +507,13 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				updates.alsoKnownAs = newAlsoKnownAs.size > 0 ? Array.from(newAlsoKnownAs) : null;
 			}
 
-			if (typeof ps.setFederationAvatarShape === 'boolean') updates.setFederationAvatarShape = ps.setFederationAvatarShape;
+			if (typeof ps.setFederationAvatarShape === 'boolean') {
+				if (ps.setFederationAvatarShape) {
+					policies ??= await this.roleService.getUserPolicies(user.id);
+					if (!policies.canSetFederationAvatarShape) throw new ApiError(meta.errors.restrictedByRole);
+				}
+				updates.setFederationAvatarShape = ps.setFederationAvatarShape;
+			}
 			if (typeof ps.isSquareAvatars === 'boolean') updates.isSquareAvatars = ps.isSquareAvatars;
 
 			//#region emojis/tags

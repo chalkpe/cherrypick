@@ -132,6 +132,7 @@ function fakeRedis() {
 	const lists = new Map<string, string[]>();
 	const sets = new Map<string, Set<string>>();
 	const counts = new Map<string, number>();
+	const counters = new Map<string, number>();
 	const client = {
 		values,
 		lists,
@@ -149,7 +150,7 @@ function fakeRedis() {
 			return 'OK';
 		},
 		del: async (key: string) => {
-			const had = values.delete(key) || lists.delete(key);
+			const had = values.delete(key) || lists.delete(key) || counters.delete(key);
 			return had ? 1 : 0;
 		},
 		scard: async (key: string) => sets.get(key)?.size ?? 0,
@@ -160,6 +161,13 @@ function fakeRedis() {
 			return 1;
 		},
 		expire: async () => 1,
+		incr: async (key: string) => client.incrby(key, 1),
+		decr: async (key: string) => client.incrby(key, -1),
+		incrby: async (key: string, by: number) => {
+			counters.set(key, (counters.get(key) ?? 0) + by);
+			return counters.get(key)!;
+		},
+		decrby: async (key: string, by: number) => client.incrby(key, -by),
 		llen: async (key: string) => lists.get(key)?.length ?? 0,
 		multi: () => {
 			const commands: (() => unknown)[] = [];

@@ -6,7 +6,7 @@ import { visualizer } from 'rollup-plugin-visualizer';
 import type { PluginOption, UserConfig } from 'vite';
 import { defineConfig } from 'vite';
 import { load as loadYaml } from 'js-yaml';
-import { promises as fsp } from 'fs';
+import { promises as fsp, readFileSync } from 'fs';
 import { execaSync } from 'execa';
 
 import locales from 'i18n';
@@ -103,7 +103,9 @@ const externalPackages = [
 		name: 'tinyld',
 		match: /^tinyld$/,
 		path(): string {
-			return `https://cdn.jsdelivr.net/npm/tinyld@${packageInfo.dependencies.tinyld}/dist/tinyld.normal.node.mjs`;
+			// package.jsonの範囲指定ではなく、ロックファイルでインストールされた正確なバージョンを使う
+			const { version } = JSON.parse(readFileSync(path.resolve(__dirname, 'node_modules/tinyld/package.json'), 'utf-8')) as { version: string };
+			return `https://cdn.jsdelivr.net/npm/tinyld@${version}/dist/tinyld.normal.node.mjs`;
 		},
 	},
 ];

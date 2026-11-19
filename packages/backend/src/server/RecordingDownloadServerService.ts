@@ -44,7 +44,18 @@ export class RecordingDownloadServerService {
 			if (await this.rateLimiterService.limit(DOWNLOAD_USER_LIMIT, user.id) != null) return reply.code(429).send();
 
 			const download = await this.recordingStorage.getDownload(request.params.id);
-			if (download == null || download.userId !== user.id || !fs.existsSync(download.path)) {
+			if (download == null || download.userId !== user.id) {
+				return reply.code(404).send();
+			}
+			// 심볼릭 링크는 따라가지 않고 일반 파일만 연다
+			let file: fs.promises.FileHandle;
+			try {
+				file = await fs.promises.open(download.path, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+			} catch {
+				return reply.code(404).send();
+			}
+			if (!(await file.stat()).isFile()) {
+				await file.close();
 				return reply.code(404).send();
 			}
 
@@ -52,7 +63,7 @@ export class RecordingDownloadServerService {
 			reply.header('Content-Length', download.size);
 			reply.header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(download.name)}`);
 			reply.header('Cache-Control', 'no-store');
-			const stream = fs.createReadStream(download.path);
+			const stream = file.createReadStream();
 			// GET 본문 전달이 끝까지 성공했을 때만 한 번 내려받은 것으로 보고 지운다. 중단되면 기한까지 다시 받을 수 있다.
 			// 파일 읽기 오류의 500 응답도 finish가 나므로, 스트림이 오류 없이 끝났는지 함께 확인한다.
 			let streamCompleted = false;

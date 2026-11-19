@@ -8,7 +8,7 @@
 import { EventEmitter } from 'node:events';
 import { vi } from 'vitest';
 import { FindOperator } from 'typeorm';
-import { ChatVoiceService } from '@/core/ChatVoiceService.js';
+import { ChatVoiceService, remoteJoinKeyOf } from '@/core/ChatVoiceService.js';
 import { UtilityService } from '@/core/UtilityService.js';
 import { HostPolicyService } from '@/core/HostPolicyService.js';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
@@ -238,6 +238,8 @@ export function fakeRedis() {
 export const KNOWN_USERS = [
 	{ id: 'u1', host: null, uri: null, isDeleted: false },
 	{ id: 'u2', host: null, uri: null, isDeleted: false },
+	// 他のサーバーのルームの通話に入る要求を、このサーバーでしたことがないメンバー
+	{ id: 'u3', host: null, uri: null, isDeleted: false },
 	// メンバーを引く既定の結果 (chatRoomMembershipsRepository.findBy) にいるユーザー
 	{ id: 'm1', host: null, uri: null, isDeleted: false },
 	{ id: 'deletedLocal', host: null, uri: null, isDeleted: true },
@@ -266,7 +268,12 @@ export function matchesWhere(user: Record<string, unknown>, where: Record<string
 
 export type InstanceRow = { id?: string; host: string; suspensionState: string; quarantineLimited?: boolean };
 
+// 他のサーバーのルーム r1 の通話に入る要求をこのサーバーでしたことのあるユーザー (u3 はしたことがない)
+export const REMOTE_JOINED_USER_IDS = ['u1', 'u2', 'm1', 'owner'];
+
 export function createFixture(redis = fakeRedis(), instances: InstanceRow[] = []) {
+	// 本物の Redis を渡すときは、その側で用意する
+	if ('store' in redis) for (const userId of REMOTE_JOINED_USER_IDS) if (!redis.store.has(remoteJoinKeyOf('r1', userId))) redis.store.set(remoteJoinKeyOf('r1', userId), '1');
 	let relayChange: ((roomId: string) => void) | undefined;
 	const liveKitService = {
 		onRelayChange: (callback: (roomId: string) => void) => { relayChange = callback; },

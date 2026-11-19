@@ -10,6 +10,7 @@ import type { NotesRepository } from '@/models/_.js';
 import { FilterUnionByProperty, notificationTypes, obsoleteNotificationTypes } from '@/types.js';
 import { Endpoint } from '@/server/api/endpoint-base.js';
 import { NotificationEntityService } from '@/core/entities/NotificationEntityService.js';
+import { omitLoginIp } from '@/misc/omit-notification-ip.js';
 import { NotificationService } from '@/core/NotificationService.js';
 import { DI } from '@/di-symbols.js';
 import { IdService } from '@/core/IdService.js';
@@ -65,7 +66,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 		private notificationEntityService: NotificationEntityService,
 		private notificationService: NotificationService,
 	) {
-		super(meta, paramDef, async (ps, me) => {
+		super(meta, paramDef, async (ps, me, token, flashToken) => {
 			const untilId = ps.untilId ?? (ps.untilDate ? this.idService.gen(ps.untilDate!) : undefined);
 			const sinceId = ps.sinceId ?? (ps.sinceDate ? this.idService.gen(ps.sinceDate!) : undefined);
 
@@ -94,7 +95,9 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				this.notificationService.readAllNotification(me.id);
 			}
 
-			return await this.notificationEntityService.packMany(notifications, me.id);
+			const packed = await this.notificationEntityService.packMany(notifications, me.id);
+			// アプリのトークンには、ログイン通知の接続元IPを渡さない
+			return (token != null || flashToken != null) ? packed.map(omitLoginIp) : packed;
 		});
 	}
 }

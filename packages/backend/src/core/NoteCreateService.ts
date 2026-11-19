@@ -58,6 +58,8 @@ import { trackPromise } from '@/misc/promise-tracker.js';
 import { IdentifiableError } from '@/misc/identifiable-error.js';
 import { CollapsedQueue } from '@/misc/collapsed-queue.js';
 import { CacheService } from '@/core/CacheService.js';
+import { LoggerService } from '@/core/LoggerService.js';
+import type Logger from '@/logger.js';
 import { isQuote, isRenote } from '@/misc/is-renote.js';
 import { extractUrlsForKeyWordCheck } from '@/misc/extract-urls-for-keyword-check.js';
 import { isHostAllowedByDeliveryTargets } from '@/misc/normalize-host.js';
@@ -203,6 +205,7 @@ type Option = {
 export class NoteCreateService implements OnApplicationShutdown {
 	#shutdownController = new AbortController();
 	private updateNotesCountQueue: CollapsedQueue<MiNote['id'], number>;
+	private logger: Logger;
 
 	constructor(
 		@Inject(DI.config)
@@ -278,7 +281,9 @@ export class NoteCreateService implements OnApplicationShutdown {
 		private utilityService: UtilityService,
 		private userBlockingService: UserBlockingService,
 		private cacheService: CacheService,
+		private loggerService: LoggerService,
 	) {
+		this.logger = this.loggerService.getLogger('note-create');
 		this.updateNotesCountQueue = new CollapsedQueue(process.env.NODE_ENV !== 'test' ? 60 * 1000 * 5 : 0, this.collapseNotesCount, this.performUpdateNotesCount);
 	}
 
@@ -908,7 +913,7 @@ export class NoteCreateService implements OnApplicationShutdown {
 				}
 			});
 
-			this.webhookService.enqueueUserWebhook(user.id, 'note', { note: noteObj });
+			await this.enqueuePackedNoteWebhook(user.id, 'note', note);
 
 			const nm = new NotificationManager(this.mutingsRepository, this.notificationService, this.followingsRepository, user, note);
 
@@ -927,8 +932,8 @@ export class NoteCreateService implements OnApplicationShutdown {
 
 					if (!isThreadMuted) {
 						nm.push(data.reply.userId, 'reply');
-						this.globalEventService.publishMainStream(data.reply.userId, 'reply', noteObj);
-						this.webhookService.enqueueUserWebhook(data.reply.userId, 'reply', { note: noteObj });
+						await this.publishPackedNoteToMainStream(data.reply.userId, 'reply', note);
+						await this.enqueuePackedNoteWebhook(data.reply.userId, 'reply', note);
 					}
 				}
 			}
@@ -944,8 +949,8 @@ export class NoteCreateService implements OnApplicationShutdown {
 
 				// Publish event
 				if ((user.id !== data.renote.userId) && data.renote.userHost === null) {
-					this.globalEventService.publishMainStream(data.renote.userId, 'renote', noteObj);
-					this.webhookService.enqueueUserWebhook(data.renote.userId, 'renote', { note: noteObj });
+					await this.publishPackedNoteToMainStream(data.renote.userId, 'renote', note);
+					await this.enqueuePackedNoteWebhook(data.renote.userId, 'renote', note);
 				}
 			}
 
@@ -1067,6 +1072,33 @@ export class NoteCreateService implements OnApplicationShutdown {
 					this.featuredService.updatePerUserNotesRanking(renote.userId, renote.id, 5);
 				}
 			}
+		}
+	}
+
+	// 받는 사람 기준으로 포장해서, 받는 사람이 볼 수 없는 중첩 노트가 가려지게 한다
+	// 失敗してもこのノートの後続の処理を止めないよう、記録だけ残す
+	@bindThis
+	private async publishPackedNoteToMainStream(userId: MiUser['id'], type: 'reply' | 'renote', note: MiNote) {
+		try {
+			const packed = await this.noteEntityService.pack(note, { id: userId }, { withReactionAndUserPairCache: true });
+			this.globalEventService.publishMainStream(userId, type, packed);
+		} catch (err) {
+			this.logger.error(`Failed to publish ${type} event of note ${note.id} to user ${userId}`, { error: err });
+		}
+	}
+
+	// 웹훅이 없는 사용자를 위해서는 포장하지 않는다
+	// 失敗してもこのノートの後続の処理を止めないよう、記録だけ残す
+	@bindThis
+	private async enqueuePackedNoteWebhook(userId: MiUser['id'], type: 'note' | 'reply' | 'renote', note: MiNote) {
+		try {
+			const webhooks = await this.webhookService.getActiveWebhooks();
+			if (!webhooks.some(webhook => webhook.userId === userId && webhook.on.includes(type))) return;
+
+			const packed = await this.noteEntityService.pack(note, { id: userId }, { withReactionAndUserPairCache: true });
+			await this.webhookService.enqueueUserWebhook(userId, type, { note: packed });
+		} catch (err) {
+			this.logger.error(`Failed to enqueue ${type} webhook of note ${note.id} for user ${userId}`, { error: err });
 		}
 	}
 
