@@ -1355,9 +1355,8 @@ function applyVolumes(room: Room): void {
 export async function resumeAudio(): Promise<void> {
 	if (current == null) return;
 	const room = current;
-	await room.startAudio();
-	// 増幅して鳴らしている音も、同じ操作で再開する
-	await boost?.resume();
+	// 증폭해서 재생 중인 소리도 같은 조작으로 다시 시작한다. 브라우저가 사용자 조작 직후에만 재생을 허용하므로 두 작업을 같은 동기 구간에서 시작하고, 한쪽이 실패해도 다른 쪽은 끝까지 진행한다
+	await Promise.allSettled([room.startAudio(), boost?.resume()]);
 	if (current === room) syncAudioBlocked();
 }
 
@@ -1407,7 +1406,7 @@ export async function selectAudioDevice(kind: 'audioinput' | 'audiooutput', devi
 	if (room == null) return;
 	if (kind === 'audiooutput') boostSinkId = deviceId;
 	await room.switchActiveDevice(kind, deviceId);
-	// 増幅して鳴らしている音は専用の audio 要素から出るので、出力先もそちらに伝える
+	// 증폭해서 재생 중인 소리는 전용 audio 요소에서 나오므로, 출력 장치도 그쪽에 알린다
 	if (kind === 'audiooutput' && current === room) await boost?.setSinkId(deviceId);
 	if (kind === 'audioinput' && current != null) {
 		startLocalMeter(current);
@@ -1678,19 +1677,20 @@ async function disableMicrophone(room: Room): Promise<void> {
 	reportStatus(room);
 }
 
-// 保存する音量は 0〜2 (200%)。audio 要素の volume は 0〜1 しか受け付けない (範囲外は IndexSizeError) ので、
-// 1 を超える分は applyVolume が voice-boost の増幅経路に渡す
+// 저장하는 음량은 0~2 (200%)다. audio 요소의 volume은 0~1만 받으므로 (범위 밖은 IndexSizeError),
+// 1을 넘는 음량은 applyVolume이 voice-boost의 증폭 경로로 넘긴다
 function clampVolume(volume: number): number {
 	return Math.min(MAX_VOLUME, Math.max(0, volume));
 }
 
-// 100% を超えた音量で鳴らすトラックだけを、増幅の経路で鳴らす (webAudioMix は出力装置の選択を壊すので使わない)
+// 100%를 넘은 음량으로 재생하는 트랙만 증폭 경로로 재생한다 (webAudioMix는 출력 장치 선택을 망가뜨리므로 쓰지 않는다)
 let boost: VoiceBoost | null = null;
 let boostSinkId = '';
-// 増幅の経路に渡すために、購読中の音声トラックを参加者と種類ごとに覚えておく
+// 증폭 경로로 넘기기 위해, 구독 중인 음성 트랙을 참가자와 종류별로 기억해 둔다
 const audioTracks = new Map<string, RemoteTrack>();
-const audioTrackKey = (identity: string, source: string) => `${identity}
-${source}`;
+const audioTrackKey = (identity: string, source: string) => `${source}:${identity}`;
+// 트랙을 붙일 때 만든 audio 요소. 구독 해제 때는 LiveKit이 이미 트랙에서 요소를 뗀 뒤라서 track.detach()로는 찾을 수 없다
+const audioElements = new Map<RemoteTrack, HTMLMediaElement>();
 
 function ensureBoost(): VoiceBoost {
 	if (boost == null) {
@@ -1705,6 +1705,13 @@ function disposeBoost(): void {
 	boost = null;
 	boostSinkId = '';
 	audioTracks.clear();
+}
+
+// 트랙을 붙일 때 만든 audio 요소를 화면에서 지운다
+function removeAudioElements(track: RemoteTrack): void {
+	for (const element of track.detach()) element.remove();
+	audioElements.get(track)?.remove();
+	audioElements.delete(track);
 }
 
 function syncAudioBlocked(): void {
@@ -1724,13 +1731,14 @@ function applyVolume(participant: RemoteParticipant): void {
 	setSourceVolume(participant, Track.Source.ScreenShareAudio, watching ? volumeOf(participant.identity, 'screenShare') : 0);
 }
 
-// 100% 以下は今まで通り audio 要素の volume で鳴らす。超えたら要素は 0 にして、増幅の経路だけで鳴らす (二重に鳴らさない)。
-// 録音のミックスは元のトラックを受け取るので、ここでの音量とは無関係
+// 100% 이하는 지금까지처럼 audio 요소의 volume으로 재생한다. 넘으면 요소는 0으로 두고 증폭 경로로만 재생한다 (이중으로 재생하지 않는다).
+// 증폭 경로를 만들지 못하면 100%로 재생한다.
+// 녹음 믹스는 원래 트랙을 받으므로 여기서 정한 음량과 무관하다
 function setSourceVolume(participant: RemoteParticipant, source: Track.Source.Microphone | Track.Source.ScreenShareAudio, volume: number): void {
 	const track = audioTracks.get(audioTrackKey(participant.identity, source));
 	if (volume > 1 && track != null) {
-		participant.setVolume(0, source);
-		ensureBoost().set(track, volume);
+		const boosted = ensureBoost().set(track, volume);
+		participant.setVolume(boosted ? 0 : 1, source);
 		syncAudioBlocked();
 		return;
 	}
@@ -1771,8 +1779,14 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 		if (!isCurrent()) return;
 		if (track.kind === Track.Kind.Audio) {
 			addRecordingTrack(track.mediaStreamTrack, 'others');
-			window.document.body.appendChild(track.attach());
-			audioTracks.set(audioTrackKey(participant.identity, publication.source), track);
+			const element = track.attach();
+			window.document.body.appendChild(element);
+			audioElements.set(track, element);
+			const key = audioTrackKey(participant.identity, publication.source);
+			// 같은 종류의 새 트랙이 오면 이전 트랙의 증폭은 풀어 둔다
+			const previous = audioTracks.get(key);
+			if (previous != null && previous !== track) boost?.release(previous);
+			audioTracks.set(key, track);
 			applyVolume(participant);
 			return;
 		}
@@ -1789,7 +1803,7 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 			boost?.release(track);
 			const key = audioTrackKey(participant.identity, publication.source);
 			if (audioTracks.get(key) === track) audioTracks.delete(key);
-			for (const element of track.detach()) element.remove();
+			removeAudioElements(track);
 			syncAudioBlocked();
 			return;
 		}
@@ -1927,7 +1941,6 @@ function detachLocalScreenShare(identity: string): void {
 }
 
 function detachAll(room: Room): void {
-	disposeBoost();
 	detachLocalScreenShare(room.localParticipant.identity);
 	for (const participant of room.remoteParticipants.values()) {
 		for (const publication of participant.trackPublications.values()) {
@@ -1937,6 +1950,9 @@ function detachAll(room: Room): void {
 			// 音声の要素はここで作ったものなので消す。映像の要素は画面の部品のものなので、外すのは部品に任せる
 			if (track.kind === livekit?.Track.Kind.Audio) {
 				for (const element of elements) element.remove();
+				// 이 방의 증폭만 푼다. 정리가 늦게 끝나도 지금 통화의 증폭기는 건드리지 않는다
+				boost?.release(track);
+				removeAudioElements(track as RemoteTrack);
 			}
 		}
 	}
@@ -1961,6 +1977,7 @@ function resetState(): void {
 	stopLocalMeter?.();
 	unwatchMicrophoneTrack?.();
 	disposeBoost();
+	audioElements.clear();
 	screenShareTracks.clear();
 	state.status = 'idle';
 	state.room = null;

@@ -70,7 +70,10 @@ const lk = vi.hoisted(() => {
 
 	class FakeRemoteParticipant extends Emitter {
 		trackPublications = new Map<string, any>();
-		setVolume = vi.fn();
+		// 실제 audio 요소와 같이 0~1 밖의 음량은 받지 않는다
+		setVolume = vi.fn((volume: number, _source?: string) => {
+			if (!(volume >= 0 && volume <= 1)) throw new DOMException('The volume is outside the range [0, 1]', 'IndexSizeError');
+		});
 		constructor(public identity: string) {
 			super();
 		}
@@ -136,13 +139,13 @@ vi.mock('livekit-client', () => ({
 
 const boostMock = vi.hoisted(() => {
 	const instances: any[] = [];
-	return { instances };
+	return { instances, failSet: false };
 });
 vi.mock('@/utility/voice-boost.js', async importOriginal => {
 	const original = await importOriginal<typeof import('@/utility/voice-boost.js')>();
 	class FakeVoiceBoost {
 		blocked = false;
-		set = vi.fn();
+		set = vi.fn((_track: unknown, _gain: number) => !boostMock.failSet);
 		release = vi.fn();
 		setSinkId = vi.fn().mockResolvedValue(undefined);
 		resume = vi.fn(async () => { this.blocked = false; this.options.onBlockedChange?.(false); });
@@ -194,6 +197,7 @@ function remoteParticipant(identity: string) {
 beforeEach(() => {
 	lk.FakeRoom.instances.length = 0;
 	boostMock.instances.length = 0;
+	boostMock.failSet = false;
 	lk.analyser.analyser.getFloatTimeDomainData.mockImplementation((data: Float32Array) => data.fill(0));
 	lk.analyser.analyser.context.state = 'running';
 	lk.analyser.cleanup.mockClear();
@@ -969,10 +973,13 @@ describe('voice call controller', () => {
 		expect(prefer.s['voiceCall.screenShareVolumes']).toMatchObject({ a: 0 });
 		expect(a.setVolume).toHaveBeenLastCalledWith(0, lk.Track.Source.ScreenShareAudio);
 
-		// 既存の保存値 (0〜1) はそのまま使い、範囲外は 0〜2 に収める
+		// 기존 저장값 (0~1)은 그대로 쓰고, 범위 밖은 0~2로 맞춘다
 		expect(participantVolume('b', 'voice')).toBe(1.8);
 		expect(participantVolume('c', 'voice')).toBe(2);
 		expect(participantVolume('b', 'screenShare')).toBe(0);
+
+		// 저장값이 1을 넘어도 audio 요소에는 0~1만 전달한다 (가짜 참가자는 범위 밖 값에서 예외를 낸다)
+		expect(() => { setDeafened(true); setDeafened(false); }).not.toThrow();
 	});
 
 	test('keeps the voice and the shared screen audio of a participant at separate volumes', async () => {
@@ -3036,6 +3043,27 @@ describe('call recording lifecycle', () => {
 		await flushRecording();
 	});
 
+	test('feeds the recording mix with the original track while the volume is above 100%', async () => {
+		await joinRecordingCall();
+		await startRecording();
+		const a = remoteParticipant('a');
+		const mediaStreamTrack = { kind: 'audio' };
+		const element = document.createElement('audio');
+		const track = { kind: lk.Track.Kind.Audio, mediaStreamTrack, attach: vi.fn(() => element), detach: vi.fn(() => [element]) };
+		const publication = { source: lk.Track.Source.Microphone, kind: lk.Track.Kind.Audio, setSubscribed: vi.fn() };
+
+		setParticipantVolume('a', 'voice', 2);
+		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, publication, a);
+
+		const context = RecordingContext.instances.at(-1)!;
+		const streams = context.createMediaStreamSource.mock.calls.map(call => (call as unknown as [RecordingStream])[0]);
+		expect(streams.some(stream => stream.getTracks().includes(mediaStreamTrack as never))).toBe(true);
+		expect(a.setVolume.mock.calls.filter(call => call[1] === lk.Track.Source.Microphone).at(-1)?.[0]).toBe(0);
+
+		stopRecording();
+		await flushRecording();
+	});
+
 	test('retries a conversion with the same request id so a lost response can be recovered', async () => {
 		await joinRecordingCall();
 		await startRecording();
@@ -3366,7 +3394,7 @@ describe('voice volume above 100%', () => {
 		return { track, publication, element };
 	};
 	const boost = () => boostMock.instances[boostMock.instances.length - 1];
-	// participant.setVolume に最後に渡された、その種類の音量
+	// participant.setVolume에 마지막으로 전달된, 해당 종류의 음량
 	const volumeOf = (participant: any, source: string) => participant.setVolume.mock.calls.filter((call: unknown[]) => call[1] === source).at(-1)?.[0];
 	const boosted = (track: unknown) => (boost()?.set.mock.calls ?? []).some((call: unknown[]) => call[0] === track);
 
@@ -3511,13 +3539,93 @@ describe('voice volume above 100%', () => {
 		expect(first.dispose).toHaveBeenCalled();
 	});
 
-	test('keeps the recording mix on the original track regardless of the volume', async () => {
+	test('keeps the new call amplified when the previous call finishes disconnecting late', async () => {
+		prefer.commit('voiceCall.participantVolumes', { a: 2 });
 		await joinVoiceCall(room1);
+		const first = lastRoom();
+		let finishDisconnect!: () => void;
+		first.disconnect.mockImplementationOnce(() => new Promise<void>(resolve => {
+			finishDisconnect = resolve;
+		}));
+
+		const leaving = leaveVoiceCall();
+		await joinVoiceCall(room2);
 		const a = remoteParticipant('a');
 		const { track } = subscribeAudio(a, mic());
-		setParticipantVolume('a', 'voice', 2);
-		// 録音には元のトラックをそのまま渡すので、増幅の経路は mediaStreamTrack を差し替えない
-		expect(track.mediaStreamTrack).toEqual({});
-		expect(track.attach).toHaveBeenCalledTimes(1);
+		const second = boost();
+		expect(second.set).toHaveBeenCalledWith(track, 2);
+
+		finishDisconnect();
+		await leaving;
+
+		expect(second.dispose).not.toHaveBeenCalled();
+		boost().set.mockClear();
+		setParticipantVolume('a', 'voice', 1.5);
+		expect(boost()).toBe(second);
+		expect(second.set).toHaveBeenCalledWith(track, 1.5);
+	});
+
+	test('plays at 100% through the audio element when the amplification cannot be created', async () => {
+		prefer.commit('voiceCall.participantVolumes', { a: 1.5 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		boostMock.failSet = true;
+		subscribeAudio(a, mic());
+
+		expect(volumeOf(a, mic())).toBe(1);
+		expect(voiceCall.audioBlocked).toBe(false);
+	});
+
+	test('starts the sound-off actions together and checks the blocked state afterwards', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		subscribeAudio(a, mic());
+		setParticipantVolume('a', 'voice', 1.5);
+		let finishStart!: () => void;
+		lastRoom().startAudio.mockImplementationOnce(() => new Promise<void>(resolve => { finishStart = resolve; }));
+
+		const resuming = resumeAudio();
+
+		expect(lastRoom().startAudio).toHaveBeenCalled();
+		expect(boost().resume).toHaveBeenCalled();
+		finishStart();
+		await resuming;
+	});
+
+	test('still resumes the amplified sound when starting the elements fails', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		subscribeAudio(a, mic());
+		setParticipantVolume('a', 'voice', 1.5);
+		lastRoom().startAudio.mockRejectedValueOnce(new Error('NotAllowedError'));
+
+		await resumeAudio();
+
+		expect(boost().resume).toHaveBeenCalled();
+	});
+
+	test('releases the amplification of a track that a new track for the same source replaces', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const first = subscribeAudio(a, mic());
+		setParticipantVolume('a', 'voice', 1.5);
+
+		const second = subscribeAudio(a, mic());
+
+		expect(boost().release).toHaveBeenCalledWith(first.track);
+		expect(boost().set).toHaveBeenLastCalledWith(second.track, 1.5);
+	});
+
+	test('removes the audio element when the track is unsubscribed even if it was already detached', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { track, publication, element } = subscribeAudio(a, mic());
+		expect(document.body.contains(element)).toBe(true);
+		// 실제 LiveKit은 구독 해제를 알리기 전에 트랙에서 요소를 먼저 뗀다
+		track.detach.mockReturnValue([]);
+
+		lastRoom().emit(lk.RoomEvent.TrackUnsubscribed, track, publication, a);
+
+		expect(document.body.contains(element)).toBe(false);
 	});
 });
