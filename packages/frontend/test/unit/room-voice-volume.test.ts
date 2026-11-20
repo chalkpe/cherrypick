@@ -27,11 +27,12 @@ afterEach(() => {
 });
 
 describe('participant volume slider', () => {
-	test.each(['pointerDown', 'pointerUp', 'touchStart', 'touchEnd'] as const)('wakes the amplifier synchronously on %s', async name => {
+	test.each(['pointerDown', 'pointerUp', 'touchStart', 'touchEnd'] as const)('wakes the amplifier within the %s handler itself', name => {
 		const { getByTestId } = render(XVolume, { props: { identity: 'a', audio: 'voice' } });
 
-		await fireEvent[name](getByTestId('range'));
+		// 처리기가 끝난 뒤 한 번도 기다리지 않고 확인한다 (사용자 조작 안에서 불려야 한다)
+		void fireEvent[name](getByTestId('range'));
 
-		expect(mocks.prepareBoostAudio).toHaveBeenCalled();
+		expect(mocks.prepareBoostAudio).toHaveBeenCalledOnce();
 	});
 });

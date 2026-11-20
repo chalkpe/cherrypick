@@ -141,13 +141,13 @@ vi.mock('livekit-client', () => ({
 
 const boostMock = vi.hoisted(() => {
 	const instances: any[] = [];
-	return { instances, failSet: false };
+	return { instances, failSet: false, initialReady: true };
 });
 vi.mock('@/utility/voice-boost.js', async importOriginal => {
 	const original = await importOriginal<typeof import('@/utility/voice-boost.js')>();
 	class FakeVoiceBoost {
 		blocked = false;
-		ready = true;
+		ready = boostMock.initialReady;
 		set = vi.fn((_track: unknown, _gain: number) => !boostMock.failSet);
 		isReady = vi.fn((_track: unknown) => this.ready);
 		prepare = vi.fn();
@@ -155,7 +155,7 @@ vi.mock('@/utility/voice-boost.js', async importOriginal => {
 		setSinkId = vi.fn().mockResolvedValue(undefined);
 		resume = vi.fn(async () => { this.blocked = false; this.options.onBlockedChange?.(false); });
 		dispose = vi.fn();
-		constructor(public options: { onBlockedChange?: (blocked: boolean) => void; onReadyChange?: () => void; useElement?: boolean }) {
+		constructor(public options: { onBlockedChange?: (blocked: boolean) => void; onReadyChange?: () => void; useElement?: boolean; keepMediaCategory?: boolean }) {
 			boostMock.instances.push(this);
 		}
 	}
@@ -203,6 +203,7 @@ beforeEach(() => {
 	lk.FakeRoom.instances.length = 0;
 	boostMock.instances.length = 0;
 	boostMock.failSet = false;
+	boostMock.initialReady = true;
 	lk.supportsAudioOutputSelection.mockReset().mockReturnValue(true);
 	lk.analyser.analyser.getFloatTimeDomainData.mockImplementation((data: Float32Array) => data.fill(0));
 	lk.analyser.analyser.context.state = 'running';
@@ -3390,10 +3391,13 @@ describe('call recording lifecycle', () => {
 });
 
 describe('voice volume above 100%', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
 	const mic = () => lk.Track.Source.Microphone;
 	const shareAudio = () => lk.Track.Source.ScreenShareAudio;
-	const subscribeAudio = (participant: any, source: string) => {
-		const element = document.createElement('audio');
+	const subscribeAudio = (participant: any, source: string, element = document.createElement('audio')) => {
 		const track = { kind: lk.Track.Kind.Audio, mediaStreamTrack: {}, attachedElements: [element], attach: vi.fn(() => element), detach: vi.fn(() => [element]) };
 		const publication = { source, kind: lk.Track.Kind.Audio, setSubscribed: vi.fn() };
 		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, publication, participant);
@@ -3409,9 +3413,81 @@ describe('voice volume above 100%', () => {
 		const a = remoteParticipant('a');
 		const { track } = subscribeAudio(a, mic());
 		expect(volumeOf(a, mic())).toBe(1);
+
 		setParticipantVolume('a', 'voice', 0.4);
+
 		expect(volumeOf(a, mic())).toBe(0.4);
 		expect(boosted(track)).toBe(false);
+	});
+
+	const volumeSignals = (listener: { mock: { calls: unknown[][] } }) => listener.mock.calls
+		.filter(call => call[0] === 'volumechange')
+		.map(call => (call[2] as AddEventListenerOptions).signal);
+
+	test('detaches the volume handler of an unsubscribed track from an element that livekit recycles for the next track', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const element = document.createElement('audio');
+		const addListener = vi.spyOn(element, 'addEventListener');
+		const first = subscribeAudio(a, mic(), element);
+		lastRoom().emit(lk.RoomEvent.TrackUnsubscribed, first.track, first.publication, a);
+
+		subscribeAudio(a, mic(), element);
+
+		const [firstSignal, secondSignal] = volumeSignals(addListener);
+		expect(firstSignal?.aborted).toBe(true);
+		expect(secondSignal?.aborted).toBe(false);
+	});
+
+	test('detaches the volume handlers when the call ends', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const element = document.createElement('audio');
+		const addListener = vi.spyOn(element, 'addEventListener');
+		subscribeAudio(a, mic(), element);
+
+		await leaveVoiceCall();
+
+		expect(volumeSignals(addListener).map(signal => signal?.aborted)).toEqual([true]);
+	});
+
+	test('removes the audio elements of the ended call from the page even when livekit did not report their tracks', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const element = document.createElement('audio');
+		subscribeAudio(a, mic(), element);
+		expect(document.body.contains(element)).toBe(true);
+
+		await leaveVoiceCall();
+
+		expect(document.body.contains(element)).toBe(false);
+	});
+
+	test('does not wake the amplifier for a slider gesture on browsers that start audio without one', async () => {
+		await joinVoiceCall(room1);
+
+		prepareBoostAudio();
+
+		expect(boostMock.instances).toHaveLength(0);
+	});
+
+	test('wakes the amplifier for a slider gesture in Safari on a Mac', async () => {
+		vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.4 Safari/605.1.15');
+		await joinVoiceCall(room1);
+
+		prepareBoostAudio();
+
+		expect(boost().prepare).toHaveBeenCalledOnce();
+	});
+
+	test('does not keep a silent media element for the amplifier on other platforms', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		subscribeAudio(a, mic());
+
+		setParticipantVolume('a', 'voice', 1.5);
+
+		expect(boost().options.keepMediaCategory).toBe(false);
 	});
 
 	test('amplifies above 100% with the audio element silenced, and goes back below it', async () => {
@@ -3717,23 +3793,14 @@ describe('voice volume on iPhone and iPad', () => {
 		prefer.commit('voiceCall.participantVolumes', { a: 0.5 });
 		await joinVoiceCall(room1);
 		const a = remoteParticipant('a');
-		// 증폭기는 만들어지지만 아직 소리를 낼 수 없다
-		const origin = boostMock.instances.length;
-		lastRoom().startAudio.mockClear();
-		boostMock.failSet = false;
-		const element = document.createElement('audio');
-		const track = { kind: lk.Track.Kind.Audio, mediaStreamTrack: {}, attachedElements: [element], attach: vi.fn(() => element), detach: vi.fn(() => [element]) };
-		// 첫 증폭기를 미리 준비 상태가 아니게 만든다
 		prepareBoostAudio();
-		const early = boostMock.instances[origin];
-		early.ready = false;
-		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, { source: mic(), kind: lk.Track.Kind.Audio, setSubscribed: vi.fn() }, a);
+		boost().ready = false;
 
-		expect(early.set).toHaveBeenCalledWith(track, 0.5);
+		const { element } = subscribeAudio(a, mic());
 		expect(element.muted).toBe(false);
 
-		early.ready = true;
-		early.options.onReadyChange?.();
+		boost().ready = true;
+		boost().options.onReadyChange?.();
 
 		expect(element.muted).toBe(true);
 	});
@@ -3818,6 +3885,16 @@ describe('voice volume on iPhone and iPad', () => {
 		expect(boost().prepare).toHaveBeenCalledOnce();
 	});
 
+	test('keeps a silent media element for the amplifier', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		subscribeAudio(a, mic());
+
+		setParticipantVolume('a', 'voice', 0.5);
+
+		expect(boost().options.keepMediaCategory).toBe(true);
+	});
+
 	test('ignores a slider gesture when there is no call', () => {
 		expect(() => prepareBoostAudio()).not.toThrow();
 		expect(boostMock.instances).toHaveLength(0);
@@ -3837,10 +3914,9 @@ describe('amplified volume on other platforms', () => {
 
 	test('keeps the original volume until the amplifier can make sound, then silences it', async () => {
 		prefer.commit('voiceCall.participantVolumes', { a: 2 });
+		boostMock.initialReady = false;
 		await joinVoiceCall(room1);
 		const a = remoteParticipant('a');
-		prepareBoostAudio();
-		boost().ready = false;
 
 		subscribeAudio(a);
 		expect(volumeOf(a)).toBe(1);
@@ -3878,6 +3954,10 @@ describe('amplified volume on other platforms', () => {
 });
 
 describe('output device selection', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
 	const boost = () => boostMock.instances[boostMock.instances.length - 1];
 	const startAmplifying = async () => {
 		await joinVoiceCall(room1);
@@ -3903,6 +3983,28 @@ describe('output device selection', () => {
 		await expect(selectAudioDevice('audiooutput', 'speaker-2')).resolves.toBeUndefined();
 
 		expect(boost().setSinkId).not.toHaveBeenCalledWith('speaker-2');
+	});
+
+	test('logs why switching the output device failed', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		await joinVoiceCall(room1);
+		const reason = new Error('NotFoundError');
+		lastRoom().switchActiveDevice.mockRejectedValueOnce(reason);
+
+		await selectAudioDevice('audiooutput', 'speaker-2');
+
+		expect(warn).toHaveBeenCalledWith(expect.any(String), reason);
+	});
+
+	test('logs why switching to the saved output device failed when joining', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const reason = new Error('NotFoundError');
+		prefer.commit('voiceCall.outputDeviceId', 'speaker-1');
+		lk.FakeRoom.setup = room => { room.switchActiveDevice.mockRejectedValue(reason); };
+
+		await joinVoiceCall(room1);
+
+		await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(expect.any(String), reason));
 	});
 
 	test('moves the amplifier after livekit switched the output device', async () => {

@@ -4,22 +4,29 @@
  */
 
 // 통화의 소리를 audio 요소의 volume으로는 낼 수 없는 크기로 재생한다.
-// audio 요소의 volume은 1까지만 받고, iPhone·iPad에서는 아예 쓸 수 없으므로 (값을 써도 곧 1로 돌아간다),
-// 그런 트랙만
+// audio 요소의 volume은 1까지만 받고, iPhone·iPad에서는 아예 쓸 수 없다 (값을 써도 곧 1로 돌아간다).
+// 그래서 100%가 아닌 트랙은 (iPhone·iPad) 또는 100%를 넘는 트랙은 (그 밖의 브라우저)
 // MediaStreamAudioSourceNode → GainNode → MediaStreamAudioDestinationNode로 보내고,
 // 나온 스트림을 전용 audio 요소로 재생한다. 출력 장치는 이 요소의 setSinkId로 고르므로
 // AudioContext.setSinkId가 없는 브라우저(Firefox 등)에서도 출력 장치를 고를 수 있다.
 // LiveKit이 출력 장치 선택을 지원하지 않는 브라우저(Safari 계열)는 출력 장치를 고를 수 없으므로 요소를 거치지 않고 AudioContext의 출력에 바로 연결한다
 // (MediaStreamAudioDestinationNode의 소리를 audio 요소로 재생하는 경로가 울리지 않는 WebKit이 있기 때문이다).
 // LiveKit의 webAudioMix는 쓰지 않는다 (켜면 그 브라우저들에서 출력 장치 전환이 예외가 된다).
-// AudioContext는 통화가 끝날 때까지 하나만 유지하고, 증폭하는 트랙이 없으면 멈춰 둔다.
+// AudioContext는 통화가 끝날 때까지 하나만 유지하고, 증폭하는 트랙이 없는 채로 잠시 지나면 멈춰 둔다.
+// 마지막 트랙을 풀어도 바로 멈추지 않는다. Firefox·WebKit은 suspend()가 끝난 뒤에야 state가 바뀌므로,
+// 곧바로 다시 증폭하면 state가 아직 running으로 보여 resume()을 건너뛰고 컨텍스트가 멈춘 채 남을 수 있다.
+// 그래서 새 재생을 만들 때와 prepare()에서는 state를 보지 않고 항상 resume()을 부른다.
 // 100%로 되돌린 트랙의 노드와 요소는 바로 정리한다.
 // 호출하는 쪽은 isReady가 true가 된 트랙만 원래 재생 경로를 끈다 (이 경로가 아직 소리를 못 내는데 원래 소리까지 끄지 않도록).
+// 새 재생의 gain은 0으로 시작하고, 준비되었음을 알리기 직전에 목표값으로 올린다. 원래 경로가 꺼지기 전에 두 소리가 겹쳐 커지지 않게 하기 위해서다.
 
 export const MAX_VOLUME = 2;
 
 // 슬라이더를 움직일 때 gain이 계단처럼 바뀌지 않도록, 목표값을 향해 이 시간 상수로 따라간다 (LiveKit과 같은 값)
 const GAIN_TIME_CONSTANT = 0.1;
+
+// 재생이 준비되어 원래 요소와 바뀌는 순간의 올림은 짧게 한다. 원래 요소는 한 번에 꺼지므로 길게 올리면 그동안 소리가 작아진다
+const READY_TIME_CONSTANT = 0.005;
 
 // 슬라이더를 만지기만 하고 증폭할 트랙이 없을 때, 미리 깨워 둔 AudioContext를 다시 멈추기까지의 시간
 const IDLE_SUSPEND_MS = 3000;
@@ -36,6 +43,19 @@ export function isAppleMobile(): boolean {
 	return /Macintosh/.test(ua) && (navigator.maxTouchPoints ?? 0) > 1;
 }
 
+/**
+ * 소리를 내려면 사용자 조작 안에서 AudioContext를 깨워야 하는 브라우저인지.
+ * WebKit 계열(Safari, iPhone·iPad의 모든 브라우저)은 조작 중에 시작한 재생만 허용한다.
+ * Chromium·Firefox는 페이지에 사용자 활성화가 한 번 있으면 조작 밖에서도 컨텍스트를 시작할 수 있으므로 미리 깨울 필요가 없다.
+ * Safari 판정은 LiveKit의 isSafariBased와 같이 UA의 WebKit 표기를 보되, Chromium 계열과 Firefox가 UA에 함께 넣는 표기를 뺀다.
+ */
+export function needsGestureToStartAudio(): boolean {
+	if (isAppleMobile()) return true;
+	if (typeof navigator === 'undefined') return false;
+	const ua = navigator.userAgent ?? '';
+	return /AppleWebKit/.test(ua) && /Safari/.test(ua) && !/Chrome|Chromium|CriOS|FxiOS|Edg|OPR|Android/.test(ua);
+}
+
 export type BoostableTrack = {
 	readonly mediaStreamTrack: MediaStreamTrack;
 };
@@ -48,6 +68,16 @@ type Playback = {
 	playBlocked: boolean;
 	/** 요소의 재생이 시작되었는지. 요소를 쓰지 않는 경로에서는 쓰지 않는다 */
 	playing: boolean;
+	/** 준비되었을 때 gain을 올릴 목표값 */
+	target: number;
+	/** 요소의 pause·playing 처리기를 한꺼번에 떼기 위한 것 */
+	listeners: AbortController;
+};
+
+/** 요소를 쓰지 않는 경로에서 미디어 재생 범주를 유지하기 위한, 소리 없는 스트림의 재생 */
+type KeepAlive = {
+	destination: MediaStreamAudioDestinationNode;
+	element: HTMLAudioElement;
 };
 
 export type VoiceBoostOptions = {
@@ -59,6 +89,11 @@ export type VoiceBoostOptions = {
 	createElement?: () => HTMLAudioElement;
 	/** 증폭한 소리를 audio 요소로 재생할지 (LiveKit이 출력 장치 선택을 지원하는 브라우저에서 true). 생략하면 요소 없이 바로 출력한다 */
 	useElement?: boolean;
+	/**
+	 * 증폭 경로로 재생하는 트랙이 있는 동안, 소리 없는 스트림을 muted 없이 재생하는 요소를 하나 둔다 (iPhone·iPad에서 true).
+	 * Web Audio만 소리를 내면 WebKit이 주변음 범주를 골라 무음 스위치를 따르므로, 원래 요소가 소리를 낼 때와 같은 미디어 재생 범주를 유지한다.
+	 */
+	keepMediaCategory?: boolean;
 };
 
 export class VoiceBoost {
@@ -69,6 +104,7 @@ export class VoiceBoost {
 	private lastBlocked = false;
 	private lastReady = new Set<BoostableTrack>();
 	private idleTimer: number | null = null;
+	private keepAlive: KeepAlive | null = null;
 	private disposed = false;
 
 	constructor(private options: VoiceBoostOptions = {}) {}
@@ -104,12 +140,10 @@ export class VoiceBoost {
 		if (this.disposed) return;
 		const context = this.ensureContext();
 		if (context == null) return;
-		if (context.state !== 'running') void context.resume().catch(() => {});
-		if (this.idleTimer != null) window.clearTimeout(this.idleTimer);
-		this.idleTimer = window.setTimeout(() => {
-			this.idleTimer = null;
-			if (!this.disposed && this.playbacks.size === 0) void this.context?.suspend().catch(() => {});
-		}, IDLE_SUSPEND_MS);
+		// suspend()가 끝나기 전에는 state가 running으로 보일 수 있으므로 상태를 보지 않고 부른다
+		void context.resume().catch(() => {});
+		this.startKeepAlive();
+		this.scheduleIdleSuspend();
 	}
 
 	/**
@@ -126,16 +160,24 @@ export class VoiceBoost {
 		const value = Math.min(MAX_VOLUME, gain);
 		const existing = this.playbacks.get(track);
 		if (existing != null) {
-			existing.gain.gain.setTargetAtTime(value, 0, GAIN_TIME_CONSTANT);
+			existing.target = value;
+			// 아직 소리를 낼 수 없는 재생은 준비되는 순간에 이 목표값으로 올라간다
+			if (this.isReady(track)) this.rampTo(existing);
 			return true;
 		}
 		const playback = this.createPlayback(track, value);
 		if (playback == null) return false;
 		this.playbacks.set(track, playback);
-		if (this.context != null && this.context.state !== 'running') void this.context.resume().catch(() => {});
-		if (playback.element != null) {
-			void this.applySink(playback.element);
-			void this.play(playback, playback.element);
+		if (this.idleTimer != null) window.clearTimeout(this.idleTimer);
+		this.idleTimer = null;
+		// suspend()가 끝나기 전에는 state가 running으로 보일 수 있으므로 상태를 보지 않고 부른다
+		void this.context?.resume().catch(() => {});
+		this.startKeepAlive();
+		const element = playback.element;
+		if (element != null) {
+			this.watchElement(playback, element);
+			void this.applySinkTracked(element);
+			void this.play(playback, element);
 		}
 		this.notify();
 		return true;
@@ -146,8 +188,8 @@ export class VoiceBoost {
 		if (playback == null) return;
 		this.playbacks.delete(track);
 		this.teardown(playback);
-		// 증폭하는 트랙이 없어도 AudioContext는 닫지 않고 멈춰만 둔다 (다시 증폭할 때 장치를 다시 열지 않도록)
-		if (this.playbacks.size === 0) void this.context?.suspend().catch(() => {});
+		// 증폭하는 트랙이 없어도 AudioContext는 닫지 않고, 바로 멈추지도 않는다 (다시 증폭할 때 장치를 다시 열지 않도록, 멈추는 중의 컨텍스트와 겹치지 않도록)
+		if (this.playbacks.size === 0) this.scheduleIdleSuspend();
 		this.notify();
 	}
 
@@ -164,6 +206,7 @@ export class VoiceBoost {
 	async resume(): Promise<void> {
 		if (this.disposed) return;
 		await this.context?.resume().catch(() => {});
+		this.startKeepAlive();
 		await Promise.all([...this.playbacks.values()].map(playback => playback.element != null ? this.play(playback, playback.element) : undefined));
 		this.notify();
 	}
@@ -175,6 +218,7 @@ export class VoiceBoost {
 		this.idleTimer = null;
 		for (const playback of this.playbacks.values()) this.teardown(playback);
 		this.playbacks.clear();
+		this.stopKeepAlive();
 		this.closeContext();
 		this.notify();
 	}
@@ -189,7 +233,7 @@ export class VoiceBoost {
 			created.push(source);
 			const gainNode = context.createGain();
 			created.push(gainNode);
-			gainNode.gain.value = value;
+			gainNode.gain.value = 0;
 			source.connect(gainNode);
 			let destination: MediaStreamAudioDestinationNode | null = null;
 			if (this.usesElement()) {
@@ -201,7 +245,7 @@ export class VoiceBoost {
 			} else {
 				gainNode.connect(context.destination);
 			}
-			return { source, gain: gainNode, destination, element, playBlocked: false, playing: false };
+			return { source, gain: gainNode, destination, element, playBlocked: false, playing: false, target: value, listeners: new AbortController() };
 		} catch {
 			for (const node of created) {
 				try {
@@ -240,6 +284,7 @@ export class VoiceBoost {
 	}
 
 	private teardown(playback: Playback): void {
+		playback.listeners.abort();
 		playback.element?.pause();
 		if (playback.element != null) playback.element.srcObject = null;
 		playback.source.disconnect();
@@ -252,6 +297,69 @@ export class VoiceBoost {
 		const target = element as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
 		if (typeof target.setSinkId !== 'function') return true;
 		return target.setSinkId(this.sinkId).then(() => true, () => false);
+	}
+
+	// 새 재생의 출력 장치 적용에 실패하면 같은 장치를 다시 골랐을 때 다시 시도하도록 기록한다
+	private async applySinkTracked(element: HTMLAudioElement): Promise<void> {
+		if (!await this.applySink(element)) this.sinkFailed = true;
+	}
+
+	// 브라우저가 요소를 멈추거나 다시 재생하면 준비 상태를 다시 계산한다 (멈춘 요소가 있는데 원래 요소만 꺼진 채 남지 않도록)
+	private watchElement(playback: Playback, element: HTMLAudioElement): void {
+		const { signal } = playback.listeners;
+		element.addEventListener('pause', () => {
+			playback.playing = false;
+			this.notify();
+		}, { signal });
+		element.addEventListener('playing', () => {
+			playback.playing = true;
+			this.notify();
+		}, { signal });
+	}
+
+	private rampTo(playback: Playback, timeConstant = GAIN_TIME_CONSTANT): void {
+		playback.gain.gain.setTargetAtTime(playback.target, 0, timeConstant);
+	}
+
+	private scheduleIdleSuspend(): void {
+		if (this.idleTimer != null) window.clearTimeout(this.idleTimer);
+		this.idleTimer = window.setTimeout(() => {
+			this.idleTimer = null;
+			if (this.disposed || this.playbacks.size > 0) return;
+			void this.context?.suspend().catch(() => {});
+			this.stopKeepAlive();
+		}, IDLE_SUSPEND_MS);
+	}
+
+	// 소리 없는 스트림을 muted 없이 재생해서 미디어 재생 범주를 유지한다. 사용자 조작 밖에서 막히면 다음 조작(prepare·resume)에서 다시 시작한다
+	private startKeepAlive(): void {
+		if (!(this.options.keepMediaCategory ?? false) || this.disposed) return;
+		if (this.keepAlive == null) {
+			const context = this.ensureContext();
+			if (context == null) return;
+			try {
+				const destination = context.createMediaStreamDestination();
+				const element = (this.options.createElement ?? (() => new Audio()))();
+				element.srcObject = destination.stream;
+				this.keepAlive = { destination, element };
+			} catch {
+				return;
+			}
+		}
+		void this.keepAlive.element.play().catch(() => {});
+	}
+
+	private stopKeepAlive(): void {
+		const keepAlive = this.keepAlive;
+		if (keepAlive == null) return;
+		this.keepAlive = null;
+		keepAlive.element.pause();
+		keepAlive.element.srcObject = null;
+		try {
+			keepAlive.destination.disconnect();
+		} catch {
+			// 이미 끊어진 노드는 그대로 둔다
+		}
 	}
 
 	private usesElement(): boolean {
@@ -277,6 +385,11 @@ export class VoiceBoost {
 			this.options.onBlockedChange?.(blocked);
 		}
 		const ready = new Set([...this.playbacks.keys()].filter(track => this.isReady(track)));
+		// 새로 준비된 재생은 호출하는 쪽이 원래 경로를 끄기 전에 목표 gain으로 올린다
+		for (const track of ready) {
+			const playback = this.playbacks.get(track);
+			if (playback != null && !this.lastReady.has(track)) this.rampTo(playback, READY_TIME_CONSTANT);
+		}
 		const readyChanged = ready.size !== this.lastReady.size || [...ready].some(track => !this.lastReady.has(track));
 		this.lastReady = ready;
 		if (readyChanged) this.options.onReadyChange?.();

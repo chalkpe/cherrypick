@@ -16,7 +16,7 @@ import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
 import { userNameForLabel } from '@/filters/user.js';
 import { createRecordingSegments, recordingSegmentBytes } from '@/utility/recording-recorder.js';
-import { MAX_VOLUME, VoiceBoost, isAppleMobile } from '@/utility/voice-boost.js';
+import { MAX_VOLUME, VoiceBoost, isAppleMobile, needsGestureToStartAudio } from '@/utility/voice-boost.js';
 
 export type VoiceCallStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting';
 
@@ -1296,7 +1296,9 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { 
 			if (current !== lkRoom) return;
 			boostSinkId = outputDeviceId;
 			void boost?.setSinkId(outputDeviceId);
-		}, () => {});
+		}, (err: unknown) => {
+			console.warn('[voice-call] failed to switch the output device', err);
+		});
 	}
 
 	// つながるまでのあいだにスピーカーを切っていたら、マイクは入れない (スピーカーを切っているあいだはマイクも切っておく)
@@ -1414,8 +1416,9 @@ export async function selectAudioDevice(kind: 'audioinput' | 'audiooutput', devi
 	if (room == null) return;
 	try {
 		await room.switchActiveDevice(kind, deviceId);
-	} catch {
+	} catch (err) {
 		// 장치를 바꾸지 못해도 처리되지 않은 거부로 남기지 않는다. 마이크는 기존의 안내를 띄운다
+		console.warn(`[voice-call] failed to switch the ${kind}`, err);
 		if (kind === 'audioinput' && current === room) os.toast(i18n.ts._voiceCall.micUnavailable);
 		return;
 	}
@@ -1699,12 +1702,12 @@ async function disableMicrophone(room: Room): Promise<void> {
 }
 
 // 저장하는 음량은 0~2 (200%)다. audio 요소의 volume은 0~1만 받으므로 (범위 밖은 IndexSizeError),
-// 1을 넘는 음량은 applyVolume이 voice-boost의 증폭 경로로 넘긴다
+// 1을 넘는 음량(iPhone·iPad는 100%가 아닌 음량)은 applyVolume이 voice-boost의 증폭 경로로 넘긴다
 function clampVolume(volume: number): number {
 	return Math.min(MAX_VOLUME, Math.max(0, volume));
 }
 
-// 100%를 넘은 음량으로 재생하는 트랙만 증폭 경로로 재생한다 (webAudioMix는 출력 장치 선택을 망가뜨리므로 쓰지 않는다)
+// 100%를 넘은 음량(iPhone·iPad는 100%가 아닌 음량)으로 재생하는 트랙만 증폭 경로로 재생한다 (webAudioMix는 출력 장치 선택을 망가뜨리므로 쓰지 않는다)
 let boost: VoiceBoost | null = null;
 let boostSinkId = '';
 // 증폭 경로로 넘기기 위해, 구독 중인 음성 트랙을 참가자와 종류별로 기억해 둔다
@@ -1712,6 +1715,8 @@ const audioTracks = new Map<string, RemoteTrack>();
 const audioTrackKey = (identity: string, source: string) => `${source}:${identity}`;
 // 트랙을 붙일 때 만든 audio 요소. 구독 해제 때는 LiveKit이 이미 트랙에서 요소를 뗀 뒤라서 track.detach()로는 찾을 수 없다
 const audioElements = new Map<RemoteTrack, HTMLMediaElement>();
+// 트랙마다 붙인 volumechange 처리기. LiveKit은 떼어 낸 요소를 다음 트랙에 다시 쓰므로, 트랙이 없어질 때 함께 뗀다
+const audioListeners = new Map<RemoteTrack, AbortController>();
 // 원래 요소를 muted로 두기로 한 트랙 (iPhone·iPad에서만 쓴다). LiveKit이 muted를 풀면 다시 건다
 const mutedTracks = new Set<RemoteTrack>();
 
@@ -1725,6 +1730,8 @@ function ensureBoost(): VoiceBoost {
 			},
 			// 출력 장치를 고를 수 있는 브라우저(LiveKit 기준)에서만 전용 audio 요소를 거친다
 			useElement: livekit?.supportsAudioOutputSelection() ?? false,
+			// iPhone·iPad는 Web Audio만 소리를 내면 무음 스위치를 따르는 범주가 되므로, 소리 없는 요소로 미디어 재생 범주를 유지한다
+			keepMediaCategory: isAppleMobile(),
 		});
 		if (boostSinkId !== '') void boost.setSinkId(boostSinkId);
 	}
@@ -1732,11 +1739,12 @@ function ensureBoost(): VoiceBoost {
 }
 
 /**
- * 슬라이더를 만지는 사용자 조작 안에서 불러, 증폭기의 AudioContext를 깨운다 (iPhone은 조작 중에 시작한 재생만 허용한다).
- * 이벤트 처리기 안에서 동기적으로 불러야 한다.
+ * 슬라이더를 만지는 사용자 조작 안에서 불러, 증폭기의 AudioContext를 깨운다. 이벤트 처리기 안에서 동기적으로 불러야 한다.
+ * 조작 중에 시작한 재생만 허용하는 WebKit 계열(Safari, iPhone·iPad의 모든 브라우저)에서만 한다.
+ * Chromium·Firefox는 페이지에 사용자 활성화가 있으면 조작 밖에서도 시작할 수 있으므로, 기본 상태의 통화에서는 AudioContext를 만들지 않는다.
  */
 export function prepareBoostAudio(): void {
-	if (current == null) return;
+	if (current == null || !needsGestureToStartAudio()) return;
 	ensureBoost().prepare();
 }
 
@@ -1750,6 +1758,8 @@ function disposeBoost(): void {
 
 // 트랙을 붙일 때 만든 audio 요소를 화면에서 지운다
 function removeAudioElements(track: RemoteTrack): void {
+	audioListeners.get(track)?.abort();
+	audioListeners.delete(track);
 	for (const element of track.detach()) element.remove();
 	audioElements.get(track)?.remove();
 	audioElements.delete(track);
@@ -1846,9 +1856,12 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 			window.document.body.appendChild(element);
 			audioElements.set(track, element);
 			// LiveKit이 muted를 다시 false로 돌리는 곳(startAudio 등)이 있으므로, 바뀌면 정한 상태로 되돌린다
+			audioListeners.get(track)?.abort();
+			const listeners = new AbortController();
+			audioListeners.set(track, listeners);
 			element.addEventListener('volumechange', () => {
 				if (mutedTracks.has(track) && !element.muted) element.muted = true;
-			});
+			}, { signal: listeners.signal });
 			const key = audioTrackKey(participant.identity, publication.source);
 			// 같은 종류의 새 트랙이 오면 이전 트랙의 증폭은 풀어 둔다
 			const previous = audioTracks.get(key);
@@ -2044,6 +2057,10 @@ function resetState(): void {
 	stopLocalMeter?.();
 	unwatchMicrophoneTrack?.();
 	disposeBoost();
+	// 이전 통화의 요소는 LiveKit이 이미 트랙에서 뗀 뒤라 구독 해제로는 지워지지 않을 수 있으므로 여기서 지운다
+	for (const listeners of audioListeners.values()) listeners.abort();
+	audioListeners.clear();
+	for (const element of audioElements.values()) element.remove();
 	audioElements.clear();
 	screenShareTracks.clear();
 	state.status = 'idle';
