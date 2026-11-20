@@ -122,12 +122,14 @@ const lk = vi.hoisted(() => {
 
 	const analyser = { analyser: { fftSize: 512, context: { state: 'running' as AudioContextState }, getFloatTimeDomainData: vi.fn((data: Float32Array) => data.fill(0)) }, cleanup: vi.fn().mockResolvedValue(undefined) };
 	const createAudioAnalyser = vi.fn(() => analyser);
-	return { analyser, createAudioAnalyser, Emitter, RoomEvent, TrackEvent, DisconnectReason, Track, ScreenSharePresets, VideoPreset, VideoQuality, FakeRoom, FakeRemoteParticipant };
+	const supportsAudioOutputSelection = vi.fn(() => true);
+	return { analyser, createAudioAnalyser, supportsAudioOutputSelection, Emitter, RoomEvent, TrackEvent, DisconnectReason, Track, ScreenSharePresets, VideoPreset, VideoQuality, FakeRoom, FakeRemoteParticipant };
 });
 
 vi.mock('livekit-client', () => ({
 	Room: lk.FakeRoom,
 	createAudioAnalyser: lk.createAudioAnalyser,
+	supportsAudioOutputSelection: lk.supportsAudioOutputSelection,
 	RoomEvent: lk.RoomEvent,
 	TrackEvent: lk.TrackEvent,
 	DisconnectReason: lk.DisconnectReason,
@@ -145,12 +147,15 @@ vi.mock('@/utility/voice-boost.js', async importOriginal => {
 	const original = await importOriginal<typeof import('@/utility/voice-boost.js')>();
 	class FakeVoiceBoost {
 		blocked = false;
+		ready = true;
 		set = vi.fn((_track: unknown, _gain: number) => !boostMock.failSet);
+		isReady = vi.fn((_track: unknown) => this.ready);
+		prepare = vi.fn();
 		release = vi.fn();
 		setSinkId = vi.fn().mockResolvedValue(undefined);
 		resume = vi.fn(async () => { this.blocked = false; this.options.onBlockedChange?.(false); });
 		dispose = vi.fn();
-		constructor(public options: { onBlockedChange?: (blocked: boolean) => void }) {
+		constructor(public options: { onBlockedChange?: (blocked: boolean) => void; onReadyChange?: () => void; useElement?: boolean }) {
 			boostMock.instances.push(this);
 		}
 	}
@@ -180,7 +185,7 @@ vi.mock('@/instance.js', async importOriginal => {
 import { i18n } from '@/i18n.js';
 import { $i } from '@/i.js';
 import { prefer as mockedPrefer } from '@/preferences.js';
-import { activeAudioDeviceId, attachScreenShare, joinVoiceCall, leaveVoiceCall, migrateParticipantVolumes, participantVolume, resumeAudio, restartMicrophone, selectAudioDevice, setDeafened, setMicEnabled, setParticipantVolume, setRecordingAllowed, startRecording, stopRecording, startScreenShare, stopScreenShare, toggleScreenShareWatch, unwatchScreenShare, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
+import { activeAudioDeviceId, attachScreenShare, canSelectAudioOutput, prepareBoostAudio, joinVoiceCall, leaveVoiceCall, migrateParticipantVolumes, participantVolume, resumeAudio, restartMicrophone, selectAudioDevice, setDeafened, setMicEnabled, setParticipantVolume, setRecordingAllowed, startRecording, stopRecording, startScreenShare, stopScreenShare, toggleScreenShareWatch, unwatchScreenShare, voiceCall, watchScreenShare } from '@/utility/voice-call.js';
 
 const prefer = mockedPrefer as unknown as FakePrefer;
 const room1 = { id: 'r1', name: 'room 1' } as any;
@@ -198,6 +203,7 @@ beforeEach(() => {
 	lk.FakeRoom.instances.length = 0;
 	boostMock.instances.length = 0;
 	boostMock.failSet = false;
+	lk.supportsAudioOutputSelection.mockReset().mockReturnValue(true);
 	lk.analyser.analyser.getFloatTimeDomainData.mockImplementation((data: Float32Array) => data.fill(0));
 	lk.analyser.analyser.context.state = 'running';
 	lk.analyser.cleanup.mockClear();
@@ -3388,7 +3394,7 @@ describe('voice volume above 100%', () => {
 	const shareAudio = () => lk.Track.Source.ScreenShareAudio;
 	const subscribeAudio = (participant: any, source: string) => {
 		const element = document.createElement('audio');
-		const track = { kind: lk.Track.Kind.Audio, mediaStreamTrack: {}, attach: vi.fn(() => element), detach: vi.fn(() => [element]) };
+		const track = { kind: lk.Track.Kind.Audio, mediaStreamTrack: {}, attachedElements: [element], attach: vi.fn(() => element), detach: vi.fn(() => [element]) };
 		const publication = { source, kind: lk.Track.Kind.Audio, setSubscribed: vi.fn() };
 		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, publication, participant);
 		return { track, publication, element };
@@ -3627,5 +3633,325 @@ describe('voice volume above 100%', () => {
 		lastRoom().emit(lk.RoomEvent.TrackUnsubscribed, track, publication, a);
 
 		expect(document.body.contains(element)).toBe(false);
+	});
+});
+
+describe('voice volume on iPhone and iPad', () => {
+	const mic = () => lk.Track.Source.Microphone;
+	const shareAudio = () => lk.Track.Source.ScreenShareAudio;
+	const IPHONE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 Version/18.7 Mobile/15E148 Safari/604.1';
+	const subscribeAudio = (participant: any, source: string) => {
+		const element = document.createElement('audio');
+		// iPhone의 audio 요소처럼 volume을 써도 무시하고 항상 1이다
+		Object.defineProperty(element, 'volume', { get: () => 1, set: () => {} });
+		const track = { kind: lk.Track.Kind.Audio, mediaStreamTrack: {}, attachedElements: [element], attach: vi.fn(() => element), detach: vi.fn(() => [element]) };
+		const publication = { source, kind: lk.Track.Kind.Audio, setSubscribed: vi.fn() };
+		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, publication, participant);
+		return { track, publication, element };
+	};
+	const boost = () => boostMock.instances[boostMock.instances.length - 1];
+
+	beforeEach(() => {
+		vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue(IPHONE_UA);
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	test.each([0.5, 1.5, 2])('plays %s through the amplifier with the original element muted', async volume => {
+		prefer.commit('voiceCall.participantVolumes', { a: volume });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { track, element } = subscribeAudio(a, mic());
+
+		expect(boost().set).toHaveBeenCalledWith(track, volume);
+		expect(element.muted).toBe(true);
+	});
+
+	test('plays 100% through the original element only', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { element } = subscribeAudio(a, mic());
+
+		expect(boostMock.instances.flatMap(instance => instance.set.mock.calls)).toHaveLength(0);
+		expect(element.muted).toBe(false);
+	});
+
+	test('mutes the original element at 0% without using the amplifier', async () => {
+		prefer.commit('voiceCall.participantVolumes', { a: 0 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { element } = subscribeAudio(a, mic());
+
+		expect(boostMock.instances.flatMap(instance => instance.set.mock.calls)).toHaveLength(0);
+		expect(element.muted).toBe(true);
+	});
+
+	test('mutes the original element when the speaker is turned off, and unmutes it when turned on', async () => {
+		prefer.commit('voiceCall.participantVolumes', { a: 0.5 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { track, element } = subscribeAudio(a, mic());
+
+		setDeafened(true);
+		expect(boost().release).toHaveBeenCalledWith(track);
+		expect(element.muted).toBe(true);
+
+		boost().set.mockClear();
+		setDeafened(false);
+		expect(boost().set).toHaveBeenCalledWith(track, 0.5);
+	});
+
+	test('mutes shared screen audio that is not being watched', async () => {
+		prefer.commit('voiceCall.screenShareVolumes', { a: 1 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { element } = subscribeAudio(a, shareAudio());
+		expect(element.muted).toBe(true);
+
+		watchScreenShare('a');
+		expect(element.muted).toBe(false);
+	});
+
+	test('keeps the original element playing until the amplifier can make sound, then mutes it', async () => {
+		prefer.commit('voiceCall.participantVolumes', { a: 0.5 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		// 증폭기는 만들어지지만 아직 소리를 낼 수 없다
+		const origin = boostMock.instances.length;
+		lastRoom().startAudio.mockClear();
+		boostMock.failSet = false;
+		const element = document.createElement('audio');
+		const track = { kind: lk.Track.Kind.Audio, mediaStreamTrack: {}, attachedElements: [element], attach: vi.fn(() => element), detach: vi.fn(() => [element]) };
+		// 첫 증폭기를 미리 준비 상태가 아니게 만든다
+		prepareBoostAudio();
+		const early = boostMock.instances[origin];
+		early.ready = false;
+		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, { source: mic(), kind: lk.Track.Kind.Audio, setSubscribed: vi.fn() }, a);
+
+		expect(early.set).toHaveBeenCalledWith(track, 0.5);
+		expect(element.muted).toBe(false);
+
+		early.ready = true;
+		early.options.onReadyChange?.();
+
+		expect(element.muted).toBe(true);
+	});
+
+	test('unmutes the original element again when the amplifier stops being able to make sound', async () => {
+		prefer.commit('voiceCall.participantVolumes', { a: 1.5 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { element } = subscribeAudio(a, mic());
+		expect(element.muted).toBe(true);
+
+		boost().ready = false;
+		boost().options.onReadyChange?.();
+
+		expect(element.muted).toBe(false);
+	});
+
+	test('leaves the original element as it was when the amplifier cannot be created', async () => {
+		boostMock.failSet = true;
+		prefer.commit('voiceCall.participantVolumes', { a: 0.5 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { element } = subscribeAudio(a, mic());
+
+		expect(element.muted).toBe(false);
+	});
+
+	test('mutes the element again when livekit unmutes it', async () => {
+		prefer.commit('voiceCall.participantVolumes', { a: 0.5 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { element } = subscribeAudio(a, mic());
+		expect(element.muted).toBe(true);
+
+		element.muted = false;
+		element.dispatchEvent(new Event('volumechange'));
+
+		expect(element.muted).toBe(true);
+	});
+
+	test('mutes the element again after the sound-on action unmuted it', async () => {
+		prefer.commit('voiceCall.participantVolumes', { a: 0.5 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { element } = subscribeAudio(a, mic());
+		lastRoom().startAudio.mockImplementationOnce(async () => { element.muted = false; });
+
+		await resumeAudio();
+
+		expect(element.muted).toBe(true);
+	});
+
+	test('does not mute the element for a track that is no longer subscribed', async () => {
+		prefer.commit('voiceCall.participantVolumes', { a: 0 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { track, publication, element } = subscribeAudio(a, mic());
+		lastRoom().emit(lk.RoomEvent.TrackUnsubscribed, track, publication, a);
+
+		element.muted = false;
+		element.dispatchEvent(new Event('volumechange'));
+
+		expect(element.muted).toBe(false);
+	});
+
+	test('leaves the muted state of elements alone on other platforms', async () => {
+		vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140 Safari/537.36');
+		prefer.commit('voiceCall.participantVolumes', { a: 0 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { element } = subscribeAudio(a, mic());
+
+		expect(a.setVolume).toHaveBeenCalledWith(0, mic());
+		expect(element.muted).toBe(false);
+	});
+
+	test('wakes the amplifier synchronously for a slider gesture', async () => {
+		await joinVoiceCall(room1);
+
+		prepareBoostAudio();
+
+		expect(boost().prepare).toHaveBeenCalledOnce();
+	});
+
+	test('ignores a slider gesture when there is no call', () => {
+		expect(() => prepareBoostAudio()).not.toThrow();
+		expect(boostMock.instances).toHaveLength(0);
+	});
+});
+
+describe('amplified volume on other platforms', () => {
+	const mic = () => lk.Track.Source.Microphone;
+	const subscribeAudio = (participant: any) => {
+		const element = document.createElement('audio');
+		const track = { kind: lk.Track.Kind.Audio, mediaStreamTrack: {}, attachedElements: [element], attach: vi.fn(() => element), detach: vi.fn(() => [element]) };
+		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, { source: mic(), kind: lk.Track.Kind.Audio, setSubscribed: vi.fn() }, participant);
+		return { track, element };
+	};
+	const boost = () => boostMock.instances[boostMock.instances.length - 1];
+	const volumeOf = (participant: any) => participant.setVolume.mock.calls.filter((call: unknown[]) => call[1] === mic()).at(-1)?.[0];
+
+	test('keeps the original volume until the amplifier can make sound, then silences it', async () => {
+		prefer.commit('voiceCall.participantVolumes', { a: 2 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		prepareBoostAudio();
+		boost().ready = false;
+
+		subscribeAudio(a);
+		expect(volumeOf(a)).toBe(1);
+
+		boost().ready = true;
+		boost().options.onReadyChange?.();
+		expect(volumeOf(a)).toBe(0);
+	});
+
+	test('plays below 100% through the original element only', async () => {
+		prefer.commit('voiceCall.participantVolumes', { a: 0.5 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		subscribeAudio(a);
+
+		expect(boostMock.instances.flatMap(instance => instance.set.mock.calls)).toHaveLength(0);
+		expect(volumeOf(a)).toBe(0.5);
+	});
+
+	test('creates the amplifier with an element only where livekit can select the output', async () => {
+		lk.supportsAudioOutputSelection.mockReturnValue(false);
+		prefer.commit('voiceCall.participantVolumes', { a: 2 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		subscribeAudio(a);
+		expect(boost().options.useElement).toBe(false);
+
+		await leaveVoiceCall();
+		lk.supportsAudioOutputSelection.mockReturnValue(true);
+		await joinVoiceCall(room2);
+		const b = remoteParticipant('a');
+		subscribeAudio(b);
+		expect(boost().options.useElement).toBe(true);
+	});
+});
+
+describe('output device selection', () => {
+	const boost = () => boostMock.instances[boostMock.instances.length - 1];
+	const startAmplifying = async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const element = document.createElement('audio');
+		const track = { kind: lk.Track.Kind.Audio, mediaStreamTrack: {}, attachedElements: [element], attach: vi.fn(() => element), detach: vi.fn(() => [element]) };
+		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, { source: lk.Track.Source.Microphone, kind: lk.Track.Kind.Audio, setSubscribed: vi.fn() }, a);
+		setParticipantVolume('a', 'voice', 1.5);
+	};
+
+	test('reports whether livekit supports choosing the output device', async () => {
+		lk.supportsAudioOutputSelection.mockReturnValue(false);
+		await expect(canSelectAudioOutput()).resolves.toBe(false);
+
+		lk.supportsAudioOutputSelection.mockReturnValue(true);
+		await expect(canSelectAudioOutput()).resolves.toBe(true);
+	});
+
+	test('does not reject when switching the output device fails, and does not move the amplifier', async () => {
+		await startAmplifying();
+		lastRoom().switchActiveDevice.mockRejectedValueOnce(new Error('cannot switch audio output, the current browser does not support it'));
+
+		await expect(selectAudioDevice('audiooutput', 'speaker-2')).resolves.toBeUndefined();
+
+		expect(boost().setSinkId).not.toHaveBeenCalledWith('speaker-2');
+	});
+
+	test('moves the amplifier after livekit switched the output device', async () => {
+		await startAmplifying();
+
+		await selectAudioDevice('audiooutput', 'speaker-2');
+
+		expect(boost().setSinkId).toHaveBeenCalledWith('speaker-2');
+	});
+
+	test('does not use a rejected output device for an amplifier created later', async () => {
+		await joinVoiceCall(room1);
+		lastRoom().switchActiveDevice.mockRejectedValueOnce(new Error('unsupported'));
+		await selectAudioDevice('audiooutput', 'speaker-2');
+		const a = remoteParticipant('a');
+		const element = document.createElement('audio');
+		const track = { kind: lk.Track.Kind.Audio, mediaStreamTrack: {}, attachedElements: [element], attach: vi.fn(() => element), detach: vi.fn(() => [element]) };
+		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, { source: lk.Track.Source.Microphone, kind: lk.Track.Kind.Audio, setSubscribed: vi.fn() }, a);
+
+		setParticipantVolume('a', 'voice', 1.5);
+
+		expect(boost().setSinkId).not.toHaveBeenCalledWith('speaker-2');
+	});
+
+	test('shows the existing notice when switching the microphone fails', async () => {
+		await joinVoiceCall(room1);
+		lastRoom().switchActiveDevice.mockRejectedValueOnce(new Error('NotFoundError'));
+
+		await expect(selectAudioDevice('audioinput', 'mic-2')).resolves.toBeUndefined();
+
+		expect(mocks.toast).toHaveBeenCalledWith(expect.any(String));
+	});
+
+	test('does not switch to a saved output device the browser cannot select', async () => {
+		lk.supportsAudioOutputSelection.mockReturnValue(false);
+		prefer.commit('voiceCall.outputDeviceId', 'speaker-1');
+
+		await joinVoiceCall(room1);
+
+		expect(lastRoom().switchActiveDevice).not.toHaveBeenCalledWith('audiooutput', 'speaker-1');
+	});
+
+	test('does not hand a saved output device that failed to switch to the amplifier', async () => {
+		prefer.commit('voiceCall.outputDeviceId', 'speaker-1');
+		lk.FakeRoom.setup = room => { room.switchActiveDevice.mockRejectedValue(new Error('unsupported')); };
+		await startAmplifying();
+
+		await vi.waitFor(() => expect(lastRoom().switchActiveDevice).toHaveBeenCalled());
+
+		expect(boost().setSinkId).not.toHaveBeenCalledWith('speaker-1');
 	});
 });

@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { Mock } from 'vitest';
-import { MAX_VOLUME, VoiceBoost } from '@/utility/voice-boost.js';
+import { MAX_VOLUME, VoiceBoost, isAppleMobile } from '@/utility/voice-boost.js';
 
 type FakeNode = { connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> };
 type FakeGain = FakeNode & { gain: { value: number; setTargetAtTime: ReturnType<typeof vi.fn> } };
@@ -49,8 +49,10 @@ function createBoost(options: { useElement?: boolean; element?: (element: FakeEl
 	const fake = createFakeContext();
 	const elements: FakeElement[] = [];
 	const onBlockedChange = vi.fn<(blocked: boolean) => void>();
+	const onReady = vi.fn<() => void>();
 	const boost = new VoiceBoost({
 		onBlockedChange,
+		onReadyChange: onReady,
 		useElement: options.useElement ?? true,
 		createContext: options.createContext ?? (() => fake.context as unknown as AudioContext),
 		createElement: () => {
@@ -60,7 +62,7 @@ function createBoost(options: { useElement?: boolean; element?: (element: FakeEl
 			return element as unknown as HTMLAudioElement;
 		},
 	});
-	return { boost, fake, elements, onBlockedChange };
+	return { boost, fake, elements, onBlockedChange, onReady };
 }
 
 describe('VoiceBoost', () => {
@@ -68,14 +70,28 @@ describe('VoiceBoost', () => {
 		vi.stubGlobal('MediaStream', class { constructor(public tracks: unknown[]) {} });
 	});
 
-	test('does nothing at 100% or below', () => {
+	test('does nothing at 100% and for a muted track', () => {
 		const { boost, fake } = createBoost();
 		const t = track();
 
 		expect(boost.set(t, 1)).toBe(true);
-		expect(boost.set(t, 0.3)).toBe(true);
+		expect(boost.set(t, 0)).toBe(true);
 
 		expect(fake.context.createGain).not.toHaveBeenCalled();
+		expect(boost.active).toBe(false);
+	});
+
+	test('plays a track below 100% through the gain as well', () => {
+		const { boost, fake } = createBoost();
+		const t = track();
+
+		expect(boost.set(t, 0.5)).toBe(true);
+
+		expect(boost.active).toBe(true);
+		expect(fake.nodes.gains[0].gain.value).toBe(0.5);
+
+		boost.set(t, 0);
+
 		expect(boost.active).toBe(false);
 	});
 
@@ -263,5 +279,149 @@ describe('VoiceBoost', () => {
 		expect(fake.context.close).toHaveBeenCalledOnce();
 		expect(boost.set(track(), 2)).toBe(false);
 		expect(boost.active).toBe(false);
+	});
+});
+
+describe('VoiceBoost readiness', () => {
+	beforeEach(() => {
+		vi.stubGlobal('MediaStream', class { constructor(public tracks: unknown[]) {} });
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	test('is ready right away on the direct output path while the context is running', () => {
+		const { boost, onReady } = createBoost({ useElement: false });
+		const t = track();
+
+		boost.set(t, 0.5);
+
+		expect(boost.isReady(t)).toBe(true);
+		expect(onReady).toHaveBeenCalled();
+	});
+
+	test('is ready on the element path only after the element started playing', async () => {
+		let startPlaying!: () => void;
+		const { boost, onReady } = createBoost({ element: element => { element.play.mockImplementation(() => new Promise<void>(resolve => { startPlaying = resolve; })); } });
+		const t = track();
+
+		boost.set(t, 1.5);
+		expect(boost.isReady(t)).toBe(false);
+		expect(onReady).not.toHaveBeenCalled();
+
+		startPlaying();
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(boost.isReady(t)).toBe(true);
+		expect(onReady).toHaveBeenCalledOnce();
+	});
+
+	test('is not ready while the context is suspended, and becomes ready when it runs', () => {
+		const { boost, fake, onReady } = createBoost({ useElement: false });
+		fake.context.state = 'suspended';
+		fake.context.resume.mockImplementation(async () => {});
+		const t = track();
+
+		boost.set(t, 1.5);
+		expect(boost.isReady(t)).toBe(false);
+
+		fake.context.setState('running');
+
+		expect(boost.isReady(t)).toBe(true);
+		expect(onReady).toHaveBeenCalled();
+	});
+
+	test('is not ready when the element is not allowed to play', async () => {
+		const { boost } = createBoost({ element: element => { element.play.mockRejectedValue(new Error('NotAllowedError')); } });
+		const t = track();
+
+		boost.set(t, 1.5);
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(boost.isReady(t)).toBe(false);
+	});
+
+	test('stops being ready for a track that is released', () => {
+		const { boost } = createBoost({ useElement: false });
+		const t = track();
+		boost.set(t, 1.5);
+
+		boost.release(t);
+
+		expect(boost.isReady(t)).toBe(false);
+	});
+
+	test('plays straight to the context output when not told to use an element', () => {
+		const fake = createFakeContext();
+		const boost = new VoiceBoost({ createContext: () => fake.context as unknown as AudioContext });
+
+		boost.set(track(), 1.5);
+
+		expect(fake.context.createMediaStreamDestination).not.toHaveBeenCalled();
+	});
+
+	test('creates and resumes the context synchronously when prepared, and suspends it again if nothing was amplified', async () => {
+		const { boost, fake } = createBoost({ useElement: false });
+		fake.context.state = 'suspended';
+
+		boost.prepare();
+
+		expect(fake.context.resume).toHaveBeenCalledOnce();
+		expect(fake.context.state).toBe('running');
+
+		await vi.advanceTimersByTimeAsync(5000);
+
+		expect(fake.context.suspend).toHaveBeenCalled();
+	});
+
+	test('keeps the prepared context running when a track is amplified in the meantime', async () => {
+		const { boost, fake } = createBoost({ useElement: false });
+		boost.prepare();
+		boost.set(track(), 0.5);
+
+		await vi.advanceTimersByTimeAsync(5000);
+
+		expect(fake.context.suspend).not.toHaveBeenCalled();
+		expect(fake.context.state).toBe('running');
+	});
+
+	test('does not prepare after being disposed', () => {
+		const { boost, fake } = createBoost({ useElement: false });
+		boost.dispose();
+
+		boost.prepare();
+
+		expect(fake.context.resume).not.toHaveBeenCalled();
+	});
+});
+
+describe('isAppleMobile', () => {
+	const setNavigator = (userAgent: string, maxTouchPoints: number) => {
+		vi.stubGlobal('navigator', { userAgent, maxTouchPoints });
+	};
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	test('is true for iPhone and iPad user agents', () => {
+		setNavigator('Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 Version/18.7 Mobile/15E148 Safari/604.1', 5);
+		expect(isAppleMobile()).toBe(true);
+		setNavigator('Mozilla/5.0 (iPad; CPU OS 18_7 like Mac OS X) AppleWebKit/605.1.15 CriOS/140 Mobile/15E148 Safari/604.1', 5);
+		expect(isAppleMobile()).toBe(true);
+	});
+
+	test('is true for the desktop user agent that iPadOS sends, which has touch points', () => {
+		setNavigator('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.7 Safari/605.1.15', 5);
+		expect(isAppleMobile()).toBe(true);
+	});
+
+	test('is false for a Mac and for other platforms', () => {
+		setNavigator('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.4 Safari/605.1.15', 0);
+		expect(isAppleMobile()).toBe(false);
+		setNavigator('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140 Safari/537.36', 10);
+		expect(isAppleMobile()).toBe(false);
+		setNavigator('Mozilla/5.0 (Linux; Android 15) Chrome/140 Mobile Safari/537.36', 5);
+		expect(isAppleMobile()).toBe(false);
 	});
 });

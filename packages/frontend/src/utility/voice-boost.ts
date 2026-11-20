@@ -3,21 +3,38 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-// 통화의 소리를 100%보다 크게 재생한다.
-// audio 요소의 volume은 1까지만 받으므로, 100%를 넘은 트랙만
+// 통화의 소리를 audio 요소의 volume으로는 낼 수 없는 크기로 재생한다.
+// audio 요소의 volume은 1까지만 받고, iPhone·iPad에서는 아예 쓸 수 없으므로 (값을 써도 곧 1로 돌아간다),
+// 그런 트랙만
 // MediaStreamAudioSourceNode → GainNode → MediaStreamAudioDestinationNode로 보내고,
 // 나온 스트림을 전용 audio 요소로 재생한다. 출력 장치는 이 요소의 setSinkId로 고르므로
 // AudioContext.setSinkId가 없는 브라우저(Firefox 등)에서도 출력 장치를 고를 수 있다.
-// audio 요소에 setSinkId가 없는 브라우저(Safari)는 출력 장치를 고를 수 없으므로 요소를 거치지 않고 AudioContext의 출력에 바로 연결한다
+// LiveKit이 출력 장치 선택을 지원하지 않는 브라우저(Safari 계열)는 출력 장치를 고를 수 없으므로 요소를 거치지 않고 AudioContext의 출력에 바로 연결한다
 // (MediaStreamAudioDestinationNode의 소리를 audio 요소로 재생하는 경로가 울리지 않는 WebKit이 있기 때문이다).
 // LiveKit의 webAudioMix는 쓰지 않는다 (켜면 그 브라우저들에서 출력 장치 전환이 예외가 된다).
 // AudioContext는 통화가 끝날 때까지 하나만 유지하고, 증폭하는 트랙이 없으면 멈춰 둔다.
-// 100% 이하로 되돌린 트랙의 노드와 요소는 바로 정리한다.
+// 100%로 되돌린 트랙의 노드와 요소는 바로 정리한다.
+// 호출하는 쪽은 isReady가 true가 된 트랙만 원래 재생 경로를 끈다 (이 경로가 아직 소리를 못 내는데 원래 소리까지 끄지 않도록).
 
 export const MAX_VOLUME = 2;
 
 // 슬라이더를 움직일 때 gain이 계단처럼 바뀌지 않도록, 목표값을 향해 이 시간 상수로 따라간다 (LiveKit과 같은 값)
 const GAIN_TIME_CONSTANT = 0.1;
+
+// 슬라이더를 만지기만 하고 증폭할 트랙이 없을 때, 미리 깨워 둔 AudioContext를 다시 멈추기까지의 시간
+const IDLE_SUSPEND_MS = 3000;
+
+/**
+ * iPhone·iPad(iPadOS의 데스크톱 UA 포함)인지. 이 기기에서는 어느 브라우저든 audio 요소의 volume을 쓸 수 없다.
+ * iPadOS는 맥과 같은 UA를 보내므로 UA만으로는 가릴 수 없다. 맥의 Safari는 터치 지점이 0이므로 터치 지점이 둘 이상인 맥 UA를 iPadOS로 본다
+ * (LiveKit의 isIPadOS와 같은 기준). 저장소에는 같은 판정이 없어 여기에 둔다.
+ */
+export function isAppleMobile(): boolean {
+	if (typeof navigator === 'undefined') return false;
+	const ua = navigator.userAgent ?? '';
+	if (/iPhone|iPad|iPod/.test(ua)) return true;
+	return /Macintosh/.test(ua) && (navigator.maxTouchPoints ?? 0) > 1;
+}
 
 export type BoostableTrack = {
 	readonly mediaStreamTrack: MediaStreamTrack;
@@ -29,14 +46,18 @@ type Playback = {
 	destination: MediaStreamAudioDestinationNode | null;
 	element: HTMLAudioElement | null;
 	playBlocked: boolean;
+	/** 요소의 재생이 시작되었는지. 요소를 쓰지 않는 경로에서는 쓰지 않는다 */
+	playing: boolean;
 };
 
 export type VoiceBoostOptions = {
 	/** 자동 재생 제한으로 소리를 낼 수 없는 상태가 바뀔 때 호출된다 */
 	onBlockedChange?: (blocked: boolean) => void;
+	/** 증폭 경로가 소리를 낼 수 있는 트랙이 바뀔 때 호출된다 */
+	onReadyChange?: () => void;
 	createContext?: () => AudioContext;
 	createElement?: () => HTMLAudioElement;
-	/** 증폭한 소리를 audio 요소로 재생할지. 생략하면 요소로 출력 장치를 고를 수 있는 브라우저에서 true */
+	/** 증폭한 소리를 audio 요소로 재생할지 (LiveKit이 출력 장치 선택을 지원하는 브라우저에서 true). 생략하면 요소 없이 바로 출력한다 */
 	useElement?: boolean;
 };
 
@@ -46,11 +67,13 @@ export class VoiceBoost {
 	private sinkId = '';
 	private sinkFailed = false;
 	private lastBlocked = false;
+	private lastReady = new Set<BoostableTrack>();
+	private idleTimer: number | null = null;
 	private disposed = false;
 
 	constructor(private options: VoiceBoostOptions = {}) {}
 
-	/** 100%를 넘는 음량으로 재생 중인 (멈춰 있는 경우도 포함) 트랙이 있는지 */
+	/** 증폭 경로로 재생 중인 (멈춰 있는 경우도 포함) 트랙이 있는지 */
 	get active(): boolean {
 		return this.playbacks.size > 0;
 	}
@@ -64,12 +87,38 @@ export class VoiceBoost {
 	}
 
 	/**
-	 * 트랙의 증폭률을 정한다. 1을 넘으면 증폭해서 재생하고, 아니면 증폭을 정리한다.
-	 * 증폭에 성공하면 true를 돌려준다. 증폭 경로를 만들지 못하면 false를 돌려주고 아무것도 남기지 않는다.
-	 * 증폭하는 동안 호출하는 쪽은 원래 재생 경로(audio 요소의 volume)를 0으로 두어야 하고, false가 오면 원래 음량으로 되돌려야 한다.
+	 * 이 트랙의 소리를 증폭 경로가 실제로 내고 있는지 (AudioContext가 running이고, 요소를 쓰면 재생이 시작되었다).
+	 * 호출하는 쪽은 true가 된 뒤에 원래 재생 경로를 끈다.
+	 */
+	isReady(track: BoostableTrack): boolean {
+		const playback = this.playbacks.get(track);
+		if (playback == null || this.context?.state !== 'running' || playback.playBlocked) return false;
+		return playback.element == null || playback.playing;
+	}
+
+	/**
+	 * 사용자 조작 안에서 AudioContext를 만들고 깨운다. 모바일 브라우저는 조작 중에 시작한 재생만 허용하므로,
+	 * 호출하는 쪽은 이벤트 처리기 안에서 동기적으로 불러야 한다. 증폭할 트랙이 없으면 잠시 뒤 다시 멈춘다.
+	 */
+	prepare(): void {
+		if (this.disposed) return;
+		const context = this.ensureContext();
+		if (context == null) return;
+		if (context.state !== 'running') void context.resume().catch(() => {});
+		if (this.idleTimer != null) window.clearTimeout(this.idleTimer);
+		this.idleTimer = window.setTimeout(() => {
+			this.idleTimer = null;
+			if (!this.disposed && this.playbacks.size === 0) void this.context?.suspend().catch(() => {});
+		}, IDLE_SUSPEND_MS);
+	}
+
+	/**
+	 * 트랙의 증폭률을 정한다. 1이 아닌 양수면 증폭 경로로 재생하고, 1이거나 0이면 증폭 경로를 정리한다.
+	 * 성공하면 true를 돌려준다. 증폭 경로를 만들지 못하면 false를 돌려주고 아무것도 남기지 않는다.
+	 * 호출하는 쪽은 isReady가 true가 된 뒤에 원래 재생 경로를 끄고, false가 오면 원래 재생 경로를 그대로 둔다.
 	 */
 	set(track: BoostableTrack, gain: number): boolean {
-		if (!(gain > 1)) {
+		if (!(gain > 0) || gain === 1) {
 			this.release(track);
 			return true;
 		}
@@ -83,7 +132,7 @@ export class VoiceBoost {
 		const playback = this.createPlayback(track, value);
 		if (playback == null) return false;
 		this.playbacks.set(track, playback);
-		if (this.context?.state === 'suspended') void this.context.resume().catch(() => {});
+		if (this.context != null && this.context.state !== 'running') void this.context.resume().catch(() => {});
 		if (playback.element != null) {
 			void this.applySink(playback.element);
 			void this.play(playback, playback.element);
@@ -122,6 +171,8 @@ export class VoiceBoost {
 	/** 통화가 끝날 때 등에, 만든 것을 모두 정리한다 */
 	dispose(): void {
 		this.disposed = true;
+		if (this.idleTimer != null) window.clearTimeout(this.idleTimer);
+		this.idleTimer = null;
 		for (const playback of this.playbacks.values()) this.teardown(playback);
 		this.playbacks.clear();
 		this.closeContext();
@@ -150,7 +201,7 @@ export class VoiceBoost {
 			} else {
 				gainNode.connect(context.destination);
 			}
-			return { source, gain: gainNode, destination, element, playBlocked: false };
+			return { source, gain: gainNode, destination, element, playBlocked: false, playing: false };
 		} catch {
 			for (const node of created) {
 				try {
@@ -204,23 +255,30 @@ export class VoiceBoost {
 	}
 
 	private usesElement(): boolean {
-		return this.options.useElement ?? (typeof HTMLMediaElement !== 'undefined' && typeof (HTMLMediaElement.prototype as { setSinkId?: unknown }).setSinkId === 'function');
+		return this.options.useElement ?? false;
 	}
 
 	private async play(playback: Playback, element: HTMLAudioElement): Promise<void> {
 		try {
 			await element.play();
 			playback.playBlocked = false;
+			playback.playing = true;
 		} catch {
 			playback.playBlocked = true;
+			playback.playing = false;
 		}
 		this.notify();
 	}
 
 	private notify(): void {
 		const blocked = this.blocked;
-		if (blocked === this.lastBlocked) return;
-		this.lastBlocked = blocked;
-		this.options.onBlockedChange?.(blocked);
+		if (blocked !== this.lastBlocked) {
+			this.lastBlocked = blocked;
+			this.options.onBlockedChange?.(blocked);
+		}
+		const ready = new Set([...this.playbacks.keys()].filter(track => this.isReady(track)));
+		const readyChanged = ready.size !== this.lastReady.size || [...ready].some(track => !this.lastReady.has(track));
+		this.lastReady = ready;
+		if (readyChanged) this.options.onReadyChange?.();
 	}
 }
