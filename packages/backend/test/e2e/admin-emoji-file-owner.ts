@@ -19,6 +19,7 @@ describe('커스텀 이모지 등록·수정의 파일 소유자', () => {
 
 	// 이모지 등록은 파일 URL을 내려받아 다시 올리므로, 시험 환경에서 이름을 풀 수 없는 설정상의 호스트를
 	// 시험 서버 자신의 주소로 바꿔 둔다
+	// 반환하는 url은 DB에 실제로 넣은(바꾼 뒤의) 주소다
 	const upload = async (user: Misskey.entities.SignupResponse, name: string): Promise<Misskey.entities.DriveFile> => {
 		const res = await uploadFile(user, { name });
 		assert.strictEqual(res.status, 200);
@@ -26,7 +27,7 @@ describe('커스텀 이모지 등록·수정의 파일 소유자', () => {
 		const url = new URL(res.body.url);
 		const reachable = `http://127.0.0.1:${port}${url.pathname}`;
 		await db.query('UPDATE "drive_file" SET "url" = $1 WHERE "id" = $2', [reachable, res.body.id]);
-		return res.body;
+		return { ...res.body, url: reachable };
 	};
 
 	const fileExists = async (user: Misskey.entities.SignupResponse, fileId: string): Promise<boolean> => {
@@ -80,6 +81,7 @@ describe('커스텀 이모지 등록·수정의 파일 소유자', () => {
 		const updated = after.body.find(e => e.id === emoji.id);
 		assert.ok(updated);
 		assert.notStrictEqual(updated.url, emoji.url);
+		assert.notStrictEqual(updated.url, second.url);
 		assert.strictEqual(await fileExists(bob, second.id), true);
 	});
 });
