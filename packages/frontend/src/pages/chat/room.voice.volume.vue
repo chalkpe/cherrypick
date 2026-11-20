@@ -8,7 +8,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<MkRange
 		:modelValue="volume"
 		:min="0"
-		:max="1"
+		:max="2"
 		:step="0.05"
 		:textConverter="v => `${Math.round(v * 100)}%`"
 		continuousUpdate

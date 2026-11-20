@@ -134,6 +134,26 @@ vi.mock('livekit-client', () => ({
 	VideoQuality: lk.VideoQuality,
 }));
 
+const boostMock = vi.hoisted(() => {
+	const instances: any[] = [];
+	return { instances };
+});
+vi.mock('@/utility/voice-boost.js', async importOriginal => {
+	const original = await importOriginal<typeof import('@/utility/voice-boost.js')>();
+	class FakeVoiceBoost {
+		blocked = false;
+		set = vi.fn();
+		release = vi.fn();
+		setSinkId = vi.fn().mockResolvedValue(undefined);
+		resume = vi.fn(async () => { this.blocked = false; this.options.onBlockedChange?.(false); });
+		dispose = vi.fn();
+		constructor(public options: { onBlockedChange?: (blocked: boolean) => void }) {
+			boostMock.instances.push(this);
+		}
+	}
+	return { ...original, VoiceBoost: FakeVoiceBoost };
+});
+
 const mocks = vi.hoisted(() => ({
 	misskeyApi: vi.fn(),
 	toast: vi.fn(),
@@ -173,6 +193,7 @@ function remoteParticipant(identity: string) {
 
 beforeEach(() => {
 	lk.FakeRoom.instances.length = 0;
+	boostMock.instances.length = 0;
 	lk.analyser.analyser.getFloatTimeDomainData.mockImplementation((data: Float32Array) => data.fill(0));
 	lk.analyser.analyser.context.state = 'running';
 	lk.analyser.cleanup.mockClear();
@@ -931,30 +952,27 @@ describe('voice call controller', () => {
 		}
 	});
 
-	test('keeps participant volume within what an audio element accepts', async () => {
-		prefer.commit('voiceCall.participantVolumes', { b: 1.8 });
+	test('keeps participant volume within 0 to 200%', async () => {
+		prefer.commit('voiceCall.participantVolumes', { b: 1.8, c: 3 });
 		prefer.commit('voiceCall.screenShareVolumes', { b: -0.5 });
 		await joinVoiceCall(room1);
 		const a = remoteParticipant('a');
-		const b = remoteParticipant('b');
+		remoteParticipant('b');
 		watchScreenShare('a');
 		watchScreenShare('b');
 
 		setParticipantVolume('a', 'voice', 1.5);
-		expect(prefer.s['voiceCall.participantVolumes']).toMatchObject({ a: 1 });
-		expect(a.setVolume).toHaveBeenCalledWith(1, lk.Track.Source.Microphone);
+		expect(prefer.s['voiceCall.participantVolumes']).toMatchObject({ a: 1.5 });
+		setParticipantVolume('a', 'voice', 5);
+		expect(prefer.s['voiceCall.participantVolumes']).toMatchObject({ a: 2 });
 		setParticipantVolume('a', 'screenShare', -1);
 		expect(prefer.s['voiceCall.screenShareVolumes']).toMatchObject({ a: 0 });
 		expect(a.setVolume).toHaveBeenLastCalledWith(0, lk.Track.Source.ScreenShareAudio);
 
-		expect(participantVolume('b', 'voice')).toBe(1);
+		// 既存の保存値 (0〜1) はそのまま使い、範囲外は 0〜2 に収める
+		expect(participantVolume('b', 'voice')).toBe(1.8);
+		expect(participantVolume('c', 'voice')).toBe(2);
 		expect(participantVolume('b', 'screenShare')).toBe(0);
-		setDeafened(true);
-		setDeafened(false);
-		expect(b.setVolume).toHaveBeenCalledWith(1, lk.Track.Source.Microphone);
-		expect(b.setVolume).toHaveBeenLastCalledWith(0, lk.Track.Source.ScreenShareAudio);
-		expect(b.setVolume).not.toHaveBeenCalledWith(1.8, expect.anything());
-		expect(b.setVolume).not.toHaveBeenCalledWith(-0.5, expect.anything());
 	});
 
 	test('keeps the voice and the shared screen audio of a participant at separate volumes', async () => {
@@ -3334,5 +3352,172 @@ describe('call recording lifecycle', () => {
 
 		await vi.waitFor(() => expect(mocks.misskeyApi).toHaveBeenCalledWith('chat/rooms/voice/recording-discard', { partIds: ['temp-part-1'] }));
 		expect(mocks.misskeyApi).toHaveBeenCalledWith('drive/files/delete', { fileId: 'first-file' });
+	});
+});
+
+describe('voice volume above 100%', () => {
+	const mic = () => lk.Track.Source.Microphone;
+	const shareAudio = () => lk.Track.Source.ScreenShareAudio;
+	const subscribeAudio = (participant: any, source: string) => {
+		const element = document.createElement('audio');
+		const track = { kind: lk.Track.Kind.Audio, mediaStreamTrack: {}, attach: vi.fn(() => element), detach: vi.fn(() => [element]) };
+		const publication = { source, kind: lk.Track.Kind.Audio, setSubscribed: vi.fn() };
+		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, publication, participant);
+		return { track, publication, element };
+	};
+	const boost = () => boostMock.instances[boostMock.instances.length - 1];
+	// participant.setVolume に最後に渡された、その種類の音量
+	const volumeOf = (participant: any, source: string) => participant.setVolume.mock.calls.filter((call: unknown[]) => call[1] === source).at(-1)?.[0];
+	const boosted = (track: unknown) => (boost()?.set.mock.calls ?? []).some((call: unknown[]) => call[0] === track);
+
+	test('plays at 100% or below through the audio element only', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { track } = subscribeAudio(a, mic());
+		expect(volumeOf(a, mic())).toBe(1);
+		setParticipantVolume('a', 'voice', 0.4);
+		expect(volumeOf(a, mic())).toBe(0.4);
+		expect(boosted(track)).toBe(false);
+	});
+
+	test('amplifies above 100% with the audio element silenced, and goes back below it', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { track } = subscribeAudio(a, mic());
+
+		setParticipantVolume('a', 'voice', 1.5);
+		expect(prefer.s['voiceCall.participantVolumes']).toMatchObject({ a: 1.5 });
+		expect(volumeOf(a, mic())).toBe(0);
+		expect(boost().set).toHaveBeenLastCalledWith(track, 1.5);
+
+		setParticipantVolume('a', 'voice', 2);
+		expect(boost().set).toHaveBeenLastCalledWith(track, 2);
+		expect(volumeOf(a, mic())).toBe(0);
+
+		setParticipantVolume('a', 'voice', 0.8);
+		expect(boost().release).toHaveBeenCalledWith(track);
+		expect(volumeOf(a, mic())).toBe(0.8);
+	});
+
+	test('amplifies a track that arrives after the volume was set', async () => {
+		prefer.commit('voiceCall.participantVolumes', { a: 1.7 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { track } = subscribeAudio(a, mic());
+		expect(boost().set).toHaveBeenCalledWith(track, 1.7);
+		expect(volumeOf(a, mic())).toBe(0);
+	});
+
+	test('amplifies the shared screen audio only while watching it', async () => {
+		prefer.commit('voiceCall.screenShareVolumes', { a: 2 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { track } = subscribeAudio(a, shareAudio());
+		expect(boosted(track)).toBe(false);
+		expect(volumeOf(a, shareAudio())).toBe(0);
+
+		watchScreenShare('a');
+		expect(boost().set).toHaveBeenLastCalledWith(track, 2);
+		expect(volumeOf(a, shareAudio())).toBe(0);
+
+		unwatchScreenShare('a');
+		expect(boost().release).toHaveBeenCalledWith(track);
+		expect(volumeOf(a, shareAudio())).toBe(0);
+	});
+
+	test('deafening silences an amplified track and undeafening brings the amplification back', async () => {
+		prefer.commit('voiceCall.participantVolumes', { a: 1.6 });
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { track } = subscribeAudio(a, mic());
+
+		setDeafened(true);
+		expect(boost().release).toHaveBeenCalledWith(track);
+		expect(volumeOf(a, mic())).toBe(0);
+		boost().set.mockClear();
+		setDeafened(false);
+		expect(boost().set).toHaveBeenCalledWith(track, 1.6);
+	});
+
+	test('follows the output device chosen while amplifying, and the one chosen before', async () => {
+		prefer.commit('voiceCall.outputDeviceId', 'speaker-1');
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		subscribeAudio(a, mic());
+		setParticipantVolume('a', 'voice', 1.5);
+		expect(boost().setSinkId).toHaveBeenCalledWith('speaker-1');
+
+		await selectAudioDevice('audiooutput', 'speaker-2');
+		expect(lastRoom().switchActiveDevice).toHaveBeenCalledWith('audiooutput', 'speaker-2');
+		expect(boost().setSinkId).toHaveBeenLastCalledWith('speaker-2');
+	});
+
+	test('releases the amplification when the track is unsubscribed, and for the track that replaces it', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const first = subscribeAudio(a, mic());
+		setParticipantVolume('a', 'voice', 1.5);
+
+		lastRoom().emit(lk.RoomEvent.TrackUnsubscribed, first.track, first.publication, a);
+		expect(boost().release).toHaveBeenCalledWith(first.track);
+
+		const second = subscribeAudio(a, mic());
+		expect(boost().set).toHaveBeenLastCalledWith(second.track, 1.5);
+		expect(boost().release).not.toHaveBeenCalledWith(second.track);
+	});
+
+	test('shows the sound-off notice for an autoplay-blocked amplified track and resumes it with the same action', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		subscribeAudio(a, mic());
+		setParticipantVolume('a', 'voice', 1.5);
+		expect(voiceCall.audioBlocked).toBe(false);
+
+		boost().blocked = true;
+		boost().options.onBlockedChange?.(true);
+		expect(voiceCall.audioBlocked).toBe(true);
+
+		await resumeAudio();
+		expect(lastRoom().startAudio).toHaveBeenCalled();
+		expect(boost().resume).toHaveBeenCalled();
+		expect(voiceCall.audioBlocked).toBe(false);
+	});
+
+	test('disposes everything when leaving, and starts clean in the next call', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		subscribeAudio(a, mic());
+		setParticipantVolume('a', 'voice', 1.5);
+		const first = boost();
+
+		await leaveVoiceCall();
+		expect(first.dispose).toHaveBeenCalled();
+		expect(voiceCall.audioBlocked).toBe(false);
+
+		await joinVoiceCall(room2);
+		const b = remoteParticipant('a');
+		const second = subscribeAudio(b, mic());
+		expect(boost()).not.toBe(first);
+		expect(boost().set).toHaveBeenCalledWith(second.track, 1.5);
+	});
+
+	test('disposes the amplification when the connection drops', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		subscribeAudio(a, mic());
+		setParticipantVolume('a', 'voice', 1.5);
+		const first = boost();
+		lastRoom().emit(lk.RoomEvent.Disconnected, lk.DisconnectReason.UNKNOWN_REASON);
+		expect(first.dispose).toHaveBeenCalled();
+	});
+
+	test('keeps the recording mix on the original track regardless of the volume', async () => {
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { track } = subscribeAudio(a, mic());
+		setParticipantVolume('a', 'voice', 2);
+		// 録音には元のトラックをそのまま渡すので、増幅の経路は mediaStreamTrack を差し替えない
+		expect(track.mediaStreamTrack).toEqual({});
+		expect(track.attach).toHaveBeenCalledTimes(1);
 	});
 });

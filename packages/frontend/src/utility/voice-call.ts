@@ -8,7 +8,7 @@ import * as Misskey from 'cherrypick-js';
 import { apiUrl, url } from '@@/js/config.js';
 import { $i } from '@/i.js';
 import { instance } from '@/instance.js';
-import type { AudioCaptureOptions, DisconnectReason, LocalAudioTrack, LocalParticipant, LocalTrack, LocalTrackPublication, Participant, RemoteParticipant, RemoteTrack, RemoteTrackPublication, Room, RoomConnectOptions, TrackPublication, VideoPreset } from 'livekit-client';
+import type { AudioCaptureOptions, DisconnectReason, LocalAudioTrack, LocalParticipant, LocalTrack, LocalTrackPublication, Participant, RemoteParticipant, RemoteTrack, RemoteTrackPublication, Room, RoomConnectOptions, Track, TrackPublication, VideoPreset } from 'livekit-client';
 import { misskeyApi } from '@/utility/misskey-api.js';
 import { isApiError } from '@/utility/api-error.js';
 import * as os from '@/os.js';
@@ -16,6 +16,7 @@ import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
 import { userNameForLabel } from '@/filters/user.js';
 import { createRecordingSegments, recordingSegmentBytes } from '@/utility/recording-recorder.js';
+import { MAX_VOLUME, VoiceBoost } from '@/utility/voice-boost.js';
 
 export type VoiceCallStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting';
 
@@ -1279,7 +1280,7 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { 
 	state.status = 'connected';
 	startIceRefresh(lkRoom, room.id, credentials);
 	startRemoteJoinReport(lkRoom, room);
-	state.audioBlocked = !lkRoom.canPlaybackAudio;
+	syncAudioBlocked();
 
 	for (const participant of lkRoom.remoteParticipants.values()) {
 		for (const publication of participant.trackPublications.values()) {
@@ -1289,6 +1290,7 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { 
 
 	const outputDeviceId = prefer.s['voiceCall.outputDeviceId'];
 	if (outputDeviceId != null) {
+		boostSinkId = outputDeviceId;
 		lkRoom.switchActiveDevice('audiooutput', outputDeviceId).catch(() => {});
 	}
 
@@ -1352,8 +1354,11 @@ function applyVolumes(room: Room): void {
 
 export async function resumeAudio(): Promise<void> {
 	if (current == null) return;
-	await current.startAudio();
-	state.audioBlocked = !current.canPlaybackAudio;
+	const room = current;
+	await room.startAudio();
+	// 増幅して鳴らしている音も、同じ操作で再開する
+	await boost?.resume();
+	if (current === room) syncAudioBlocked();
 }
 
 /** 保存してある参加者の音量。スピーカーをオフにしていても、その前の音量を返す */
@@ -1400,7 +1405,10 @@ export async function selectAudioDevice(kind: 'audioinput' | 'audiooutput', devi
 	prefer.commit(kind === 'audioinput' ? 'voiceCall.inputDeviceId' : 'voiceCall.outputDeviceId', deviceId);
 	const room = current;
 	if (room == null) return;
+	if (kind === 'audiooutput') boostSinkId = deviceId;
 	await room.switchActiveDevice(kind, deviceId);
+	// 増幅して鳴らしている音は専用の audio 要素から出るので、出力先もそちらに伝える
+	if (kind === 'audiooutput' && current === room) await boost?.setSinkId(deviceId);
 	if (kind === 'audioinput' && current != null) {
 		startLocalMeter(current);
 		if (current === room && recordingSession != null) await captureRecordingMicrophone(recordingSession, room);
@@ -1670,9 +1678,37 @@ async function disableMicrophone(room: Room): Promise<void> {
 	reportStatus(room);
 }
 
-// audio 要素の volume は 0〜1 しか受け付けない (範囲外は IndexSizeError)
+// 保存する音量は 0〜2 (200%)。audio 要素の volume は 0〜1 しか受け付けない (範囲外は IndexSizeError) ので、
+// 1 を超える分は applyVolume が voice-boost の増幅経路に渡す
 function clampVolume(volume: number): number {
-	return Math.min(1, Math.max(0, volume));
+	return Math.min(MAX_VOLUME, Math.max(0, volume));
+}
+
+// 100% を超えた音量で鳴らすトラックだけを、増幅の経路で鳴らす (webAudioMix は出力装置の選択を壊すので使わない)
+let boost: VoiceBoost | null = null;
+let boostSinkId = '';
+// 増幅の経路に渡すために、購読中の音声トラックを参加者と種類ごとに覚えておく
+const audioTracks = new Map<string, RemoteTrack>();
+const audioTrackKey = (identity: string, source: string) => `${identity}
+${source}`;
+
+function ensureBoost(): VoiceBoost {
+	if (boost == null) {
+		boost = new VoiceBoost({ onBlockedChange: () => syncAudioBlocked() });
+		if (boostSinkId !== '') void boost.setSinkId(boostSinkId);
+	}
+	return boost;
+}
+
+function disposeBoost(): void {
+	boost?.dispose();
+	boost = null;
+	boostSinkId = '';
+	audioTracks.clear();
+}
+
+function syncAudioBlocked(): void {
+	state.audioBlocked = current != null && (!current.canPlaybackAudio || (boost?.blocked ?? false));
 }
 
 function volumeOf(identity: string, audio: ParticipantAudio): number {
@@ -1682,10 +1718,25 @@ function volumeOf(identity: string, audio: ParticipantAudio): number {
 
 function applyVolume(participant: RemoteParticipant): void {
 	const { Track } = livekit!;
-	participant.setVolume(volumeOf(participant.identity, 'voice'), Track.Source.Microphone);
+	setSourceVolume(participant, Track.Source.Microphone, volumeOf(participant.identity, 'voice'));
 	// 녹화 때문에 구독한 공유 소리는 시청할 때만 스피커로 재생한다. 녹화 입력은 별도의 탭이라 음량과 무관하다.
 	const watching = state.watchingIdentities.includes(participant.identity);
-	participant.setVolume(watching ? volumeOf(participant.identity, 'screenShare') : 0, Track.Source.ScreenShareAudio);
+	setSourceVolume(participant, Track.Source.ScreenShareAudio, watching ? volumeOf(participant.identity, 'screenShare') : 0);
+}
+
+// 100% 以下は今まで通り audio 要素の volume で鳴らす。超えたら要素は 0 にして、増幅の経路だけで鳴らす (二重に鳴らさない)。
+// 録音のミックスは元のトラックを受け取るので、ここでの音量とは無関係
+function setSourceVolume(participant: RemoteParticipant, source: Track.Source.Microphone | Track.Source.ScreenShareAudio, volume: number): void {
+	const track = audioTracks.get(audioTrackKey(participant.identity, source));
+	if (volume > 1 && track != null) {
+		participant.setVolume(0, source);
+		ensureBoost().set(track, volume);
+		syncAudioBlocked();
+		return;
+	}
+	if (track != null) boost?.release(track);
+	participant.setVolume(Math.min(1, volume), source);
+	syncAudioBlocked();
 }
 
 function applySubscription(lk: LiveKit, publication: TrackPublication, participant: RemoteParticipant): void {
@@ -1721,6 +1772,7 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 		if (track.kind === Track.Kind.Audio) {
 			addRecordingTrack(track.mediaStreamTrack, 'others');
 			window.document.body.appendChild(track.attach());
+			audioTracks.set(audioTrackKey(participant.identity, publication.source), track);
 			applyVolume(participant);
 			return;
 		}
@@ -1734,7 +1786,11 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 	room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
 		if (track.kind === Track.Kind.Audio) {
 			removeRecordingTrack(track.mediaStreamTrack);
+			boost?.release(track);
+			const key = audioTrackKey(participant.identity, publication.source);
+			if (audioTracks.get(key) === track) audioTracks.delete(key);
 			for (const element of track.detach()) element.remove();
+			syncAudioBlocked();
 			return;
 		}
 		if (track.kind === Track.Kind.Video) removeRecordingVideo(track.mediaStreamTrack);
@@ -1818,7 +1874,7 @@ function bindRoomEvents(lk: LiveKit, room: Room): void {
 	});
 
 	room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
-		if (isCurrent()) state.audioBlocked = !room.canPlaybackAudio;
+		if (isCurrent()) syncAudioBlocked();
 	});
 
 	room.on(RoomEvent.Reconnecting, () => {
@@ -1871,6 +1927,7 @@ function detachLocalScreenShare(identity: string): void {
 }
 
 function detachAll(room: Room): void {
+	disposeBoost();
 	detachLocalScreenShare(room.localParticipant.identity);
 	for (const participant of room.remoteParticipants.values()) {
 		for (const publication of participant.trackPublications.values()) {
@@ -1903,6 +1960,7 @@ function resetState(): void {
 	state.recordingAllowed = false;
 	stopLocalMeter?.();
 	unwatchMicrophoneTrack?.();
+	disposeBoost();
 	screenShareTracks.clear();
 	state.status = 'idle';
 	state.room = null;
