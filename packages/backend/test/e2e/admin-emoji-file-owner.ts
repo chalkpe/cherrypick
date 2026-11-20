@@ -6,7 +6,7 @@
 process.env.NODE_ENV = 'test';
 
 import * as assert from 'assert';
-import { describe, beforeAll, test } from 'vitest';
+import { describe, beforeAll, afterAll, test } from 'vitest';
 import { api, initTestDb, port, signup, uploadFile } from '../utils.js';
 import type * as Misskey from 'cherrypick-js';
 
@@ -41,32 +41,45 @@ describe('커스텀 이모지 등록·수정의 파일 소유자', () => {
 		bob = await signup({ username: 'bob' });
 	});
 
+	afterAll(async () => {
+		if (db?.isInitialized) await db.destroy();
+	});
+
 	test('다른 사용자가 올린 파일로 관리자가 이모지를 등록할 수 있고 원본 파일은 남는다', async () => {
-		const file = await upload(alice, 'owner-add.png');
+		const file = await upload(alice, 'owner-add.jpg');
 
 		const res = await api('admin/emoji/add', { name: 'owner_add', fileId: file.id }, root);
 		assert.strictEqual(res.status, 200, JSON.stringify(res.body));
 
 		const list = await api('admin/emoji/list', { query: 'owner_add' }, root);
 		assert.strictEqual(list.status, 200);
-		assert.ok(list.body.some(e => e.name === 'owner_add'));
+		const emoji = list.body.find(e => e.name === 'owner_add');
+		assert.ok(emoji);
+		// 서버가 다시 올린 사본이어야 하며, 올린 사람의 파일 URL을 그대로 쓰지 않는다
+		assert.notStrictEqual(emoji.url, file.url);
 
 		assert.strictEqual(await fileExists(alice, file.id), true);
 	});
 
 	test('이모지의 파일을 다른 사용자 소유 파일로 바꿀 수 있고 원본 파일은 남는다', async () => {
-		const first = await upload(root, 'owner-update-1.png');
+		const first = await upload(root, 'owner-update-1.jpg');
 		const added = await api('admin/emoji/add', { name: 'owner_update', fileId: first.id }, root);
 		assert.strictEqual(added.status, 200, JSON.stringify(added.body));
 
 		const list = await api('admin/emoji/list', { query: 'owner_update' }, root);
 		const emoji = list.body.find(e => e.name === 'owner_update');
 		assert.ok(emoji);
+		// 본인 소유 파일로 등록했으므로 원본 파일은 지워진다
+		assert.strictEqual(await fileExists(root, first.id), false);
 
-		const second = await upload(bob, 'owner-update-2.png');
+		const second = await upload(bob, 'owner-update-2.jpg');
 		const res = await api('admin/emoji/update', { id: emoji.id, name: 'owner_update', fileId: second.id }, root);
 		assert.strictEqual(res.status, 204, JSON.stringify(res.body));
 
+		const after = await api('admin/emoji/list', { query: 'owner_update' }, root);
+		const updated = after.body.find(e => e.id === emoji.id);
+		assert.ok(updated);
+		assert.notStrictEqual(updated.url, emoji.url);
 		assert.strictEqual(await fileExists(bob, second.id), true);
 	});
 });
