@@ -580,6 +580,24 @@ describe('VoiceBoost element playback state', () => {
 		expect(onReady).toHaveBeenCalledTimes(2);
 	});
 
+	test('is not blocked and is ready again when the browser plays the element on its own after a second pause', async () => {
+		const { boost, elements } = createBoost();
+		const t = track();
+		boost.set(t, 1.5);
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
+
+		elements[0].emit('pause');
+		await vi.advanceTimersByTimeAsync(0);
+		elements[0].emit('pause');
+		expect(boost.blocked).toBe(true);
+
+		elements[0].emit('playing');
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
+
+		expect(boost.blocked).toBe(false);
+		expect(boost.isReady(t)).toBe(true);
+	});
+
 	test('ignores the pause of an element that was torn down', async () => {
 		const { boost, elements, onReady } = createBoost();
 		const t = track();

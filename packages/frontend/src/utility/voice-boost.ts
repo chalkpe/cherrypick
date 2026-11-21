@@ -398,6 +398,7 @@ export class VoiceBoost {
 			void this.play(playback, element);
 		}, { signal });
 		element.addEventListener('playing', () => {
+			playback.playBlocked = false;
 			playback.playing = true;
 			this.notify();
 		}, { signal });

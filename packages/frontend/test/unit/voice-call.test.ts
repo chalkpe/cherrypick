@@ -112,7 +112,7 @@ const lk = vi.hoisted(() => {
 		startAudio = vi.fn(async () => {
 			this.canPlaybackAudio = true;
 		});
-		// 본물과 같게, 전환에 성공하면 ActiveDeviceChanged를 낸다
+		// 실제와 같게, 전환에 성공하면 ActiveDeviceChanged를 낸다
 		switchActiveDevice = vi.fn(async (kind: string, deviceId: string) => {
 			this.emit(RoomEvent.ActiveDeviceChanged, kind, deviceId);
 			return true;
