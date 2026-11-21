@@ -17,7 +17,7 @@ vi.mock('@/utility/voice-call.js', () => ({
 	prepareBoostAudio: mocks.prepareBoostAudio,
 	setParticipantVolume: mocks.setParticipantVolume,
 }));
-vi.mock('@/components/MkRange.vue', () => ({ default: { template: '<div data-testid="range"></div>' } }));
+vi.mock('@/components/MkRange.vue', () => ({ default: { props: ['min', 'max'], template: '<div data-testid="range" :data-min="min" :data-max="max"></div>' } }));
 
 import XVolume from '@/pages/chat/room.voice.volume.vue';
 
@@ -34,5 +34,12 @@ describe('participant volume slider', () => {
 		void fireEvent[name](getByTestId('range'));
 
 		expect(mocks.prepareBoostAudio).toHaveBeenCalledOnce();
+	});
+
+	test('lets the slider go from 0% to 200%', () => {
+		const { getByTestId } = render(XVolume, { props: { identity: 'a', audio: 'voice' } });
+
+		expect(getByTestId('range').getAttribute('data-min')).toBe('0');
+		expect(getByTestId('range').getAttribute('data-max')).toBe('2');
 	});
 });

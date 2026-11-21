@@ -1082,6 +1082,28 @@ describe('VoiceBoost when the browser pauses the amplified element', () => {
 		expect(elements[0].play).toHaveBeenCalledTimes(2);
 	});
 
+	test('is blocked when the element stops again after it was played again, and plays it on the sound-on action', async () => {
+		const { boost, elements } = createBoost();
+		const t = track();
+		boost.set(t, 1.5);
+		await vi.advanceTimersByTimeAsync(0);
+		elements[0].emit('pause');
+		await vi.advanceTimersByTimeAsync(0);
+		elements[0].emit('playing');
+		expect(boost.blocked).toBe(false);
+		expect(boost.isReady(t)).toBe(true);
+
+		elements[0].emit('pause');
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(boost.blocked).toBe(true);
+		expect(boost.isReady(t)).toBe(false);
+
+		await boost.resume();
+
+		expect(boost.blocked).toBe(false);
+	});
+
 	test('is blocked when the browser refuses to play it again, and plays it on the sound-on action', async () => {
 		const { boost, elements } = createBoost();
 		const t = track();

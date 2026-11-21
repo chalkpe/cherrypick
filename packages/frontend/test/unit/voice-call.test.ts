@@ -37,6 +37,7 @@ const lk = vi.hoisted(() => {
 		TrackSubscribed: 'trackSubscribed',
 		TrackUnsubscribed: 'trackUnsubscribed',
 		TrackMuted: 'trackMuted',
+		ActiveDeviceChanged: 'activeDeviceChanged',
 		LocalTrackPublished: 'localTrackPublished',
 		LocalTrackUnpublished: 'localTrackUnpublished',
 		ActiveSpeakersChanged: 'activeSpeakersChanged',
@@ -111,7 +112,11 @@ const lk = vi.hoisted(() => {
 		startAudio = vi.fn(async () => {
 			this.canPlaybackAudio = true;
 		});
-		switchActiveDevice = vi.fn().mockResolvedValue(true);
+		// 본물과 같게, 전환에 성공하면 ActiveDeviceChanged를 낸다
+		switchActiveDevice = vi.fn(async (kind: string, deviceId: string) => {
+			this.emit(RoomEvent.ActiveDeviceChanged, kind, deviceId);
+			return true;
+		});
 		getActiveDevice = vi.fn((_kind: string): string | undefined => undefined);
 		constructor(public options: unknown) {
 			super();
@@ -3594,7 +3599,7 @@ describe('voice volume above 100%', () => {
 		expect(boost().release).not.toHaveBeenCalledWith(second.track);
 	});
 
-	test('shows the sound-off notice for an autoplay-blocked amplified track and resumes it with the same action', async () => {
+	test('shows the sound-on action for an autoplay-blocked amplified track and resumes it with the same action', async () => {
 		await joinVoiceCall(room1);
 		const a = remoteParticipant('a');
 		subscribeAudio(a, mic());
@@ -3676,13 +3681,16 @@ describe('voice volume above 100%', () => {
 		expect(voiceCall.audioBlocked).toBe(false);
 	});
 
-	test('starts the sound-off actions together and checks the blocked state afterwards', async () => {
+	test('starts the sound-on actions together and clears the blocked state afterwards', async () => {
 		await joinVoiceCall(room1);
 		const a = remoteParticipant('a');
 		subscribeAudio(a, mic());
 		setParticipantVolume('a', 'voice', 1.5);
 		let finishStart!: () => void;
 		lastRoom().startAudio.mockImplementationOnce(() => new Promise<void>(resolve => { finishStart = resolve; }));
+		boost().blocked = true;
+		boost().options.onBlockedChange?.(true);
+		expect(voiceCall.audioBlocked).toBe(true);
 
 		const resuming = resumeAudio();
 
@@ -3690,6 +3698,8 @@ describe('voice volume above 100%', () => {
 		expect(boost().resume).toHaveBeenCalled();
 		finishStart();
 		await resuming;
+
+		expect(voiceCall.audioBlocked).toBe(false);
 	});
 
 	test('still resumes the amplified sound when starting the elements fails', async () => {
@@ -3992,6 +4002,48 @@ describe('output device selection', () => {
 
 		lk.supportsAudioOutputSelection.mockReturnValue(true);
 		await expect(canSelectAudioOutput()).resolves.toBe(true);
+	});
+
+	test('moves the amplifier when livekit changes the output device by itself', async () => {
+		await startAmplifying();
+
+		lastRoom().emit(lk.RoomEvent.ActiveDeviceChanged, 'audiooutput', 'speaker-3');
+
+		expect(boost().setSinkId).toHaveBeenCalledWith('speaker-3');
+	});
+
+	test('uses the output device livekit changed to for an amplifier created later', async () => {
+		await joinVoiceCall(room1);
+		lastRoom().emit(lk.RoomEvent.ActiveDeviceChanged, 'audiooutput', 'speaker-3');
+		const a = remoteParticipant('a');
+		const element = document.createElement('audio');
+		const track = { kind: lk.Track.Kind.Audio, mediaStreamTrack: {}, attachedElements: [element], attach: vi.fn(() => element), detach: vi.fn(() => [element]) };
+		lastRoom().emit(lk.RoomEvent.TrackSubscribed, track, { source: lk.Track.Source.Microphone, kind: lk.Track.Kind.Audio, setSubscribed: vi.fn() }, a);
+
+		setParticipantVolume('a', 'voice', 1.5);
+
+		expect(boost().setSinkId).toHaveBeenCalledWith('speaker-3');
+	});
+
+	test('does not move the amplifier when livekit changes a device other than the output', async () => {
+		await startAmplifying();
+
+		lastRoom().emit(lk.RoomEvent.ActiveDeviceChanged, 'audioinput', 'mic-2');
+		lastRoom().emit(lk.RoomEvent.ActiveDeviceChanged, 'videoinput', 'camera-2');
+
+		expect(boost().setSinkId).not.toHaveBeenCalled();
+	});
+
+	test('ignores an output device change that an earlier call reports', async () => {
+		await startAmplifying();
+		const earlier = lastRoom();
+		await leaveVoiceCall();
+		await startAmplifying();
+		const later = boost();
+
+		earlier.emit(lk.RoomEvent.ActiveDeviceChanged, 'audiooutput', 'speaker-3');
+
+		expect(later.setSinkId).not.toHaveBeenCalledWith('speaker-3');
 	});
 
 	test('does not reject when switching the output device fails, and does not move the amplifier', async () => {

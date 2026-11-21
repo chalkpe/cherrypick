@@ -1289,14 +1289,9 @@ export async function joinVoiceCall(room: Misskey.entities.ChatRoom, options: { 
 	}
 
 	const outputDeviceId = prefer.s['voiceCall.outputDeviceId'];
-	// 출력 장치를 고를 수 없는 브라우저(Safari 계열)에서는 전환을 시도하지 않는다
+	// 출력 장치를 고를 수 없는 브라우저(Safari 계열)에서는 전환을 시도하지 않는다. 증폭기의 출력 장치는 전환이 성공했을 때 오는 ActiveDeviceChanged가 맞춘다
 	if (outputDeviceId != null && lk.supportsAudioOutputSelection()) {
-		lkRoom.switchActiveDevice('audiooutput', outputDeviceId).then(() => {
-			// LiveKit이 전환에 성공한 뒤에만 증폭한 소리의 출력 장치도 맞춘다
-			if (current !== lkRoom) return;
-			boostSinkId = outputDeviceId;
-			void boost?.setSinkId(outputDeviceId);
-		}, (err: unknown) => {
+		lkRoom.switchActiveDevice('audiooutput', outputDeviceId).catch((err: unknown) => {
 			console.warn('[voice-call] failed to switch the output device', err);
 		});
 	}
@@ -1422,11 +1417,6 @@ export async function selectAudioDevice(kind: 'audioinput' | 'audiooutput', devi
 		if (kind === 'audioinput' && current === room) os.toast(i18n.ts._voiceCall.micUnavailable);
 		return;
 	}
-	// 증폭해서 재생 중인 소리는 전용 audio 요소에서 나오므로, LiveKit의 전환이 성공한 뒤에 출력 장치도 그쪽에 알린다
-	if (kind === 'audiooutput' && current === room) {
-		boostSinkId = deviceId;
-		await boost?.setSinkId(deviceId);
-	}
 	if (kind === 'audioinput' && current != null) {
 		startLocalMeter(current);
 		if (current === room && recordingSession != null) await captureRecordingMicrophone(recordingSession, room);
@@ -1435,7 +1425,12 @@ export async function selectAudioDevice(kind: 'audioinput' | 'audiooutput', devi
 
 /** LiveKit이 출력 장치 선택을 지원하는 브라우저인지 (Safari 계열은 지원하지 않는다) */
 export async function canSelectAudioOutput(): Promise<boolean> {
-	return (await loadLiveKit()).supportsAudioOutputSelection();
+	// LiveKit을 읽지 못하면 스피커 항목만 빼고 메뉴를 연다
+	try {
+		return (await loadLiveKit()).supportsAudioOutputSelection();
+	} catch {
+		return false;
+	}
 }
 
 export function canShareScreen(): boolean {
@@ -1720,9 +1715,12 @@ const audioListeners = new Map<RemoteTrack, AbortController>();
 // 원래 요소를 muted로 두기로 한 트랙 (iPhone·iPad에서만 쓴다). LiveKit이 muted를 풀면 다시 건다
 const mutedTracks = new Set<RemoteTrack>();
 
-// 브라우저 계열은 LiveKit의 판정으로 한 번에 정한다 (출력 장치 선택 지원 여부와 같은 기준). 통화 중에만 부르므로 LiveKit은 읽혀 있다
+// 브라우저 계열은 LiveKit의 판정으로 통화마다 한 번 정하고 증폭기를 정리할 때 비운다 (출력 장치 선택 지원 여부와 같은 기준). 통화 중에만 부르므로 LiveKit은 읽혀 있다
+let callPlatform: ReturnType<typeof detectPlatform> | null = null;
+
 function voicePlatform(): ReturnType<typeof detectPlatform> {
-	return detectPlatform(livekit?.getBrowser(), typeof navigator === 'undefined' ? 0 : navigator.maxTouchPoints ?? 0);
+	callPlatform ??= detectPlatform(livekit?.getBrowser(), typeof navigator === 'undefined' ? 0 : navigator.maxTouchPoints ?? 0);
+	return callPlatform;
 }
 
 function ensureBoost(): VoiceBoost {
@@ -1758,6 +1756,7 @@ function disposeBoost(): void {
 	boost?.dispose();
 	boost = null;
 	boostSinkId = '';
+	callPlatform = null;
 	audioTracks.clear();
 	mutedTracks.clear();
 }
@@ -1855,6 +1854,13 @@ function applySubscription(lk: LiveKit, publication: TrackPublication, participa
 function bindRoomEvents(lk: LiveKit, room: Room): void {
 	const { RoomEvent, Track } = lk;
 	const isCurrent = () => current === room;
+
+	// 증폭해서 재생 중인 소리는 전용 audio 요소에서 나오므로, LiveKit이 출력 장치를 바꾸면(직접 고른 경우와 장치가 빠져 스스로 바꾼 경우 모두) 그쪽도 맞춘다
+	room.on(RoomEvent.ActiveDeviceChanged, (kind: MediaDeviceKind, deviceId: string) => {
+		if (!isCurrent() || kind !== 'audiooutput') return;
+		boostSinkId = deviceId;
+		void boost?.setSinkId(deviceId);
+	});
 
 	room.on(RoomEvent.TrackPublished, (publication: RemoteTrackPublication, participant: RemoteParticipant) => {
 		if (isCurrent()) applySubscription(lk, publication, participant);

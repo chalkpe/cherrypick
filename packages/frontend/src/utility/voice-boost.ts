@@ -215,7 +215,7 @@ export class VoiceBoost {
 			}
 			// 아직 소리를 낼 수 없는 재생은 재생을 시작하는 순간에 이 목표값으로 올라간다.
 			// 이미 이 값으로 올리고 있으면 다시 올리지 않는다 (진행 중인 짧은 올림을 느린 올림으로 덮지 않도록)
-			if (!existing.releasing && this.isStarted(track) && existing.raisedTo !== value) this.rampTo(existing);
+			if (this.isStarted(track) && existing.raisedTo !== value) this.rampTo(existing);
 			return true;
 		}
 		const playback = this.createPlayback(track, value);
@@ -383,13 +383,17 @@ export class VoiceBoost {
 	}
 
 	// 브라우저가 요소를 멈추거나 다시 재생하면 준비 상태를 다시 계산한다 (멈춘 요소가 있는데 원래 요소만 꺼진 채 남지 않도록).
-	// 멈춘 요소는 한 번 다시 재생해 본다. 거절되면 막힘으로 두어 소리 켜기가 뜨게 하고, 사용자 조작(resume)이 있기 전에는 다시 시도하지 않는다
+	// 멈춘 요소는 한 번 다시 재생해 본다. 거절되거나 다시 재생한 뒤 또 멈추면 막힘으로 두어 소리 켜기가 뜨게 하고, 사용자 조작(resume)이 있기 전에는 다시 시도하지 않는다
 	private watchElement(playback: Playback, element: HTMLAudioElement): void {
 		const { signal } = playback.listeners;
 		element.addEventListener('pause', () => {
 			playback.playing = false;
 			this.notify();
-			if (playback.replayed) return;
+			if (playback.replayed) {
+				playback.playBlocked = true;
+				this.notify();
+				return;
+			}
 			playback.replayed = true;
 			void this.play(playback, element);
 		}, { signal });

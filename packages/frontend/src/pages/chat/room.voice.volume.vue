@@ -4,7 +4,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div :class="$style.root" @pointerdown="prepareAudio" @pointerup="prepareAudio" @touchstart.passive="prepareAudio" @touchend="prepareAudio">
+<div :class="$style.root" @pointerdown="prepareBoostAudio" @pointerup="prepareBoostAudio" @touchstart.passive="prepareBoostAudio" @touchend="prepareBoostAudio">
 	<MkRange
 		:modelValue="volume"
 		:min="0"
@@ -33,11 +33,6 @@ const props = defineProps<{
 }>();
 
 const volume = ref(participantVolume(props.identity, props.audio));
-
-// 모바일 브라우저는 사용자 조작 중에 시작한 재생만 허용하므로, 슬라이더를 만지는 동안 증폭기의 AudioContext를 깨워 둔다
-function prepareAudio() {
-	prepareBoostAudio();
-}
 
 function update(value: number) {
 	volume.value = value;
