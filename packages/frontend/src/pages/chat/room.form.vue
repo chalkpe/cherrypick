@@ -97,8 +97,8 @@ const props = defineProps<{
 const emit = defineEmits<{
 	(ev: 'edited'): void;
 	(ev: 'cancelEdit'): void;
-	(ev: 'cancelReply'): void;
-	(ev: 'sent', messageId: string): void;
+	(ev: 'cancelReply', replyId?: string): void;
+	(ev: 'sent', messageId: string, replyId?: string): void;
 }>();
 
 const rootEl = useTemplateRef('rootEl');
@@ -364,10 +364,10 @@ function onChangeFile() {
 	if (fileEl.value?.files) void uploadFiles(Array.from(fileEl.value.files));
 }
 
-function showSendError(err: Error) {
+function showSendError(err: Error, replyId?: string) {
 	console.error(err);
 	// 원문이 없어져 보낼 수 없을 때는 답장을 내려, 쓴 글은 그대로 두고 다시 보낼 수 있게 한다
-	if ((err as { code?: string }).code === 'NO_SUCH_REPLY_TARGET') emit('cancelReply');
+	if ((err as { code?: string }).code === 'NO_SUCH_REPLY_TARGET') emit('cancelReply', replyId);
 	// フォームが無くなったのはルームが閉じたときで、その理由は別に知らせている
 	if (!formClosed) os.alert({ type: 'error', title: i18n.ts.somethingHappened, text: chatErrorText(err) });
 }
@@ -429,9 +429,9 @@ function send() {
 			fileIds: sentFiles.length > 0 ? sentFiles.map(file => file.id) : undefined,
 		}).then(message => {
 			clearSent();
-			emit('sent', message.id);
+			emit('sent', message.id, sentReplyId);
 		}).catch(err => {
-			showSendError(err);
+			showSendError(err, sentReplyId);
 		}).then(() => {
 			sending.value = false;
 		});
@@ -444,9 +444,9 @@ function send() {
 			fileIds: sentFiles.length > 0 ? sentFiles.map(file => file.id) : undefined,
 		}).then(message => {
 			clearSent();
-			emit('sent', message.id);
+			emit('sent', message.id, sentReplyId);
 		}).catch(err => {
-			showSendError(err);
+			showSendError(err, sentReplyId);
 		}).then(() => {
 			sending.value = false;
 		});

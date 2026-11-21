@@ -7305,6 +7305,10 @@ export interface Locale extends ILocale {
          */
         "replyOriginalNotFound": string;
         /**
+         * 元のメッセージが古すぎて、まだ読み込めていません。さらに上へ読み込んでから、もう一度押してください。
+         */
+        "replyOriginalTooFar": string;
+        /**
          * このグループには参加していません。
          */
         "removedFromRoom": string;

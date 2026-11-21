@@ -21,7 +21,11 @@ type ReplyTargetShape = Pick<MiChatMessage, 'toRoomId' | 'toRoomChannelId' | 'to
  * 1:1 대화에서는 원문의 작성자와 수신자가 정확히 그 두 계정이어야 한다.
  */
 export function isReplyTargetInScope(target: ReplyTargetShape, scope: ChatReplyScope): boolean {
-	if (target.deletedAt != null) return false;
+	return target.deletedAt == null && isReplyTargetInConversation(target, scope);
+}
+
+/** 지워졌는지는 보지 않고 원문이 같은 대화의 글인지만 본다. 지워진 원문을 "삭제된 메시지"로 보이게 할 때 쓴다. */
+export function isReplyTargetInConversation(target: ReplyTargetShape, scope: ChatReplyScope): boolean {
 	if (scope.kind === 'room') {
 		return target.toRoomId === scope.roomId && (target.toRoomChannelId ?? null) === scope.channelId;
 	}

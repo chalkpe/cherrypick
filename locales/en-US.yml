@@ -1822,6 +1822,7 @@ _chat:
   replyAttachment: "Attachment"
   replyTargetNotFound: "The message you are replying to was not found. Cancel the reply and send again."
   replyOriginalNotFound: "Could not find the original message."
+  replyOriginalTooFar: "The original message is too far back to load yet. Scroll up to load more, then try again."
   removedFromRoom: "You are no longer in this group."
   roomUnavailable: "This room cannot be opened. It was deleted, or you are not a member."
   invitationCancelAreYouSure: "Are you sure you want to cancel the invitation sent to {x}?"

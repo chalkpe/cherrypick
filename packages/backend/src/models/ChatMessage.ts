@@ -86,7 +86,6 @@ export class MiChatMessage {
 	public roomMessageSequence: string | null;
 
 	/** 답장하는 원문의 id. 같은 대화의 글만 가리키며, 원문이 지워져도 값은 남지만 내용은 내주지 않는다. */
-	@Index()
 	@Column({ ...id(), nullable: true })
 	public replyToId: MiChatMessage['id'] | null;
 

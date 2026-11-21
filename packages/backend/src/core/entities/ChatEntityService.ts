@@ -13,14 +13,23 @@ import type { Packed } from '@/misc/json-schema.js';
 import type { } from '@/models/Blocking.js';
 import { bindThis } from '@/decorators.js';
 import { parseChatDiceResult } from '@/core/chat-dice.js';
-import { chatReplyPreviewText, findReplyTargetByUri, isReplyTargetInScope } from '@/core/chat-reply.js';
+import { chatReplyPreviewText, findReplyTargetByUri, isReplyTargetInConversation, isReplyTargetInScope } from '@/core/chat-reply.js';
 import type { ChatReplyScope } from '@/core/chat-reply.js';
 import { ChatRoomIconEntityService } from './ChatRoomIconEntityService.js';
 import { IdService } from '@/core/IdService.js';
 import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
 import { CustomEmojiService } from '@/core/CustomEmojiService.js';
+import { RoleService } from '@/core/RoleService.js';
 import { UserEntityService } from './UserEntityService.js';
 import { DriveFileEntityService } from './DriveFileEntityService.js';
+
+/** 묶음 포장에서 답장 원문을 한 번에 읽어 둔 결과 */
+type ReplyHints = {
+	targets: Map<MiChatMessage['id'], MiChatMessage | null>;
+	authors: Map<MiUser['id'], MiUser>;
+	/** 보는 사람이 지금 접근할 수 있는 그룹. 보는 사람이 없으면 null(확인하지 않음). */
+	readableRooms: Set<MiChatRoom['id']> | null;
+};
 
 @Injectable()
 export class ChatEntityService {
@@ -46,6 +55,7 @@ export class ChatEntityService {
 		private idService: IdService,
 		private chatRoomNotificationService: ChatRoomNotificationService,
 		private chatRoomIconEntityService: ChatRoomIconEntityService,
+		private roleService: RoleService,
 
 		@Inject(DI.chatRoomChannelsRepository)
 		private chatRoomChannelsRepository: ChatRoomChannelsRepository,
@@ -81,26 +91,80 @@ export class ChatEntityService {
 		return message.toRoomId != null && (fromUser == null || fromUser.isDeleted);
 	}
 
+	private replyScopeOf(message: MiChatMessage): ChatReplyScope | null {
+		if (message.toRoomId != null) return { kind: 'room', roomId: message.toRoomId, channelId: message.toRoomChannelId ?? null };
+		return message.fromUserId != null && message.toUserId != null ? { kind: 'user', userIds: [message.fromUserId, message.toUserId] } : null;
+	}
+
+	/**
+	 * 묶음으로 포장할 글들의 원문, 원문 작성자, 보는 사람의 그룹 접근 여부를 한꺼번에 읽는다.
+	 * 글마다 따로 조회하지 않게 하며, 연합으로 받아 id를 모르는 답장만 주소로 다시 찾는다.
+	 */
+	private async loadReplyHints(messages: MiChatMessage[], me?: { id: MiUser['id'] }): Promise<ReplyHints> {
+		const pending = messages.filter(m => m.deletedAt == null && (m.replyToId != null || m.replyToUri != null));
+		const hints: ReplyHints = { targets: new Map(), authors: new Map(), readableRooms: me != null ? new Set() : null };
+		if (pending.length === 0) return hints;
+
+		const ids = [...new Set(pending.map(m => m.replyToId).filter((x): x is string => x != null))];
+		const uris = [...new Set(pending.filter(m => m.replyToId == null).map(m => m.replyToUri!))];
+		const [byId, byUri] = await Promise.all([
+			ids.length > 0 ? this.chatMessagesRepository.findBy({ id: In(ids) }) : [],
+			uris.length > 0 ? this.chatMessagesRepository.findBy({ uri: In(uris) }) : [],
+		]);
+		const idMap = new Map(byId.map(t => [t.id, t]));
+		const uriMap = new Map(byUri.map(t => [t.uri!, t]));
+
+		for (const message of pending) {
+			if (message.replyToId != null) {
+				hints.targets.set(message.id, idMap.get(message.replyToId) ?? null);
+				continue;
+			}
+			const scope = this.replyScopeOf(message);
+			const direct = uriMap.get(message.replyToUri!) ?? null;
+			hints.targets.set(message.id, direct ?? (scope != null ? await findReplyTargetByUri(this.chatMessagesRepository, message.replyToUri!, this.config.url, scope) : null));
+		}
+
+		const authorIds = [...new Set([...hints.targets.values()].map(t => t?.fromUserId).filter((x): x is string => x != null))];
+		if (authorIds.length > 0) {
+			hints.authors = new Map((await this.usersRepository.findBy({ id: In(authorIds) })).map(u => [u.id, u]));
+		}
+
+		if (me != null && hints.readableRooms != null) {
+			const roomIds = [...new Set(pending.map(m => m.toRoomId).filter((x): x is string => x != null))];
+			if (roomIds.length > 0) {
+				const [memberships, rooms] = await Promise.all([
+					this.chatRoomMembershipsRepository.findBy({ userId: me.id, roomId: In(roomIds) }),
+					this.chatRoomsRepository.findBy({ id: In(roomIds) }),
+				]);
+				for (const membership of memberships) hints.readableRooms.add(membership.roomId);
+				for (const room of rooms) if (room.ownerId === me.id) hints.readableRooms.add(room.id);
+				// 관리자는 기존과 같이 모든 글을 볼 수 있다.
+				if (hints.readableRooms.size < roomIds.length && await this.roleService.isModerator(me)) {
+					for (const roomId of roomIds) hints.readableRooms.add(roomId);
+				}
+			}
+		}
+
+		return hints;
+	}
+
 	/**
 	 * 답장 말풍선에 싣는 원문 미리보기. 저장된 원문 기록에서만 만들고, 지워졌거나 같은 대화가 아니면 내용 없이 지워진 것으로 알린다.
-	 * 원문 작성자 정지 여부는 목록 조회가 이미 숨기는 규칙과 같게 본다.
+	 * 원문 작성자 정지 여부는 목록 조회가 이미 숨기는 규칙과 같게 보고, 보는 사람이 지금 그룹에 접근할 수 없으면 원문 내용을 내주지 않는다.
 	 */
-	private async packReply(message: MiChatMessage, me?: { id: MiUser['id'] }, withAuthor = true) {
+	private async packReply(message: MiChatMessage, me: { id: MiUser['id'] } | undefined, withAuthor: boolean, hints: ReplyHints, packedUsers?: Map<MiUser['id'], Packed<'UserLite'>>) {
 		if ((message.replyToId == null && message.replyToUri == null) || message.deletedAt != null) return { replyToId: null, reply: null };
-		const scope: ChatReplyScope | null = message.toRoomId != null
-			? { kind: 'room', roomId: message.toRoomId, channelId: message.toRoomChannelId ?? null }
-			: message.fromUserId != null && message.toUserId != null ? { kind: 'user', userIds: [message.fromUserId, message.toUserId] } : null;
+		const scope = this.replyScopeOf(message);
 		// 연합으로 받아 원문 id를 아직 모르는 답장은 저장된 글에서 주소로 다시 찾는다. 아직 없으면 인용 없이 보인다.
-		const target = scope == null ? null
-			: message.replyToId != null ? await this.chatMessagesRepository.findOneBy({ id: message.replyToId })
-				: await findReplyTargetByUri(this.chatMessagesRepository, message.replyToUri!, this.config.url, scope);
-		if (message.replyToId == null && (target == null || scope == null || !isReplyTargetInScope(target, scope))) return { replyToId: null, reply: null };
+		const target = hints.targets.get(message.id) ?? null;
+		if (message.replyToId == null && (target == null || scope == null || !isReplyTargetInConversation(target, scope))) return { replyToId: null, reply: null };
 		const replyToId = target?.id ?? message.replyToId!;
 		const unavailable = { replyToId, reply: { id: replyToId, isDeleted: true, text: null, fileCount: 0, fromUserId: null, fromUser: null, archivedAuthor: null } };
 
 		if (target == null || scope == null || !isReplyTargetInScope(target, scope)) return unavailable;
+		if (message.toRoomId != null && hints.readableRooms != null && !hints.readableRooms.has(message.toRoomId)) return unavailable;
 
-		const author = target.fromUserId != null ? await this.usersRepository.findOneBy({ id: target.fromUserId }) : null;
+		const author = target.fromUserId != null ? hints.authors.get(target.fromUserId) ?? null : null;
 		if (author?.isSuspended) return unavailable;
 
 		return {
@@ -111,7 +175,7 @@ export class ChatEntityService {
 				text: chatReplyPreviewText(target.text),
 				fileCount: target.fileIds.length + (target.unavailableFileCount ?? 0),
 				fromUserId: target.fromUserId,
-				fromUser: withAuthor && !this.hasArchivedAuthor(target, author) ? await this.userEntityService.pack(author ?? target.fromUserId!, me) : null,
+				fromUser: withAuthor && !this.hasArchivedAuthor(target, author) ? packedUsers?.get(target.fromUserId!) ?? await this.userEntityService.pack(author ?? target.fromUserId!, me) : null,
 				archivedAuthor: this.archivedAuthorOf(target, author),
 			},
 		};
@@ -141,7 +205,10 @@ export class ChatEntityService {
 				packedFiles?: Map<MiDriveFile['id'], Packed<'DriveFile'> | null>;
 				packedUsers?: Map<MiChatMessage['id'], Packed<'UserLite'>>;
 				packedRooms?: Map<MiChatMessage['toRoomId'], Packed<'ChatRoom'> | null>;
+				replyHints?: ReplyHints;
 			};
+			/** 알림처럼 원문 미리보기를 쓰지 않는 용도에서는 답장 정보를 싣지 않는다. */
+			omitReply?: boolean;
 		},
 	): Promise<Packed<'ChatMessage'>> {
 		const packedUsers = options?._hint_?.packedUsers;
@@ -188,7 +255,7 @@ export class ChatEntityService {
 			toUser: message.toUserId ? (packedUsers?.get(message.toUserId) ?? (await this.userEntityService.pack(message.toUser ?? message.toUserId, me))) : undefined,
 			toRoomId: message.toRoomId,
 			...(await this.packMessageChannel(message)),
-			...(await this.packReply(message, me)),
+			...(options?.omitReply ? {} : await this.packReply(message, me, true, options?._hint_?.replyHints ?? await this.loadReplyHints([message], me), packedUsers)),
 			toRoom: message.toRoomId ? (packedRooms?.get(message.toRoomId) ?? (await this.packRoom(message.toRoom ?? message.toRoomId, me))) : undefined,
 			...(await this.packMessageFiles(message, packedFiles)),
 			reactions: deleted ? [] : reactions.filter((r): r is { user: Packed<'UserLite'>; reaction: string; } => r.user != null),
@@ -224,6 +291,11 @@ export class ChatEntityService {
 			}
 		}
 
+		const replyHints = await this.loadReplyHints(messages, me);
+		for (const authorId of replyHints.authors.keys()) {
+			if (authorId !== me.id && !users.some(x => typeof x === 'string' ? x === authorId : x.id === authorId)) users.push(authorId);
+		}
+
 		// TODO: packedUsersに削除されたユーザーもnullとして含める
 		const [packedUsers, packedFiles, packedRooms] = await Promise.all([
 			this.userEntityService.packMany(users, me)
@@ -233,7 +305,7 @@ export class ChatEntityService {
 				.then(rooms => new Map(rooms.map(r => [r.id, r]))),
 		]);
 
-		return Promise.all(messages.map(message => this.packMessageDetailed(message, me, { _hint_: { packedUsers, packedFiles, packedRooms } })));
+		return Promise.all(messages.map(message => this.packMessageDetailed(message, me, { _hint_: { packedUsers, packedFiles, packedRooms, replyHints } })));
 	}
 
 	@bindThis
@@ -242,6 +314,7 @@ export class ChatEntityService {
 		options?: {
 			_hint_?: {
 				packedFiles: Map<MiDriveFile['id'], Packed<'DriveFile'> | null>;
+				replyHints?: ReplyHints;
 			};
 		},
 	): Promise<Packed<'ChatMessageLiteFor1on1'>> {
@@ -280,7 +353,7 @@ export class ChatEntityService {
 			dice: deleted ? null : parseChatDiceResult(message.dice),
 			fromUserId: message.fromUserId!,
 			toUserId: message.toUserId!,
-			...(await this.packReply(message, undefined, false)),
+			...(await this.packReply(message, undefined, false, options?._hint_?.replyHints ?? await this.loadReplyHints([message]))),
 			...(await this.packMessageFiles(message, packedFiles)),
 			reactions,
 			emojis: emojis,
@@ -293,11 +366,12 @@ export class ChatEntityService {
 	) {
 		if (messages.length === 0) return [];
 
-		const [packedFiles] = await Promise.all([
+		const [packedFiles, replyHints] = await Promise.all([
 			this.driveFileEntityService.packManyByIdsMap(messages.flatMap(m => m.fileIds)),
+			this.loadReplyHints(messages),
 		]);
 
-		return Promise.all(messages.map(message => this.packMessageLiteFor1on1(message, { _hint_: { packedFiles } })));
+		return Promise.all(messages.map(message => this.packMessageLiteFor1on1(message, { _hint_: { packedFiles, replyHints } })));
 	}
 
 	@bindThis
@@ -307,6 +381,7 @@ export class ChatEntityService {
 			_hint_?: {
 				packedFiles: Map<MiDriveFile['id'], Packed<'DriveFile'> | null>;
 				packedUsers: Map<MiUser['id'], Packed<'UserLite'>>;
+				replyHints?: ReplyHints;
 			};
 		},
 	): Promise<Packed<'ChatMessageLiteForRoom'>> {
@@ -351,7 +426,7 @@ export class ChatEntityService {
 			unavailableFileCount: message.unavailableFileCount ?? 0,
 			toRoomId: message.toRoomId!,
 			...(await this.packMessageChannel(message)),
-			...(await this.packReply(message)),
+			...(await this.packReply(message, undefined, true, options?._hint_?.replyHints ?? await this.loadReplyHints([message]), packedUsers)),
 			...(await this.packMessageFiles(message, packedFiles)),
 			reactions: deleted ? [] : reactions.filter((r): r is { user: Packed<'UserLite'>; reaction: string; } => r.user != null),
 			emojis: emojis,
@@ -373,13 +448,18 @@ export class ChatEntityService {
 			}
 		}
 
+		const replyHints = await this.loadReplyHints(messages);
+		for (const authorId of replyHints.authors.keys()) {
+			if (!users.some(x => typeof x === 'string' ? x === authorId : x.id === authorId)) users.push(authorId);
+		}
+
 		const [packedUsers, packedFiles] = await Promise.all([
 			this.userEntityService.packMany(users)
 				.then(users => new Map(users.map(u => [u.id, u]))),
 			this.driveFileEntityService.packManyByIdsMap(messages.flatMap(m => m.fileIds)),
 		]);
 
-		return Promise.all(messages.map(message => this.packMessageLiteForRoom(message, { _hint_: { packedFiles, packedUsers } })));
+		return Promise.all(messages.map(message => this.packMessageLiteForRoom(message, { _hint_: { packedFiles, packedUsers, replyHints } })));
 	}
 
 	@bindThis

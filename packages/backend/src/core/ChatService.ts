@@ -56,7 +56,7 @@ import { chatActorUri, chatMessageUri, chatRoomUriForOwner, localChatMessageIdFr
 import { ChatDiceService } from '@/core/ChatDiceService.js';
 import { chatDiceNotation, parseChatDiceResult } from '@/core/chat-dice.js';
 import { ApiError } from '@/server/api/error.js';
-import { findReplyTargetByUri, isReplyTargetInScope, parseChatReplyUri } from '@/core/chat-reply.js';
+import { findReplyTargetByUri, isReplyTargetInConversation, isReplyTargetInScope, parseChatReplyUri } from '@/core/chat-reply.js';
 import type { ChatReplyScope } from '@/core/chat-reply.js';
 
 export class ChatMessageAccessError extends Error {}
@@ -423,7 +423,7 @@ export class ChatService {
 				if (latest == null || latest.deletedAt != null) return;
 				if (await this.isFromSuspendedUser(latest)) return;
 
-				const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest, toUser);
+				const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest, toUser, { omitReply: true });
 				// 알림을 준비하는 사이에 읽혔으면 표시를 켜지 않는다. 읽음 알림보다 늦게 도착해 표시가 켜진 채 남는 것을 막는다.
 				if (await this.redisClient.get(`newUserChatMessageExists:${toUser.id}:${fromUser.id}`) == null) return;
 				await this.chatRoomNotificationService.notify([toUser.id]);
@@ -630,7 +630,7 @@ export class ChatService {
 
 		if (params.replyToId != null) {
 			const target = await repository.findOneBy({ id: params.replyToId });
-			if (target == null || !isReplyTargetInScope(target, scope) || await this.isFromSuspendedUser(target)) throw new ChatReplyTargetError('no such reply target');
+			if (target == null || !isReplyTargetInScope(target, scope) || await this.isFromSuspendedUser(target, manager)) throw new ChatReplyTargetError('no such reply target');
 			return { replyToId: target.id, replyToUri: null };
 		}
 
@@ -638,7 +638,8 @@ export class ChatService {
 		if (uri == null) return none;
 		const target = await findReplyTargetByUri(repository, uri, this.config.url, scope);
 		if (target == null) return { replyToId: null, replyToUri: uri };
-		return isReplyTargetInScope(target, scope) ? { replyToId: target.id, replyToUri: null } : none;
+		// 지워진 원문도 같은 대화의 글이면 이어 두어 "삭제된 메시지"로 보이게 한다.
+		return isReplyTargetInConversation(target, scope) ? { replyToId: target.id, replyToUri: null } : none;
 	}
 
 	@bindThis
@@ -709,7 +710,7 @@ export class ChatService {
 			if (room == null) return;
 			const recipients = await this.chatRoomNotificationService.notificationRecipients(message, room, editRecipients);
 			if (recipients.length === 0) return;
-			const packed = await this.chatEntityService.packMessageDetailed(message);
+			const packed = await this.chatEntityService.packMessageDetailed(message, undefined, { omitReply: true });
 			// 포장 사이에 삭제되었으면 보내지 않는다
 			const latest = await this.chatMessagesRepository.findOneBy({ id: messageId });
 			if (latest == null || latest.deletedAt != null) return;
@@ -740,9 +741,10 @@ export class ChatService {
 	}
 
 	@bindThis
-	public async isFromSuspendedUser(message: Pick<MiChatMessage, 'fromUserId'>): Promise<boolean> {
+	public async isFromSuspendedUser(message: Pick<MiChatMessage, 'fromUserId'>, manager?: EntityManager): Promise<boolean> {
 		if (message.fromUserId == null) return false;
-		return await this.usersRepository.existsBy({ id: message.fromUserId, isSuspended: true });
+		// 트랜잭션 안에서는 같은 연결로 조회해 연결을 하나 더 빌리지 않는다.
+		return await (manager != null ? manager.withRepository(this.usersRepository) : this.usersRepository).existsBy({ id: message.fromUserId, isSuspended: true });
 	}
 
 	/**

@@ -7,7 +7,11 @@ import { describe, expect, test, vi } from 'vitest';
 import { buildChatNote } from '@/core/activitypub/misc/chat-payloads.js';
 import { CHAT_REPLY_PREVIEW_LENGTH, chatReplyPreviewText, isReplyTargetInScope, parseChatReplyUri } from '@/core/chat-reply.js';
 import { ChatReplyTargetError, ChatService } from '@/core/ChatService.js';
+import jsonld from 'jsonld';
+import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
+import { CONTEXT, PRELOADED_CONTEXTS } from '@/core/activitypub/misc/contexts.js';
 import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
+import type { ChatPayloadOptions } from '@/core/activitypub/misc/chat-payloads.js';
 import type { ChatReplyScope } from '@/core/chat-reply.js';
 import type { MiChatMessage } from '@/models/ChatMessage.js';
 
@@ -138,16 +142,48 @@ describe('finding the original of a reply', () => {
 	});
 });
 
-describe('the preview packed for a reply', () => {
-	function createEntityService(rows: MiChatMessage[], users: Record<string, unknown> = { alice: { id: 'alice', name: 'Alice', username: 'alice', host: null, isSuspended: false, isDeleted: false } }) {
-		return Object.assign(Object.create(ChatEntityService.prototype), {
-			chatMessagesRepository: { findOneBy: vi.fn(async (where: Record<string, unknown>) => rows.find(row => Object.entries(where).every(([key, value]) => (row as unknown as Record<string, unknown>)[key] === value)) ?? null) },
-			usersRepository: { findOneBy: vi.fn(async ({ id }: { id: string }) => users[id] ?? null) },
-			userEntityService: { pack: vi.fn(async (user: { id: string } | string) => ({ id: typeof user === 'string' ? user : user.id })) },
-			config: { url: 'https://local.test' },
-		}) as unknown as { packReply(message: MiChatMessage, me?: { id: string }, withAuthor?: boolean): Promise<{ replyToId: string | null; reply: Record<string, unknown> | null }> };
-	}
+type PackedReplyResult = { replyToId: string | null; reply: Record<string, unknown> | null };
 
+function createEntityService(rows: MiChatMessage[], users: Record<string, unknown> = { alice: { id: 'alice', name: 'Alice', username: 'alice', host: null, isSuspended: false, isDeleted: false } }, access: { memberRooms?: string[]; ownedRooms?: string[]; moderator?: boolean } = { memberRooms: ['room1'] }) {
+	const matches = (row: MiChatMessage, where: Record<string, unknown>) => Object.entries(where).every(([key, value]) => {
+		const actual = (row as unknown as Record<string, unknown>)[key];
+		return value != null && typeof value === 'object' && '_value' in value ? (value._value as unknown[]).includes(actual) : actual === value;
+	});
+	const chatMessagesRepository = {
+		findOneBy: vi.fn(async (where: Record<string, unknown>) => rows.find(row => matches(row, where)) ?? null),
+		findBy: vi.fn(async (where: Record<string, unknown>) => rows.filter(row => matches(row, where))),
+	};
+	const usersRepository = {
+		findBy: vi.fn(async ({ id }: { id: { _value: string[] } }) => id._value.map(x => users[x]).filter(x => x != null)),
+	};
+	const chatRoomMembershipsRepository = {
+		findBy: vi.fn(async ({ roomId }: { roomId: { _value: string[] } }) => roomId._value.filter(x => access.memberRooms?.includes(x)).map(x => ({ roomId: x }))),
+	};
+	const chatRoomsRepository = {
+		findBy: vi.fn(async ({ id }: { id: { _value: string[] } }) => id._value.map(x => ({ id: x, ownerId: access.ownedRooms?.includes(x) ? 'viewer' : 'someone' }))),
+	};
+	const roleService = { isModerator: vi.fn(async () => access.moderator === true) };
+	const userEntityService = { pack: vi.fn(async (user: { id: string } | string) => ({ id: typeof user === 'string' ? user : user.id })) };
+	const service = Object.assign(Object.create(ChatEntityService.prototype), {
+		chatMessagesRepository, usersRepository, chatRoomMembershipsRepository, chatRoomsRepository, roleService, userEntityService,
+		config: { url: 'https://local.test' },
+	}) as unknown as {
+		loadReplyHints(messages: MiChatMessage[], me?: { id: string }): Promise<unknown>;
+		packReply(message: MiChatMessage, me: { id: string } | undefined, withAuthor: boolean, hints: unknown): Promise<PackedReplyResult>;
+	};
+	return Object.assign(service, {
+		repositories: { chatMessagesRepository, usersRepository },
+		async packReply(message: MiChatMessage, me?: { id: string }, withAuthor = true) {
+			const hints = await service.loadReplyHints([message], me);
+			return Object.getPrototypeOf(service).packReply.call(service, message, me, withAuthor, hints) as Promise<PackedReplyResult>;
+		},
+		async loadHints(messages: MiChatMessage[], me?: { id: string }) {
+			return service.loadReplyHints(messages, me);
+		},
+	});
+}
+
+describe('the preview packed for a reply', () => {
 	const reply = (patch: Partial<MiChatMessage> = {}) => roomMessage({ id: 'reply', fromUserId: 'bob', replyToId: 'target', replyToUri: null, ...patch });
 
 	test('shows the author and a short text from the stored original', async () => {
@@ -203,5 +239,153 @@ describe('the preview packed for a reply', () => {
 		const service = createEntityService([roomMessage()]);
 
 		await expect(service.packReply(reply({ deletedAt: new Date() }))).resolves.toEqual({ replyToId: null, reply: null });
+	});
+});
+
+describe('who may still see the original of a reply', () => {
+	const reply = roomMessage({ id: 'reply', fromUserId: 'bob', replyToId: 'target', replyToUri: null } as Partial<MiChatMessage>);
+	const viewer = { id: 'viewer' };
+
+	test('a member sees the current text, so an edit shows up', async () => {
+		const service = createEntityService([roomMessage({ text: 'new text' })], undefined, { memberRooms: ['room1'] });
+
+		expect((await service.packReply(reply, viewer)).reply).toMatchObject({ isDeleted: false, text: 'new text' });
+	});
+
+	test('someone who has left, was removed or is banned no longer sees what the original says now', async () => {
+		const service = createEntityService([roomMessage({ text: 'new text' })], undefined, { memberRooms: [] });
+
+		const packed = await service.packReply(reply, viewer);
+
+		expect(packed.reply).toEqual({ id: 'target', isDeleted: true, text: null, fileCount: 0, fromUserId: null, fromUser: null, archivedAuthor: null });
+		expect(JSON.stringify(packed)).not.toContain('new text');
+	});
+
+	test('the owner and a moderator keep the access they had', async () => {
+		const asOwner = createEntityService([roomMessage()], undefined, { memberRooms: [], ownedRooms: ['room1'] });
+		const asModerator = createEntityService([roomMessage()], undefined, { memberRooms: [], moderator: true });
+
+		expect((await asOwner.packReply(reply, viewer)).reply).toMatchObject({ isDeleted: false, text: 'hello' });
+		expect((await asModerator.packReply(reply, viewer)).reply).toMatchObject({ isDeleted: false, text: 'hello' });
+	});
+
+	test('a direct message stays readable by its two accounts', async () => {
+		const direct = directMessage({ id: 'reply', fromUserId: 'bob', toUserId: 'alice', replyToId: 'target', replyToUri: null } as Partial<MiChatMessage>);
+		const service = createEntityService([directMessage()], undefined, { memberRooms: [] });
+
+		expect((await service.packReply(direct, viewer)).reply).toMatchObject({ isDeleted: false, text: 'hello' });
+	});
+
+	test('without a viewer, as for a notification that already chose its recipients, nothing is checked', async () => {
+		const service = createEntityService([roomMessage()], undefined, { memberRooms: [] });
+
+		expect((await service.packReply(reply)).reply).toMatchObject({ isDeleted: false, text: 'hello' });
+	});
+});
+
+describe('packing many replies', () => {
+	test('reads the originals and their authors once, however many replies there are', async () => {
+		const originals = [roomMessage({ id: 't1' }), roomMessage({ id: 't2', fromUserId: 'carol' })];
+		const service = createEntityService(originals, { alice: { id: 'alice', isSuspended: false }, carol: { id: 'carol', isSuspended: false } });
+		const replies = Array.from({ length: 6 }, (_, i) => roomMessage({ id: `r${i}`, fromUserId: 'bob', replyToId: i % 2 === 0 ? 't1' : 't2', replyToUri: null } as Partial<MiChatMessage>));
+
+		await service.loadHints(replies, { id: 'viewer' });
+
+		expect(service.repositories.chatMessagesRepository.findBy).toHaveBeenCalledTimes(1);
+		expect(service.repositories.usersRepository.findBy).toHaveBeenCalledTimes(1);
+		expect(service.repositories.chatMessagesRepository.findOneBy).not.toHaveBeenCalled();
+	});
+});
+
+describe('the original of a reply that was deleted', () => {
+	const room = { kind: 'room', roomId: 'room1', channelId: null } as const;
+
+	test('a message received afterwards still shows as a deleted message in the same room', async () => {
+		const service = Object.assign(Object.create(ChatService.prototype), {
+			config: { url: 'https://local.test' },
+			chatMessagesRepository: { findOneBy: vi.fn(async () => roomMessage({ uri: 'https://remote.test/m1', deletedAt: new Date(), text: null })) },
+		}) as ChatService;
+
+		await expect(service.resolveReplyTarget(room, { replyToUri: 'https://remote.test/m1' })).resolves.toEqual({ replyToId: 'target', replyToUri: null });
+	});
+
+	test('shows it as deleted with no content', async () => {
+		const pending = roomMessage({ id: 'reply', fromUserId: 'bob', replyToId: 'target', replyToUri: null } as Partial<MiChatMessage>);
+		const service = createEntityService([roomMessage({ deletedAt: new Date(), text: null })]);
+
+		expect((await service.packReply(pending, { id: 'viewer' })).reply).toMatchObject({ isDeleted: true, text: null });
+	});
+});
+
+describe('what the sender renders for a reply', () => {
+	const renderer = (rows: MiChatMessage[]) => Object.assign(Object.create(ApRendererService.prototype), {
+		config: { url: 'https://local.test' },
+		idService: { parse: () => ({ date: new Date(0) }) },
+		driveFilesRepository: { findBy: vi.fn(async () => []) },
+		chatMessagesRepository: { findOneBy: vi.fn(async ({ id }: { id: string }) => rows.find(row => row.id === id) ?? null) },
+	}) as unknown as { chatPayloadOptions(message: MiChatMessage, roomUri?: string): Promise<ChatPayloadOptions> };
+
+	const reply = roomMessage({ id: 'reply', replyToId: 'target', emojis: [] } as Partial<MiChatMessage>);
+
+	test('the address of an original of this server', async () => {
+		const options = await renderer([roomMessage({ id: 'target' })]).chatPayloadOptions(reply);
+
+		expect(options.replyToUri).toBe('https://local.test/chat/messages/target');
+	});
+
+	test('the source address of an original that is a history copy, which other servers can find', async () => {
+		const copy = roomMessage({ id: 'target', uri: 'https://local.test/chat/history/abc', sourceUri: 'https://remote.test/chat/messages/m1' } as Partial<MiChatMessage>);
+
+		const options = await renderer([copy]).chatPayloadOptions(reply);
+
+		expect(options.replyToUri).toBe('https://remote.test/chat/messages/m1');
+	});
+
+	test('the address of a deleted original too, without its content', async () => {
+		const options = await renderer([roomMessage({ id: 'target', deletedAt: new Date(), text: null })]).chatPayloadOptions(reply);
+
+		expect(options.replyToUri).toBe('https://local.test/chat/messages/target');
+	});
+});
+
+describe('the reply field in JSON-LD', () => {
+	test('is declared in the context, so a signature over the note can be normalized', async () => {
+		const note = buildChatNote({ id: 'm2', text: 'yes' }, { id: 'alice', host: null }, [], 'room1', { baseUrl: 'https://local.test', replyToUri: 'https://local.test/chat/messages/m1' });
+
+		const normalized = await jsonld.normalize({ '@context': CONTEXT, ...note } as never, {
+			algorithm: 'URDNA2015',
+			format: 'application/n-quads',
+			safe: true,
+			documentLoader: async (url: string) => ({ documentUrl: url, document: PRELOADED_CONTEXTS[url] }),
+		} as never);
+
+		expect(normalized).toContain('_misskey_chatReplyTo');
+	});
+});
+
+describe('a notification of a reply', () => {
+	function pack(options?: { omitReply?: boolean }) {
+		const entity = Object.assign(createEntityService([directMessage()]), {
+			usersRepository: { findOneBy: vi.fn(async ({ id }: { id: string }) => ({ id, host: null })), findBy: vi.fn(async () => []) },
+			idService: { parse: () => ({ date: new Date(0) }) },
+			driveFileEntityService: { packManyByIdsMap: vi.fn(async () => new Map()) },
+			customEmojiService: { populateEmojis: vi.fn(async () => ({})) },
+			packMessageChannel: vi.fn(async () => ({})),
+			packMessageFiles: vi.fn(async () => ({ fileId: null, file: null, fileIds: [], files: [] })),
+		}) as unknown as ChatEntityService;
+		const message = directMessage({ id: 'reply', fromUserId: 'bob', toUserId: 'alice', replyToId: 'target', replyToUri: null, reactions: [], emojis: [], archivedAuthor: null } as Partial<MiChatMessage>);
+		return entity.packMessageDetailed(message, { id: 'alice' }, options);
+	}
+
+	test('is packed without the quoted original, which a notification does not show', async () => {
+		const packed = await pack({ omitReply: true });
+
+		expect(packed).not.toHaveProperty('reply');
+		expect(packed).not.toHaveProperty('replyToId');
+		expect(packed).toMatchObject({ id: 'reply', fromUserId: 'bob' });
+	});
+
+	test('an ordinary pack of the same message still has it', async () => {
+		expect((await pack()).reply).toMatchObject({ id: 'target', text: 'hello' });
 	});
 });

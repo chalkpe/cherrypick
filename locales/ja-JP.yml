@@ -1832,6 +1832,7 @@ _chat:
   replyAttachment: "添付ファイル"
   replyTargetNotFound: "返信先のメッセージが見つかりません。返信を取り消して、もう一度送ってください。"
   replyOriginalNotFound: "元のメッセージを見つけられませんでした。"
+  replyOriginalTooFar: "元のメッセージが古すぎて、まだ読み込めていません。さらに上へ読み込んでから、もう一度押してください。"
   removedFromRoom: "このグループには参加していません。"
   roomUnavailable: "このグループを開けません。削除されたか、参加していないグループです。"
   invitationCancelAreYouSure: "{x}さんに送信された招待をキャンセルしますか？"

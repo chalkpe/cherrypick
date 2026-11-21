@@ -113,6 +113,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 											:firstInGroup="groupPositions[i]?.first ?? true"
 											:lastInGroup="groupPositions[i]?.last ?? true"
 											:canReply="room?.isArchived !== true && !membershipEnded"
+											:canJumpToReply="!membershipEnded"
 											@edit="onEditMessage"
 											@reply="onReplyMessage"
 											@jumpToReply="jumpToMessage"
@@ -146,7 +147,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							</button>
 						</div>
 					</Transition>
-					<XForm v-if="initialized && !room?.isArchived && !membershipEnded" ref="chatFormEl" :key="channelId ?? roomId ?? userId" :channelId="channelId" :channels="channels" :user="user" :room="room" :editingMessage="editingMessage" :replyingTo="replyingTo" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit" @cancelReply="replyingTo = null" @sent="onSent"/>
+					<XForm v-if="initialized && !room?.isArchived && !membershipEnded" ref="chatFormEl" :key="channelId ?? roomId ?? userId" :channelId="channelId" :channels="channels" :user="user" :room="room" :editingMessage="editingMessage" :replyingTo="replyingTo" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit" @cancelReply="onCancelReply" @sent="onSent"/>
 				</div>
 			</div>
 		</div>
@@ -180,7 +181,7 @@ import XInfo from './room.info.vue';
 import XBanner from './room.voice.banner.vue';
 import XStage from './room.voice.stage.vue';
 import { chatJoinErrors, chatLeaveErrors } from './chat-errors.js';
-import { chatReplyPreviewText, deletedReplyOf } from './chat-reply.js';
+import { deletedReplyOf, editedReplyOf, findReplyOriginal } from './chat-reply.js';
 import { getUninvitableUsers, inviteUsersToRoom } from './chat-invite.js';
 import type { MenuItem } from '@/types/menu.js';
 import type { PageHeaderItem } from '@/types/page-header.js';
@@ -302,8 +303,7 @@ function onReplyMessage(message: NormalizedChatMessage) {
 	editingMessage.value = null;
 }
 
-// 인용을 눌러 원문으로 간다. 손에 없는 옛 글은 목록을 더 불러오는 기존 경로로 찾는다
-const MAX_JUMP_PAGES = 40;
+// 인용을 눌러 원문으로 간다. 손에 없는 옛 글은 목록을 더 불러오는 기존 경로로 찾되, 한 번에 불러오는 쪽 수에 상한을 둔다
 let jumping = false;
 
 async function jumpToMessage(id: string) {
@@ -311,22 +311,23 @@ async function jumpToMessage(id: string) {
 	jumping = true;
 	const version = conversationVersion;
 	try {
-		let pages = 0;
-		while (!messages.value.some(m => m.id === id) && canFetchMore.value && pages++ < MAX_JUMP_PAGES) {
-			if (moreFetching.value) {
-				await new Promise(resolve => window.setTimeout(resolve, 100));
-			} else {
-				const before = messages.value.length;
-				await fetchMore();
-				if (messages.value.length === before) break;
-			}
-			if (destroyed || version !== conversationVersion) return;
+		const result = await findReplyOriginal({
+			has: () => messages.value.some(m => m.id === id),
+			canFetchMore: () => canFetchMore.value,
+			isBusy: () => moreFetching.value,
+			fetchMore: () => fetchMore(),
+			wait: () => new Promise<void>(resolve => window.setTimeout(resolve, 100)),
+			aborted: () => destroyed || !isActivated || version !== conversationVersion,
+		});
+		if (result === 'aborted' || result === 'failed') return;
+		if (result === 'tooFar') {
+			os.toast(i18n.ts._chat.replyOriginalTooFar);
+			return;
 		}
-		if (destroyed || version !== conversationVersion) return;
 		await nextTick();
 		const el = timelineEl.value?.querySelector<HTMLElement>(`[data-chat-message-id="${CSS.escape(id)}"]`);
 		const target = messages.value.find(m => m.id === id);
-		if (el == null || target == null || target.deletedAt != null) {
+		if (result === 'notFound' || el == null || target == null || target.deletedAt != null) {
 			os.toast(i18n.ts._chat.replyOriginalNotFound);
 			return;
 		}
@@ -433,9 +434,14 @@ function hasMessageFromOthersSince(id: NormalizedChatMessage['id']) {
 const sentMessageId = ref<NormalizedChatMessage['id'] | null>(null);
 const sentMessageArrived = computed(() => sentMessageId.value != null && messages.value.some(m => m.id === sentMessageId.value));
 
-function onSent(id: NormalizedChatMessage['id']) {
+// 앞선 전송이 끝났을 때 새로 고른 답장 대상까지 내리지 않도록, 그 전송이 답하던 글과 같을 때만 내린다
+function onCancelReply(replyId?: NormalizedChatMessage['id']) {
+	if (replyId == null || replyingTo.value?.id === replyId) replyingTo.value = null;
+}
+
+function onSent(id: NormalizedChatMessage['id'], replyId?: NormalizedChatMessage['id']) {
 	sentMessageId.value = id;
-	replyingTo.value = null;
+	if (replyId != null) onCancelReply(replyId);
 }
 
 watch(sentMessageArrived, arrived => {
@@ -666,10 +672,11 @@ onDeactivated(() => {
 	showIndicator.value = false;
 });
 
-async function fetchMore() {
+/** 이전 글을 한 쪽 불러온다. 실패하면 false (오류는 여기서 알린다) */
+async function fetchMore(): Promise<boolean> {
 	const LIMIT = 30;
 	const version = conversationVersion;
-	if (moreFetching.value || !messages.value.length) return;
+	if (moreFetching.value || !messages.value.length) return true;
 	moreFetching.value = true;
 	try {
 		const newMessages = props.userId ? await misskeyApi('chat/messages/user-timeline', {
@@ -677,7 +684,7 @@ async function fetchMore() {
 		}) : await misskeyApi('chat/messages/room-timeline', {
 			roomId: room.value!.id, ...(props.channelId ? { channelId: props.channelId } : {}), limit: LIMIT, untilId: olderCursorId ?? messages.value[messages.value.length - 1].id, includeDeleted: true,
 		});
-		if (destroyed || version !== conversationVersion) return;
+		if (destroyed || version !== conversationVersion) return true;
 		const earlierLoaded = readingPlace.whileLoadingEarlier();
 		if (props.userId) {
 			messages.value.push(...newMessages.map(normalizeMessage));
@@ -698,11 +705,13 @@ async function fetchMore() {
 		canFetchMore.value = newMessages.length === LIMIT;
 		await nextTick();
 		earlierLoaded();
+		return true;
 	} catch (err) {
 		if (!destroyed && version === conversationVersion) {
 			if ((err as Misskey.api.APIError | null)?.code === 'NO_SUCH_CHANNEL') emit('channelsUpdated');
 			else os.alert({ type: 'error', text: i18n.ts._chat.actionFailed });
 		}
+		return false;
 	} finally {
 		if (version === conversationVersion) moreFetching.value = false;
 	}
@@ -808,9 +817,10 @@ function onUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['updat
 		if (ctx.emojis != null) message.emojis = ctx.emojis;
 	}
 	// 이 글에 답한 글의 인용도 고친 본문으로 바꾼다
-	if (message != null && !message.deletedAt) {
+	// 원문이 목록에 없어도 불러온 답장의 인용은 고친다
+	if (message == null || !message.deletedAt) {
 		for (const m of messages.value) {
-			if (m.reply?.id === ctx.messageId && !m.reply.isDeleted) m.reply = { ...m.reply, text: chatReplyPreviewText(ctx.text) };
+			if (m.reply != null) m.reply = editedReplyOf(m.reply, ctx.messageId, ctx.text);
 		}
 	}
 }
@@ -1080,6 +1090,8 @@ async function readLatest(): Promise<boolean> {
 		olderCursorId = latest.at(-1)?.id ?? null;
 	}
 	if (messages.value.find(x => x.id === editingMessage.value?.id)?.deletedAt != null) editingMessage.value = null;
+	// 끊긴 사이에 원문이 지워졌으면 답장 대상도 내린다
+	if (messages.value.find(x => x.id === replyingTo.value?.id)?.deletedAt != null) replyingTo.value = null;
 
 	if (r != null) {
 		room.value = r;

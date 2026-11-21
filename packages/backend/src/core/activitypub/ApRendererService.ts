@@ -7,7 +7,7 @@ import type { MiChatMessage } from '@/models/ChatMessage.js';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { createPublicKey, randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
-import { In, IsNull } from 'typeorm';
+import { In } from 'typeorm';
 import * as mfm from 'mfc-js';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
@@ -885,14 +885,14 @@ export class ApRendererService {
 		const emojis = message.emojis && message.emojis.length > 0 ? await this.getEmojis(message.emojis) : [];
 		const apemojis = emojis.filter(emoji => !emoji.localOnly).map(emoji => this.renderEmoji(emoji));
 
-		// 원문의 id만 주소로 바꿔 싣는다. 원문이 지워졌으면 싣지 않는다.
-		const replyTarget = message.replyToId != null ? await this.chatMessagesRepository.findOneBy({ id: message.replyToId, deletedAt: IsNull() }) : null;
+		// 원문의 id만 주소로 바꿔 싣는다. 내용은 싣지 않으므로 지워진 원문도 받는 쪽이 "삭제된 메시지"로 보이게 주소를 보낸다.
+		const replyTarget = message.replyToId != null ? await this.chatMessagesRepository.findOneBy({ id: message.replyToId }) : null;
 
 		return {
 			baseUrl: this.config.url,
 			published: this.idService.parse(message.id).date.toISOString(),
 			roomUri,
-			...(replyTarget != null ? { replyToUri: chatMessageUri(replyTarget, this.config.url) } : message.replyToUri != null ? { replyToUri: message.replyToUri } : {}),
+			...(replyTarget != null ? { replyToUri: replyTarget.sourceUri ?? chatMessageUri(replyTarget, this.config.url) } : message.replyToUri != null ? { replyToUri: message.replyToUri } : {}),
 			attachment,
 			tag: apemojis,
 			...(message.toRoomChannelId != null ? await this.chatRoomChannelService.messageFields(message) : {}),

@@ -24,7 +24,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<MkFukidashi :class="[$style.fukidashi, { [$style.noTailLeft]: !isFirstInGroup && !isMe }]" :tail="!isFirstInGroup ? 'none' : isMe ? 'right' : 'left'" :fullWidth="hasFiles" :accented="isMe">
 			<span v-if="deletedAt" :class="$style.deletedMessage">{{ i18n.ts._chat.deletedMessage }}</span>
 			<template v-else>
-				<component :is="canJumpToReply ? 'button' : 'div'" v-if="replyPreview != null" :type="canJumpToReply ? 'button' : undefined" :class="[$style.reply, { [$style.replyJumpable]: canJumpToReply }]" :aria-label="canJumpToReply ? i18n.ts._chat.replyJump : undefined" @click="onReplyClick">
+				<component :is="replyJumpable ? 'button' : 'div'" v-if="replyPreview != null" :type="replyJumpable ? 'button' : undefined" :class="[$style.reply, { [$style.replyJumpable]: replyJumpable }]" :title="replyJumpable ? i18n.ts._chat.replyJump : undefined" @click="onReplyClick">
 					<span v-if="replyPreview.name != null" :class="$style.replyName">{{ replyPreview.name }}</span>
 					<span :class="[$style.replyText, { [$style.replyDeleted]: replyPreview.deleted }]">
 						<template v-if="replyPreview.deleted">{{ i18n.ts._chat.deletedMessage }}</template>
@@ -130,8 +130,10 @@ const props = withDefaults(defineProps<{
 	isSearchResult?: boolean;
 	channels?: Misskey.entities.ChatRoomChannel[];
 	canEdit?: boolean;
-	// 답장 메뉴와 원문으로 이동은 타임라인에서만 쓴다. 검색 결과나 단일 메시지 화면에서는 이동할 곳이 없다
+	// 답장 메뉴는 쓸 수 있는 타임라인에서만 쓴다. 검색 결과나 단일 메시지 화면에서는 답장할 곳이 없다
 	canReply?: boolean;
+	// 인용을 눌러 원문으로 이동. 읽기 전용인 보관 그룹의 타임라인에서도 읽고 이동할 수 있다
+	canJumpToReply?: boolean;
 	// ルームの画面のメッセージには toRoom が付かないので、アーカイブの状態はルームから受け取る
 	roomArchived?: boolean;
 	// 同じ送信者が続けて送ったメッセージのまとまりの中での位置。省略すると単独のメッセージとして表示する。
@@ -143,6 +145,7 @@ const props = withDefaults(defineProps<{
 	lastInGroup: true,
 	canEdit: false,
 	canReply: false,
+	canJumpToReply: false,
 	roomArchived: false,
 });
 
@@ -194,10 +197,10 @@ const replyPreview = computed(() => {
 	const name = reply.isDeleted ? null : author != null ? (author.name ?? author.username) : (reply.archivedAuthor?.name ?? reply.archivedAuthor?.username ?? null);
 	return { id: reply.id, deleted: reply.isDeleted, name, text: reply.text, fileCount: reply.fileCount };
 });
-const canJumpToReply = computed(() => props.canReply && replyPreview.value != null && !replyPreview.value.deleted);
+const replyJumpable = computed(() => props.canJumpToReply && replyPreview.value != null && !replyPreview.value.deleted);
 
 function onReplyClick() {
-	if (canJumpToReply.value) emit('jumpToReply', replyPreview.value!.id);
+	if (replyJumpable.value) emit('jumpToReply', replyPreview.value!.id);
 }
 
 const unmounted = ref(false);
