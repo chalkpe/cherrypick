@@ -171,6 +171,27 @@ describe('XMessage in a group', () => {
 		expect(footer().className).toContain('groupedFooter');
 	});
 
+	test('keeps the footer visible until the last of overlapping menus on the same message has closed', async () => {
+		const result = renderMessage({ firstInGroup: false, lastInGroup: false, message: { id: 'm', createdAt: new Date(base).toISOString(), fromUserId: alice.id, fromUser: alice, text: 'hello', reactions: [], fileIds: [], files: [] } });
+		const footer = () => result.getByTestId('time').parentElement!;
+		const button = () => result.getByRole('button', { name: i18n.ts.menu });
+
+		// 앞 메뉴가 닫히는 중에 같은 버튼으로 새 메뉴를 다시 연다
+		await fireEvent.click(button());
+		await fireEvent.click(button());
+		expect(os.popupMenu).toHaveBeenCalledTimes(2);
+		const [first, second] = vi.mocked(os.popupMenu).mock.calls.map(([, , options]) => options);
+
+		// 앞 메뉴의 닫힘 알림이 늦게 도착해도 새 메뉴가 열려 있는 동안은 푸터를 유지한다
+		first?.onClosed?.();
+		await nextTick();
+		expect(footer().className).not.toContain('groupedFooter');
+
+		second?.onClosed?.();
+		await nextTick();
+		expect(footer().className).toContain('groupedFooter');
+	});
+
 	describe('deleting my own message', () => {
 		const deleteRequests = () => vi.mocked(misskeyApi).mock.calls.filter(([endpoint]) => endpoint === 'chat/messages/delete');
 

@@ -45,7 +45,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</template>
 		</MkFukidashi>
 		<MkUrlPreview v-for="url in urls" :key="url" :url="url" style="margin: 8px 0;"/>
-		<div :class="[$style.footer, { [$style.groupedFooter]: !isLastInGroup && !menuOpen }]">
+		<div :class="[$style.footer, { [$style.groupedFooter]: !isLastInGroup && openMenuCount === 0 }]">
 			<button class="_textButton" :class="$style.menuButton" style="color: currentColor;" :aria-label="i18n.ts.menu" @click="showMenu"><i class="ti ti-dots-circle-horizontal"></i></button>
 			<MkTime :class="$style.time" :time="message.createdAt"/>
 			<span v-if="editedAt && !deletedAt" :class="$style.edited">{{ i18n.ts.edited }}</span>
@@ -260,13 +260,14 @@ function onMenuKeydown(ev: KeyboardEvent) {
 }
 
 // メニューが開くとフォーカスがメニューへ移り、まとまりの途中のフッターが隠れてメニューの基準位置を失う。閉じるまでは出したままにする
-const menuOpen = ref(false);
+// 閉じる途中のメニューと新しいメニューが重なることがあるため、真偽値ではなく開いているメニューの数で数え、最後の閉じ通知までフッターを保つ
+const openMenuCount = ref(0);
 
 function showMenu(ev: PointerEvent | KeyboardEvent) {
-	menuOpen.value = true;
+	openMenuCount.value++;
 	os.popupMenu(getMenu(), ev.currentTarget ?? ev.target, {
 		onClosed: () => {
-			menuOpen.value = false;
+			openMenuCount.value--;
 		},
 	});
 }
