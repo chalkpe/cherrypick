@@ -155,7 +155,7 @@ vi.mock('@/utility/voice-boost.js', async importOriginal => {
 		setSinkId = vi.fn().mockResolvedValue(undefined);
 		resume = vi.fn(async () => { this.blocked = false; this.options.onBlockedChange?.(false); });
 		dispose = vi.fn();
-		constructor(public options: { onBlockedChange?: (blocked: boolean) => void; onReadyChange?: () => void; useElement?: boolean; keepMediaCategory?: boolean }) {
+		constructor(public options: { onBlockedChange?: (blocked: boolean) => void; onReadyChange?: () => void; useElement?: boolean; keepMediaCategory?: boolean; settleDelayMs?: number }) {
 			boostMock.instances.push(this);
 		}
 	}
@@ -182,6 +182,7 @@ vi.mock('@/instance.js', async importOriginal => {
 	return { ...original, instance: { ...original.instance, maxFileSize: 262_144_000 } };
 });
 
+import { HANDOVER_DELAY_MS, SETTLE_DELAY_MS } from '@/utility/voice-boost.js';
 import { i18n } from '@/i18n.js';
 import { $i } from '@/i.js';
 import { prefer as mockedPrefer } from '@/preferences.js';
@@ -3506,6 +3507,20 @@ describe('voice volume above 100%', () => {
 
 		setParticipantVolume('a', 'voice', 0.8);
 		expect(boost().release).toHaveBeenCalledWith(track);
+		expect(volumeOf(a, mic())).toBe(0.8);
+	});
+
+	test('releases the amplifier a little after the original element came back in Chromium', async () => {
+		vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36');
+		await joinVoiceCall(room1);
+		const a = remoteParticipant('a');
+		const { track } = subscribeAudio(a, mic());
+		setParticipantVolume('a', 'voice', 1.5);
+
+		setParticipantVolume('a', 'voice', 0.8);
+
+		expect(boost().release).toHaveBeenCalledWith(track, HANDOVER_DELAY_MS);
+		expect(boost().options.settleDelayMs).toBe(SETTLE_DELAY_MS);
 		expect(volumeOf(a, mic())).toBe(0.8);
 	});
 

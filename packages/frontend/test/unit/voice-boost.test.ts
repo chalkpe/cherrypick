@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { Mock } from 'vitest';
-import { MAX_VOLUME, VoiceBoost, isAppleMobile, needsGestureToStartAudio } from '@/utility/voice-boost.js';
+import { HANDOVER_DELAY_MS, MAX_VOLUME, SETTLE_DELAY_MS, VoiceBoost, pathSwitchDelays, isAppleMobile, needsGestureToStartAudio } from '@/utility/voice-boost.js';
 
 type FakeNode = { connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> };
 type FakeGain = FakeNode & { gain: { value: number; setTargetAtTime: ReturnType<typeof vi.fn> } };
@@ -59,7 +59,7 @@ const track = () => ({ mediaStreamTrack: {} as MediaStreamTrack });
 
 type FakeElement = ReturnType<typeof createFakeElement>;
 
-function createBoost(options: { useElement?: boolean; keepMediaCategory?: boolean; stateDelayMs?: number; element?: (element: FakeElement) => void; createContext?: () => AudioContext } = {}) {
+function createBoost(options: { useElement?: boolean; keepMediaCategory?: boolean; settleDelayMs?: number; stateDelayMs?: number; element?: (element: FakeElement) => void; createContext?: () => AudioContext } = {}) {
 	const fake = createFakeContext({ stateDelayMs: options.stateDelayMs });
 	const elements: FakeElement[] = [];
 	const onBlockedChange = vi.fn<(blocked: boolean) => void>();
@@ -69,6 +69,7 @@ function createBoost(options: { useElement?: boolean; keepMediaCategory?: boolea
 		onReadyChange: onReady,
 		useElement: options.useElement ?? true,
 		keepMediaCategory: options.keepMediaCategory,
+		settleDelayMs: options.settleDelayMs,
 		createContext: options.createContext ?? (() => fake.context as unknown as AudioContext),
 		createElement: () => {
 			const element = createFakeElement();
@@ -276,11 +277,12 @@ describe('VoiceBoost readiness', () => {
 		vi.useRealTimers();
 	});
 
-	test('is ready right away on the direct output path while the context is running', () => {
+	test('is ready on the direct output path once the sound has had time to reach the output', async () => {
 		const { boost, onReady } = createBoost({ useElement: false });
 		const t = track();
 
 		boost.set(t, 0.5);
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
 
 		expect(boost.isReady(t)).toBe(true);
 		expect(onReady).toHaveBeenCalled();
@@ -292,26 +294,29 @@ describe('VoiceBoost readiness', () => {
 		const t = track();
 
 		boost.set(t, 1.5);
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS * 2);
 		expect(boost.isReady(t)).toBe(false);
 		expect(onReady).not.toHaveBeenCalled();
 
 		startPlaying();
-		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
 
 		expect(boost.isReady(t)).toBe(true);
 		expect(onReady).toHaveBeenCalledOnce();
 	});
 
-	test('is not ready while the context is suspended, and becomes ready when it runs', () => {
+	test('is not ready while the context is suspended, and becomes ready when it runs', async () => {
 		const { boost, fake, onReady } = createBoost({ useElement: false });
 		fake.context.state = 'suspended';
 		fake.context.resume.mockImplementation(async () => {});
 		const t = track();
 
 		boost.set(t, 1.5);
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
 		expect(boost.isReady(t)).toBe(false);
 
 		fake.context.setState('running');
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
 
 		expect(boost.isReady(t)).toBe(true);
 		expect(onReady).toHaveBeenCalled();
@@ -492,16 +497,16 @@ describe('VoiceBoost fade-in', () => {
 		expect(fake.nodes.gains[0].gain.setTargetAtTime).toHaveBeenCalledWith(1.5, 0, 0.005);
 	});
 
-	test('raises the gain before telling the caller that the track is ready', () => {
+	test('raises the gain before telling the caller that the track is ready', async () => {
 		const fake = createFakeContext();
-		const gain = () => fake.nodes.gains[0].gain.setTargetAtTime;
 		let rampedWhenReported = false;
 		const boost = new VoiceBoost({
 			createContext: () => fake.context as unknown as AudioContext,
-			onReadyChange: () => { rampedWhenReported = gain().mock.calls.length > 0; },
+			onReadyChange: () => { rampedWhenReported = fake.nodes.gains[0].gain.setTargetAtTime.mock.calls.length > 0; },
 		});
 
 		boost.set(track(), 1.5);
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
 
 		expect(rampedWhenReported).toBe(true);
 	});
@@ -546,7 +551,7 @@ describe('VoiceBoost element playback state', () => {
 		const { boost, elements, onReady } = createBoost();
 		const t = track();
 		boost.set(t, 1.5);
-		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
 		expect(boost.isReady(t)).toBe(true);
 		onReady.mockClear();
 
@@ -556,6 +561,7 @@ describe('VoiceBoost element playback state', () => {
 		expect(onReady).toHaveBeenCalledOnce();
 
 		elements[0].emit('playing');
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
 
 		expect(boost.isReady(t)).toBe(true);
 		expect(onReady).toHaveBeenCalledTimes(2);
@@ -583,6 +589,146 @@ describe('VoiceBoost element playback state', () => {
 		await boost.setSinkId('');
 
 		expect(elements[0].setSinkId).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe('VoiceBoost handover between the original element and the amplifier', () => {
+	beforeEach(() => {
+		vi.stubGlobal('MediaStream', class { constructor(public tracks: unknown[]) {} });
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	test('reports a track as ready only after the sound has had time to reach the output', async () => {
+		const { boost, onReady } = createBoost({ useElement: false, settleDelayMs: SETTLE_DELAY_MS });
+		const t = track();
+
+		boost.set(t, 1.5);
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS - 1);
+		expect(boost.isReady(t)).toBe(false);
+		expect(onReady).not.toHaveBeenCalled();
+
+		await vi.advanceTimersByTimeAsync(1);
+
+		expect(boost.isReady(t)).toBe(true);
+		expect(onReady).toHaveBeenCalledOnce();
+	});
+
+	test('starts raising the gain before the track is reported as ready', () => {
+		const { boost, fake } = createBoost({ useElement: false, settleDelayMs: SETTLE_DELAY_MS });
+		const t = track();
+
+		boost.set(t, 1.5);
+
+		expect(fake.nodes.gains[0].gain.setTargetAtTime).toHaveBeenCalledWith(1.5, 0, expect.any(Number));
+		expect(boost.isReady(t)).toBe(false);
+	});
+
+	test('waits again after the element was paused and plays again', async () => {
+		const { boost, elements } = createBoost({ settleDelayMs: SETTLE_DELAY_MS });
+		const t = track();
+		boost.set(t, 1.5);
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
+		elements[0].emit('pause');
+
+		elements[0].emit('playing');
+		expect(boost.isReady(t)).toBe(false);
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
+
+		expect(boost.isReady(t)).toBe(true);
+	});
+
+	test('keeps the amplifier for a short while after a delayed release, without reporting the track as ready', async () => {
+		const { boost, fake, onReady } = createBoost({ useElement: false, settleDelayMs: SETTLE_DELAY_MS });
+		const t = track();
+		boost.set(t, 1.5);
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
+		onReady.mockClear();
+
+		boost.release(t, HANDOVER_DELAY_MS);
+
+		expect(boost.active).toBe(true);
+		expect(boost.isReady(t)).toBe(false);
+		expect(onReady).toHaveBeenCalledOnce();
+		expect(fake.nodes.gains[0].disconnect).not.toHaveBeenCalled();
+
+		await vi.advanceTimersByTimeAsync(HANDOVER_DELAY_MS);
+
+		expect(boost.active).toBe(false);
+		expect(fake.nodes.gains[0].disconnect).toHaveBeenCalled();
+	});
+
+	test('keeps the track amplified when it is set again during a delayed release', async () => {
+		const { boost, fake } = createBoost({ useElement: false, settleDelayMs: SETTLE_DELAY_MS });
+		const t = track();
+		boost.set(t, 1.5);
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
+		boost.release(t, HANDOVER_DELAY_MS);
+
+		boost.set(t, 1.8);
+		await vi.advanceTimersByTimeAsync(HANDOVER_DELAY_MS * 2);
+
+		expect(boost.active).toBe(true);
+		expect(fake.nodes.gains[0].disconnect).not.toHaveBeenCalled();
+		expect(fake.context.createGain).toHaveBeenCalledOnce();
+	});
+
+	test('releases immediately without a delay', () => {
+		const { boost } = createBoost({ useElement: false, settleDelayMs: SETTLE_DELAY_MS });
+		const t = track();
+		boost.set(t, 1.5);
+
+		boost.release(t);
+
+		expect(boost.active).toBe(false);
+	});
+
+	test('tears down a track whose delayed release is pending when disposed', async () => {
+		const { boost, fake } = createBoost({ useElement: false, settleDelayMs: SETTLE_DELAY_MS });
+		const t = track();
+		boost.set(t, 1.5);
+		boost.release(t, HANDOVER_DELAY_MS);
+
+		boost.dispose();
+		await vi.advanceTimersByTimeAsync(HANDOVER_DELAY_MS);
+
+		expect(fake.nodes.gains[0].disconnect).toHaveBeenCalledOnce();
+	});
+
+	test('does not wait when no delay is given', () => {
+		const { boost } = createBoost({ useElement: false });
+		const t = track();
+
+		boost.set(t, 1.5);
+
+		expect(boost.isReady(t)).toBe(true);
+	});
+});
+
+describe('pathSwitchDelays', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	test.each([
+		['Chrome', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36'],
+		['Edge', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36 Edg/140'],
+	])('waits for the output path in %s', (_name, userAgent) => {
+		vi.stubGlobal('navigator', { userAgent });
+
+		expect(pathSwitchDelays()).toEqual({ settleMs: SETTLE_DELAY_MS, handoverMs: HANDOVER_DELAY_MS });
+	});
+
+	test.each([
+		['Firefox', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0'],
+		['Safari', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.4 Safari/605.1.15'],
+		['iPhone Chrome', 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 CriOS/140 Mobile/15E148 Safari/604.1'],
+	])('does not wait in %s', (_name, userAgent) => {
+		vi.stubGlobal('navigator', { userAgent });
+
+		expect(pathSwitchDelays()).toEqual({ settleMs: 0, handoverMs: 0 });
 	});
 });
 

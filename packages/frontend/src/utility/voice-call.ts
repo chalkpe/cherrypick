@@ -16,7 +16,7 @@ import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
 import { userNameForLabel } from '@/filters/user.js';
 import { createRecordingSegments, recordingSegmentBytes } from '@/utility/recording-recorder.js';
-import { MAX_VOLUME, VoiceBoost, isAppleMobile, needsGestureToStartAudio } from '@/utility/voice-boost.js';
+import { MAX_VOLUME, VoiceBoost, isAppleMobile, needsGestureToStartAudio, pathSwitchDelays } from '@/utility/voice-boost.js';
 
 export type VoiceCallStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting';
 
@@ -1732,6 +1732,7 @@ function ensureBoost(): VoiceBoost {
 			useElement: livekit?.supportsAudioOutputSelection() ?? false,
 			// iPhone·iPad는 Web Audio만 소리를 내면 무음 스위치를 따르는 범주가 되므로, 소리 없는 요소로 미디어 재생 범주를 유지한다
 			keepMediaCategory: isAppleMobile(),
+			settleDelayMs: pathSwitchDelays().settleMs,
 		});
 		if (boostSinkId !== '') void boost.setSinkId(boostSinkId);
 	}
@@ -1814,7 +1815,12 @@ function setSourceVolume(participant: RemoteParticipant, source: Track.Source.Mi
 		syncAudioBlocked();
 		return;
 	}
-	if (track != null) boost?.release(track);
+	// 원래 경로가 돌아온 뒤에 증폭 경로를 푼다 (0%는 바로 푼다)
+	if (track != null) {
+		const handoverMs = pathSwitchDelays().handoverMs;
+		if (volume > 0 && handoverMs > 0) boost?.release(track, handoverMs);
+		else boost?.release(track);
+	}
 	participant.setVolume(Math.min(1, volume), source);
 	if (track != null && apple) setOriginalMuted(track, volume === 0);
 	syncAudioBlocked();

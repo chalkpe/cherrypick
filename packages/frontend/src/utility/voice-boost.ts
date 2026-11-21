@@ -28,6 +28,22 @@ const GAIN_TIME_CONSTANT = 0.1;
 // 재생이 준비되어 원래 요소와 바뀌는 순간의 올림은 짧게 한다. 원래 요소는 한 번에 꺼지므로 길게 올리면 그동안 소리가 작아진다
 const READY_TIME_CONSTANT = 0.005;
 
+// Chromium의 요소 경로는 증폭한 소리가 스피커에 닿는 데 원래 요소보다 시간이 더 걸린다.
+// 증폭 경로가 재생을 시작한 뒤 이만큼 지나야 준비된 것으로 보고, 그 사이에는 원래 요소가 계속 소리를 낸다. 원래 요소를 바로 끄면 그 사이가 무음이 된다
+export const SETTLE_DELAY_MS = 100;
+
+// 증폭 경로를 풀 때, 원래 요소가 돌아와 소리를 내기 시작할 때까지 증폭 경로를 이만큼 더 유지한다
+export const HANDOVER_DELAY_MS = 40;
+
+/**
+ * 두 재생 경로를 바꿀 때 기다릴 시간. Chromium에서만 필요하다.
+ * Firefox는 경로 사이의 지연 차이가 작아서, 기다리면 두 소리가 겹쳐 오히려 커진다 (측정으로 확인).
+ */
+export function pathSwitchDelays(): { settleMs: number; handoverMs: number } {
+	const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent ?? '';
+	return /Chrome|Chromium/.test(ua) ? { settleMs: SETTLE_DELAY_MS, handoverMs: HANDOVER_DELAY_MS } : { settleMs: 0, handoverMs: 0 };
+}
+
 // 슬라이더를 만지기만 하고 증폭할 트랙이 없을 때, 미리 깨워 둔 AudioContext를 다시 멈추기까지의 시간
 const IDLE_SUSPEND_MS = 3000;
 
@@ -70,6 +86,12 @@ type Playback = {
 	playing: boolean;
 	/** 준비되었을 때 gain을 올릴 목표값 */
 	target: number;
+	/** 재생을 시작한 뒤 SETTLE_DELAY_MS가 지나 원래 경로를 꺼도 되는지 */
+	settled: boolean;
+	settleTimer: number | null;
+	/** 원래 경로가 돌아왔고, 증폭 경로를 곧 풀 예정인지 */
+	releasing: boolean;
+	releaseTimer: number | null;
 	/** 요소의 pause·playing 처리기를 한꺼번에 떼기 위한 것 */
 	listeners: AbortController;
 };
@@ -94,6 +116,8 @@ export type VoiceBoostOptions = {
 	 * Web Audio만 소리를 내면 WebKit이 주변음 범주를 골라 무음 스위치를 따르므로, 원래 요소가 소리를 낼 때와 같은 미디어 재생 범주를 유지한다.
 	 */
 	keepMediaCategory?: boolean;
+	/** 증폭 경로가 재생을 시작한 뒤 원래 경로를 꺼도 되기까지 기다릴 시간 (ms). 생략하면 기다리지 않는다 */
+	settleDelayMs?: number;
 };
 
 export class VoiceBoost {
@@ -103,6 +127,7 @@ export class VoiceBoost {
 	private sinkFailed = false;
 	private lastBlocked = false;
 	private lastReady = new Set<BoostableTrack>();
+	private lastStarted = new Set<BoostableTrack>();
 	private idleTimer: number | null = null;
 	private keepAlive: KeepAlive | null = null;
 	private disposed = false;
@@ -123,10 +148,16 @@ export class VoiceBoost {
 	}
 
 	/**
-	 * 이 트랙의 소리를 증폭 경로가 실제로 내고 있는지 (AudioContext가 running이고, 요소를 쓰면 재생이 시작되었다).
-	 * 호출하는 쪽은 true가 된 뒤에 원래 재생 경로를 끈다.
+	 * 이 트랙의 소리를 증폭 경로가 실제로 내고 있는지 (AudioContext가 running이고, 요소를 쓰면 재생이 시작되었으며, 소리가 출력에 닿을 시간이 지났다).
+	 * 호출하는 쪽은 true가 된 뒤에 원래 재생 경로를 끈다. 풀 예정인 트랙은 false다.
 	 */
 	isReady(track: BoostableTrack): boolean {
+		const playback = this.playbacks.get(track);
+		return playback != null && playback.settled && !playback.releasing && this.isStarted(track);
+	}
+
+	// 증폭 경로가 재생을 시작했는지 (아직 소리가 출력에 닿았다고 볼 시간은 지나지 않았을 수 있다)
+	private isStarted(track: BoostableTrack): boolean {
 		const playback = this.playbacks.get(track);
 		if (playback == null || this.context?.state !== 'running' || playback.playBlocked) return false;
 		return playback.element == null || playback.playing;
@@ -161,8 +192,15 @@ export class VoiceBoost {
 		const existing = this.playbacks.get(track);
 		if (existing != null) {
 			existing.target = value;
-			// 아직 소리를 낼 수 없는 재생은 준비되는 순간에 이 목표값으로 올라간다
-			if (this.isReady(track)) this.rampTo(existing);
+			// 풀려던 재생을 다시 쓴다
+			if (existing.releasing) {
+				existing.releasing = false;
+				if (existing.releaseTimer != null) window.clearTimeout(existing.releaseTimer);
+				existing.releaseTimer = null;
+				this.notify();
+			}
+			// 아직 소리를 낼 수 없는 재생은 재생을 시작하는 순간에 이 목표값으로 올라간다
+			if (this.isStarted(track)) this.rampTo(existing);
 			return true;
 		}
 		const playback = this.createPlayback(track, value);
@@ -183,9 +221,23 @@ export class VoiceBoost {
 		return true;
 	}
 
-	release(track: BoostableTrack): void {
+	/**
+	 * 트랙의 증폭 경로를 푼다. delayMs를 주면 그만큼 뒤에 풀고, 그동안은 준비되지 않은 것으로 본다.
+	 * 호출하는 쪽이 원래 경로를 되살린 뒤 증폭 경로를 조금 늦게 풀면, 두 경로가 바뀌는 사이가 무음이 되지 않는다.
+	 */
+	release(track: BoostableTrack, delayMs = 0): void {
 		const playback = this.playbacks.get(track);
 		if (playback == null) return;
+		if (delayMs > 0) {
+			if (playback.releasing) return;
+			playback.releasing = true;
+			playback.releaseTimer = window.setTimeout(() => {
+				playback.releaseTimer = null;
+				if (this.playbacks.get(track) === playback) this.release(track);
+			}, delayMs);
+			this.notify();
+			return;
+		}
 		this.playbacks.delete(track);
 		this.teardown(playback);
 		// 증폭하는 트랙이 없어도 AudioContext는 닫지 않고, 바로 멈추지도 않는다 (다시 증폭할 때 장치를 다시 열지 않도록, 멈추는 중의 컨텍스트와 겹치지 않도록)
@@ -245,7 +297,7 @@ export class VoiceBoost {
 			} else {
 				gainNode.connect(context.destination);
 			}
-			return { source, gain: gainNode, destination, element, playBlocked: false, playing: false, target: value, listeners: new AbortController() };
+			return { source, gain: gainNode, destination, element, playBlocked: false, playing: false, target: value, settled: false, settleTimer: null, releasing: false, releaseTimer: null, listeners: new AbortController() };
 		} catch {
 			for (const node of created) {
 				try {
@@ -285,6 +337,10 @@ export class VoiceBoost {
 
 	private teardown(playback: Playback): void {
 		playback.listeners.abort();
+		if (playback.settleTimer != null) window.clearTimeout(playback.settleTimer);
+		if (playback.releaseTimer != null) window.clearTimeout(playback.releaseTimer);
+		playback.settleTimer = null;
+		playback.releaseTimer = null;
 		playback.element?.pause();
 		if (playback.element != null) playback.element.srcObject = null;
 		playback.source.disconnect();
@@ -384,12 +440,33 @@ export class VoiceBoost {
 			this.lastBlocked = blocked;
 			this.options.onBlockedChange?.(blocked);
 		}
-		const ready = new Set([...this.playbacks.keys()].filter(track => this.isReady(track)));
-		// 새로 준비된 재생은 호출하는 쪽이 원래 경로를 끄기 전에 목표 gain으로 올린다
-		for (const track of ready) {
-			const playback = this.playbacks.get(track);
-			if (playback != null && !this.lastReady.has(track)) this.rampTo(playback, READY_TIME_CONSTANT);
+		const tracks = [...this.playbacks.keys()];
+		const started = new Set(tracks.filter(track => this.isStarted(track)));
+		for (const track of tracks) {
+			const playback = this.playbacks.get(track)!;
+			if (started.has(track)) {
+				if (this.lastStarted.has(track)) continue;
+				// 재생을 시작한 재생은 호출하는 쪽이 원래 경로를 끄기 전에 목표 gain으로 올리고, 소리가 출력에 닿을 시간을 기다린다
+				this.rampTo(playback, READY_TIME_CONSTANT);
+				if (playback.settleTimer != null) window.clearTimeout(playback.settleTimer);
+				const settleMs = this.options.settleDelayMs ?? 0;
+				if (settleMs <= 0) {
+					playback.settled = true;
+					continue;
+				}
+				playback.settleTimer = window.setTimeout(() => {
+					playback.settleTimer = null;
+					playback.settled = true;
+					this.notify();
+				}, settleMs);
+			} else {
+				playback.settled = false;
+				if (playback.settleTimer != null) window.clearTimeout(playback.settleTimer);
+				playback.settleTimer = null;
+			}
 		}
+		this.lastStarted = started;
+		const ready = new Set(tracks.filter(track => this.isReady(track)));
 		const readyChanged = ready.size !== this.lastReady.size || [...ready].some(track => !this.lastReady.has(track));
 		this.lastReady = ready;
 		if (readyChanged) this.options.onReadyChange?.();
