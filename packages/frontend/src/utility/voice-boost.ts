@@ -18,14 +18,16 @@
 // 그래서 새 재생을 만들 때와 prepare()에서는 state를 보지 않고 항상 resume()을 부른다.
 // 100%로 되돌린 트랙의 노드와 요소는 바로 정리한다.
 // 호출하는 쪽은 isReady가 true가 된 트랙만 원래 재생 경로를 끈다 (이 경로가 아직 소리를 못 내는데 원래 소리까지 끄지 않도록).
-// 새 재생의 gain은 0으로 시작하고, 준비되었음을 알리기 직전에 목표값으로 올린다. 원래 경로가 꺼지기 전에 두 소리가 겹쳐 커지지 않게 하기 위해서다.
+// 새 재생의 gain은 0으로 시작하고, 요소가 재생을 시작하는 순간(요소를 쓰지 않으면 컨텍스트가 running이 되는 순간) 목표값으로 올린다.
+// 소리가 출력에 닿을 시간을 기다리는 브라우저에서는 그 뒤 settleDelayMs가 지나야 준비된 것으로 알린다.
+// 원래 경로가 꺼지기 전에 두 소리가 겹쳐 커지지 않게 하기 위해서다.
 
 export const MAX_VOLUME = 2;
 
 // 슬라이더를 움직일 때 gain이 계단처럼 바뀌지 않도록, 목표값을 향해 이 시간 상수로 따라간다 (LiveKit과 같은 값)
 const GAIN_TIME_CONSTANT = 0.1;
 
-// 재생이 준비되어 원래 요소와 바뀌는 순간의 올림은 짧게 한다. 원래 요소는 한 번에 꺼지므로 길게 올리면 그동안 소리가 작아진다
+// 재생이 시작되어 원래 요소와 바뀔 때의 올림은 짧게 한다. 원래 요소는 한 번에 꺼지므로 길게 올리면 그동안 소리가 작아진다
 const READY_TIME_CONSTANT = 0.005;
 
 // Chromium의 요소 경로는 증폭한 소리가 스피커에 닿는 데 원래 요소보다 시간이 더 걸린다.
@@ -35,41 +37,46 @@ export const SETTLE_DELAY_MS = 100;
 // 증폭 경로를 풀 때, 원래 요소가 돌아와 소리를 내기 시작할 때까지 증폭 경로를 이만큼 더 유지한다
 export const HANDOVER_DELAY_MS = 40;
 
-/**
- * 두 재생 경로를 바꿀 때 기다릴 시간. Chromium에서만 필요하다.
- * Firefox는 경로 사이의 지연 차이가 작아서, 기다리면 두 소리가 겹쳐 오히려 커진다 (측정으로 확인).
- */
-export function pathSwitchDelays(): { settleMs: number; handoverMs: number } {
-	const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent ?? '';
-	return /Chrome|Chromium/.test(ua) ? { settleMs: SETTLE_DELAY_MS, handoverMs: HANDOVER_DELAY_MS } : { settleMs: 0, handoverMs: 0 };
-}
+// 새 AudioContext가 suspended로 시작해도 이 시간 안에 running이 되면 자동 재생 제한으로 보지 않는다 (Firefox 등은 허용된 경우에도 잠시 suspended로 시작한다)
+export const WAKE_GRACE_MS = 1000;
 
-// 슬라이더를 만지기만 하고 증폭할 트랙이 없을 때, 미리 깨워 둔 AudioContext를 다시 멈추기까지의 시간
+// 증폭 경로가 없어도 AudioContext를 깨워 둔 채로 두는 시간. 이 시간 안에 증폭할 트랙이 생기지 않으면 멈춘다
 const IDLE_SUSPEND_MS = 3000;
 
-/**
- * iPhone·iPad(iPadOS의 데스크톱 UA 포함)인지. 이 기기에서는 어느 브라우저든 audio 요소의 volume을 쓸 수 없다.
- * iPadOS는 맥과 같은 UA를 보내므로 UA만으로는 가릴 수 없다. 맥의 Safari는 터치 지점이 0이므로 터치 지점이 둘 이상인 맥 UA를 iPadOS로 본다
- * (LiveKit의 isIPadOS와 같은 기준). 저장소에는 같은 판정이 없어 여기에 둔다.
- */
-export function isAppleMobile(): boolean {
-	if (typeof navigator === 'undefined') return false;
-	const ua = navigator.userAgent ?? '';
-	if (/iPhone|iPad|iPod/.test(ua)) return true;
-	return /Macintosh/.test(ua) && (navigator.maxTouchPoints ?? 0) > 1;
-}
+/** LiveKit의 getBrowser()가 돌려주는 값 중 이 모듈이 보는 것 */
+export type BrowserInfo = {
+	name?: string;
+	os?: string;
+};
+
+export type VoicePlatform = {
+	/** iPhone·iPad(iPadOS의 데스크톱 UA 포함)인지. 이 기기에서는 어느 브라우저든 audio 요소의 volume을 쓸 수 없다 */
+	appleMobile: boolean;
+	/** 소리를 내려면 사용자 조작 안에서 AudioContext를 깨워야 하는 브라우저인지 */
+	needsGestureToStartAudio: boolean;
+	/** 두 재생 경로를 바꿀 때 기다릴 시간. Chromium에서만 0이 아니다 */
+	settleDelayMs: number;
+	handoverDelayMs: number;
+};
 
 /**
- * 소리를 내려면 사용자 조작 안에서 AudioContext를 깨워야 하는 브라우저인지.
- * WebKit 계열(Safari, iPhone·iPad의 모든 브라우저)은 조작 중에 시작한 재생만 허용한다.
- * Chromium·Firefox는 페이지에 사용자 활성화가 한 번 있으면 조작 밖에서도 컨텍스트를 시작할 수 있으므로 미리 깨울 필요가 없다.
- * Safari 판정은 LiveKit의 isSafariBased와 같이 UA의 WebKit 표기를 보되, Chromium 계열과 Firefox가 UA에 함께 넣는 표기를 뺀다.
+ * LiveKit의 getBrowser() 결과와 터치 지점 수로 브라우저 계열을 한 번에 판정한다.
+ * - appleMobile: iOS의 모든 브라우저, 또는 맥과 같은 UA를 보내는 iPadOS의 Safari (맥의 Safari는 터치 지점이 0이므로 둘 이상이면 iPadOS로 본다. LiveKit의 isIPadOS와 같은 기준).
+ * - needsGestureToStartAudio: WebKit 계열(Safari, iPhone·iPad의 모든 브라우저)은 조작 중에 시작한 재생만 허용한다.
+ *   Chromium·Firefox는 페이지에 사용자 활성화가 한 번 있으면 조작 밖에서도 컨텍스트를 시작할 수 있으므로 미리 깨울 필요가 없다.
+ * - 대기: Chromium(iOS 제외)만 경로 사이의 지연 차이가 커서 기다린다. Firefox 등은 지연 차이가 작아 기다리면 두 소리가 겹쳐 오히려 커진다.
+ * 판정하지 못하면(undefined) 모두 가장 보수적인 값(기다리지 않고 미리 깨우지 않음)이다.
  */
-export function needsGestureToStartAudio(): boolean {
-	if (isAppleMobile()) return true;
-	if (typeof navigator === 'undefined') return false;
-	const ua = navigator.userAgent ?? '';
-	return /AppleWebKit/.test(ua) && /Safari/.test(ua) && !/Chrome|Chromium|CriOS|FxiOS|Edg|OPR|Android/.test(ua);
+export function detectPlatform(browser: BrowserInfo | undefined, maxTouchPoints = 0): VoicePlatform {
+	const safari = browser?.name === 'Safari';
+	const appleMobile = browser?.os === 'iOS' || (safari && browser?.os === 'macOS' && maxTouchPoints > 1);
+	const chromium = browser?.name === 'Chrome' && browser.os !== 'iOS';
+	return {
+		appleMobile,
+		needsGestureToStartAudio: appleMobile || safari,
+		settleDelayMs: chromium ? SETTLE_DELAY_MS : 0,
+		handoverDelayMs: chromium ? HANDOVER_DELAY_MS : 0,
+	};
 }
 
 export type BoostableTrack = {
@@ -82,11 +89,17 @@ type Playback = {
 	destination: MediaStreamAudioDestinationNode | null;
 	element: HTMLAudioElement | null;
 	playBlocked: boolean;
+	/** 출력 장치를 이 요소에 적용하지 못했는지. 같은 장치를 다시 고르면 다시 시도한다 */
+	sinkFailed: boolean;
+	/** 브라우저가 멈춘 요소를 다시 재생해 본 적이 있는지. 사용자 조작(resume)으로 풀린다 */
+	replayed: boolean;
 	/** 요소의 재생이 시작되었는지. 요소를 쓰지 않는 경로에서는 쓰지 않는다 */
 	playing: boolean;
-	/** 준비되었을 때 gain을 올릴 목표값 */
+	/** 재생이 시작되었을 때 gain을 올릴 목표값 */
 	target: number;
-	/** 재생을 시작한 뒤 SETTLE_DELAY_MS가 지나 원래 경로를 꺼도 되는지 */
+	/** gain을 마지막으로 올리기 시작한 목표값. 아직 올린 적이 없으면 null */
+	raisedTo: number | null;
+	/** 재생을 시작한 뒤 settleDelayMs가 지나 원래 경로를 꺼도 되는지 */
 	settled: boolean;
 	settleTimer: number | null;
 	/** 원래 경로가 돌아왔고, 증폭 경로를 곧 풀 예정인지 */
@@ -116,7 +129,7 @@ export type VoiceBoostOptions = {
 	 * Web Audio만 소리를 내면 WebKit이 주변음 범주를 골라 무음 스위치를 따르므로, 원래 요소가 소리를 낼 때와 같은 미디어 재생 범주를 유지한다.
 	 */
 	keepMediaCategory?: boolean;
-	/** 증폭 경로가 재생을 시작한 뒤 원래 경로를 꺼도 되기까지 기다릴 시간 (ms). 생략하면 기다리지 않는다 */
+	/** 증폭 경로가 재생을 시작한 뒤 원래 경로를 꺼도 되기까지 기다릴 시간 (ms). 생략하면 기다리지 않는다. Chromium 외에는 0이다 */
 	settleDelayMs?: number;
 };
 
@@ -124,11 +137,13 @@ export class VoiceBoost {
 	private context: AudioContext | null = null;
 	private playbacks = new Map<BoostableTrack, Playback>();
 	private sinkId = '';
-	private sinkFailed = false;
 	private lastBlocked = false;
 	private lastReady = new Set<BoostableTrack>();
 	private lastStarted = new Set<BoostableTrack>();
 	private idleTimer: number | null = null;
+	// 컨텍스트를 깨우는 중인지. 이 동안은 suspended를 막힘으로 보지 않는다
+	private waking = false;
+	private wakeTimer: number | null = null;
 	private keepAlive: KeepAlive | null = null;
 	private disposed = false;
 
@@ -142,7 +157,7 @@ export class VoiceBoost {
 	/** 증폭한 소리가 자동 재생 제한 때문에 나지 않고 있는지. 증폭할 트랙이 없어 멈춰 둔 상태는 포함하지 않는다 */
 	get blocked(): boolean {
 		if (this.playbacks.size === 0) return false;
-		if (this.context?.state === 'suspended') return true;
+		if (this.context?.state === 'suspended' && !this.waking) return true;
 		for (const playback of this.playbacks.values()) if (playback.playBlocked) return true;
 		return false;
 	}
@@ -171,8 +186,7 @@ export class VoiceBoost {
 		if (this.disposed) return;
 		const context = this.ensureContext();
 		if (context == null) return;
-		// suspend()가 끝나기 전에는 state가 running으로 보일 수 있으므로 상태를 보지 않고 부른다
-		void context.resume().catch(() => {});
+		this.wake(context);
 		this.startKeepAlive();
 		this.scheduleIdleSuspend();
 	}
@@ -199,8 +213,9 @@ export class VoiceBoost {
 				existing.releaseTimer = null;
 				this.notify();
 			}
-			// 아직 소리를 낼 수 없는 재생은 재생을 시작하는 순간에 이 목표값으로 올라간다
-			if (this.isStarted(track)) this.rampTo(existing);
+			// 아직 소리를 낼 수 없는 재생은 재생을 시작하는 순간에 이 목표값으로 올라간다.
+			// 이미 이 값으로 올리고 있으면 다시 올리지 않는다 (진행 중인 짧은 올림을 느린 올림으로 덮지 않도록)
+			if (!existing.releasing && this.isStarted(track) && existing.raisedTo !== value) this.rampTo(existing);
 			return true;
 		}
 		const playback = this.createPlayback(track, value);
@@ -208,13 +223,12 @@ export class VoiceBoost {
 		this.playbacks.set(track, playback);
 		if (this.idleTimer != null) window.clearTimeout(this.idleTimer);
 		this.idleTimer = null;
-		// suspend()가 끝나기 전에는 state가 running으로 보일 수 있으므로 상태를 보지 않고 부른다
-		void this.context?.resume().catch(() => {});
+		if (this.context != null) this.wake(this.context);
 		this.startKeepAlive();
 		const element = playback.element;
 		if (element != null) {
 			this.watchElement(playback, element);
-			void this.applySinkTracked(element);
+			void this.applySinkTracked(playback);
 			void this.play(playback, element);
 		}
 		this.notify();
@@ -247,19 +261,24 @@ export class VoiceBoost {
 
 	/** 증폭한 소리의 출력 장치를 바꾼다. 빈 문자열은 브라우저의 기본 장치 */
 	async setSinkId(deviceId: string): Promise<void> {
-		if (deviceId === this.sinkId && !this.sinkFailed) return;
+		if (deviceId === this.sinkId && ![...this.playbacks.values()].some(playback => playback.sinkFailed)) return;
 		this.sinkId = deviceId;
-		const results = await Promise.all([...this.playbacks.values()].map(playback => playback.element != null ? this.applySink(playback.element) : true));
-		// 적용하지 못한 장치는 같은 ID로 다시 고르면 다시 시도한다
-		this.sinkFailed = results.includes(false);
+		// 적용하지 못한 장치는 같은 ID로 다시 고르면 다시 시도한다. 재생마다 기록하므로 그 사이에 생긴 재생의 실패를 덮지 않는다
+		await Promise.all([...this.playbacks.values()].map(playback => this.applySinkTracked(playback)));
 	}
 
 	/** 사용자 조작 뒤에, 멈춰 있던 증폭 경로를 다시 시작한다 */
 	async resume(): Promise<void> {
 		if (this.disposed) return;
-		await this.context?.resume().catch(() => {});
+		// 소리 없는 요소의 재생은 조작과 같은 동기 구간에서 시작해야 한다 (WebKit은 await 뒤를 조작 밖으로 본다)
 		this.startKeepAlive();
+		const waking = this.context != null ? this.wake(this.context) : Promise.resolve();
+		for (const playback of this.playbacks.values()) playback.replayed = false;
+		await waking;
+		if (this.disposed) return;
 		await Promise.all([...this.playbacks.values()].map(playback => playback.element != null ? this.play(playback, playback.element) : undefined));
+		// 증폭할 트랙이 없으면 깨워 둔 컨텍스트를 다시 멈춘다
+		if (this.playbacks.size === 0) this.scheduleIdleSuspend();
 		this.notify();
 	}
 
@@ -268,9 +287,10 @@ export class VoiceBoost {
 		this.disposed = true;
 		if (this.idleTimer != null) window.clearTimeout(this.idleTimer);
 		this.idleTimer = null;
+		this.endWake();
 		for (const playback of this.playbacks.values()) this.teardown(playback);
 		this.playbacks.clear();
-		this.stopKeepAlive();
+		this.discardKeepAlive();
 		this.closeContext();
 		this.notify();
 	}
@@ -297,7 +317,7 @@ export class VoiceBoost {
 			} else {
 				gainNode.connect(context.destination);
 			}
-			return { source, gain: gainNode, destination, element, playBlocked: false, playing: false, target: value, settled: false, settleTimer: null, releasing: false, releaseTimer: null, listeners: new AbortController() };
+			return { source, gain: gainNode, destination, element, playBlocked: false, sinkFailed: false, replayed: false, playing: false, target: value, raisedTo: null, settled: false, settleTimer: null, releasing: false, releaseTimer: null, listeners: new AbortController() };
 		} catch {
 			for (const node of created) {
 				try {
@@ -324,6 +344,7 @@ export class VoiceBoost {
 
 	// AudioContext의 상태가 바뀌면 막힘 상태를 다시 계산해서 알린다. closeContext는 먼저 이 리스너를 떼므로, 닫는 도중의 변화는 여기로 오지 않는다
 	private onStateChange = () => {
+		if (this.context?.state === 'running') this.endWake();
 		this.notify();
 	};
 
@@ -355,17 +376,22 @@ export class VoiceBoost {
 		return target.setSinkId(this.sinkId).then(() => true, () => false);
 	}
 
-	// 새 재생의 출력 장치 적용에 실패하면 같은 장치를 다시 골랐을 때 다시 시도하도록 기록한다
-	private async applySinkTracked(element: HTMLAudioElement): Promise<void> {
-		if (!await this.applySink(element)) this.sinkFailed = true;
+	// 출력 장치 적용에 실패하면 같은 장치를 다시 골랐을 때 다시 시도하도록 재생마다 기록한다
+	private async applySinkTracked(playback: Playback): Promise<void> {
+		if (playback.element == null) return;
+		playback.sinkFailed = !await this.applySink(playback.element);
 	}
 
-	// 브라우저가 요소를 멈추거나 다시 재생하면 준비 상태를 다시 계산한다 (멈춘 요소가 있는데 원래 요소만 꺼진 채 남지 않도록)
+	// 브라우저가 요소를 멈추거나 다시 재생하면 준비 상태를 다시 계산한다 (멈춘 요소가 있는데 원래 요소만 꺼진 채 남지 않도록).
+	// 멈춘 요소는 한 번 다시 재생해 본다. 거절되면 막힘으로 두어 소리 켜기가 뜨게 하고, 사용자 조작(resume)이 있기 전에는 다시 시도하지 않는다
 	private watchElement(playback: Playback, element: HTMLAudioElement): void {
 		const { signal } = playback.listeners;
 		element.addEventListener('pause', () => {
 			playback.playing = false;
 			this.notify();
+			if (playback.replayed) return;
+			playback.replayed = true;
+			void this.play(playback, element);
 		}, { signal });
 		element.addEventListener('playing', () => {
 			playback.playing = true;
@@ -373,8 +399,32 @@ export class VoiceBoost {
 		}, { signal });
 	}
 
-	private rampTo(playback: Playback, timeConstant = GAIN_TIME_CONSTANT): void {
+	// 처음 올릴 때는 짧게, 이미 올린 뒤의 변경은 슬라이더를 따라가도록 길게 한다
+	private rampTo(playback: Playback): void {
+		const timeConstant = playback.raisedTo == null ? READY_TIME_CONSTANT : GAIN_TIME_CONSTANT;
+		playback.raisedTo = playback.target;
 		playback.gain.gain.setTargetAtTime(playback.target, 0, timeConstant);
+	}
+
+	// 컨텍스트를 깨운다. suspend()가 끝나기 전에는 state가 running으로 보일 수 있으므로 상태를 보지 않고 resume()을 부른다.
+	// 멈춰 있던 컨텍스트는 깨어나는 동안 막힘으로 보지 않고, resume()이 거절되거나 WAKE_GRACE_MS 안에 running이 되지 않을 때만 막힘으로 본다
+	private wake(context: AudioContext): Promise<void> {
+		if (context.state !== 'running' && !this.waking) {
+			this.waking = true;
+			this.wakeTimer = window.setTimeout(() => {
+				this.wakeTimer = null;
+				this.endWake();
+			}, WAKE_GRACE_MS);
+		}
+		return context.resume().then(() => {}, () => this.endWake());
+	}
+
+	private endWake(): void {
+		if (this.wakeTimer != null) window.clearTimeout(this.wakeTimer);
+		this.wakeTimer = null;
+		if (!this.waking) return;
+		this.waking = false;
+		if (!this.disposed) this.notify();
 	}
 
 	private scheduleIdleSuspend(): void {
@@ -383,11 +433,13 @@ export class VoiceBoost {
 			this.idleTimer = null;
 			if (this.disposed || this.playbacks.size > 0) return;
 			void this.context?.suspend().catch(() => {});
-			this.stopKeepAlive();
+			this.pauseKeepAlive();
 		}, IDLE_SUSPEND_MS);
 	}
 
-	// 소리 없는 스트림을 muted 없이 재생해서 미디어 재생 범주를 유지한다. 사용자 조작 밖에서 막히면 다음 조작(prepare·resume)에서 다시 시작한다
+	// 소리 없는 스트림을 muted 없이 재생해서 미디어 재생 범주를 유지한다.
+	// 사용자 조작 밖에서 막히면 다음 조작(prepare·resume)에서 다시 시작한다. 거절을 막힘으로 보지 않는 이유는, 무음 모드인지 알 수 없어
+	// 무음 모드가 아닌 기기에서도 소리 켜기가 불필요하게 뜨기 때문이다
 	private startKeepAlive(): void {
 		if (!(this.options.keepMediaCategory ?? false) || this.disposed) return;
 		if (this.keepAlive == null) {
@@ -405,7 +457,12 @@ export class VoiceBoost {
 		void this.keepAlive.element.play().catch(() => {});
 	}
 
-	private stopKeepAlive(): void {
+	// 증폭할 트랙이 없는 채로 지나면 요소를 멈추기만 한다. 요소는 조작으로 재생 허용을 얻은 것이므로 버리지 않고 다음에 다시 쓴다
+	private pauseKeepAlive(): void {
+		this.keepAlive?.element.pause();
+	}
+
+	private discardKeepAlive(): void {
 		const keepAlive = this.keepAlive;
 		if (keepAlive == null) return;
 		this.keepAlive = null;
@@ -446,8 +503,9 @@ export class VoiceBoost {
 			const playback = this.playbacks.get(track)!;
 			if (started.has(track)) {
 				if (this.lastStarted.has(track)) continue;
-				// 재생을 시작한 재생은 호출하는 쪽이 원래 경로를 끄기 전에 목표 gain으로 올리고, 소리가 출력에 닿을 시간을 기다린다
-				this.rampTo(playback, READY_TIME_CONSTANT);
+				// 재생을 시작한 재생은 호출하는 쪽이 원래 경로를 끄기 전에 목표 gain으로 올리고, 소리가 출력에 닿을 시간을 기다린다.
+				// 풀 예정인 재생은 올리지 않는다 (곧 멈추고, 취소되면 set()이 올린다)
+				if (!playback.releasing) this.rampTo(playback);
 				if (playback.settleTimer != null) window.clearTimeout(playback.settleTimer);
 				const settleMs = this.options.settleDelayMs ?? 0;
 				if (settleMs <= 0) {

@@ -126,7 +126,9 @@ const lk = vi.hoisted(() => {
 	return { analyser, createAudioAnalyser, supportsAudioOutputSelection, Emitter, RoomEvent, TrackEvent, DisconnectReason, Track, ScreenSharePresets, VideoPreset, VideoQuality, FakeRoom, FakeRemoteParticipant };
 });
 
-vi.mock('livekit-client', () => ({
+vi.mock('livekit-client', async () => ({
+	// 브라우저 판정은 실제 구현을 쓴다 (navigator.userAgent를 읽는다)
+	getBrowser: (await vi.importActual<typeof import('livekit-client')>('livekit-client')).getBrowser,
 	Room: lk.FakeRoom,
 	createAudioAnalyser: lk.createAudioAnalyser,
 	supportsAudioOutputSelection: lk.supportsAudioOutputSelection,
@@ -3465,6 +3467,7 @@ describe('voice volume above 100%', () => {
 	});
 
 	test('does not wake the amplifier for a slider gesture on browsers that start audio without one', async () => {
+		vi.spyOn(window.navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:145.0) Gecko/20100101 Firefox/145.0');
 		await joinVoiceCall(room1);
 
 		prepareBoostAudio();

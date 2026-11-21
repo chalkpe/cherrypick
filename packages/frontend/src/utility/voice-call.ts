@@ -16,7 +16,7 @@ import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
 import { userNameForLabel } from '@/filters/user.js';
 import { createRecordingSegments, recordingSegmentBytes } from '@/utility/recording-recorder.js';
-import { MAX_VOLUME, VoiceBoost, isAppleMobile, needsGestureToStartAudio, pathSwitchDelays } from '@/utility/voice-boost.js';
+import { MAX_VOLUME, VoiceBoost, detectPlatform } from '@/utility/voice-boost.js';
 
 export type VoiceCallStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting';
 
@@ -1720,6 +1720,11 @@ const audioListeners = new Map<RemoteTrack, AbortController>();
 // 원래 요소를 muted로 두기로 한 트랙 (iPhone·iPad에서만 쓴다). LiveKit이 muted를 풀면 다시 건다
 const mutedTracks = new Set<RemoteTrack>();
 
+// 브라우저 계열은 LiveKit의 판정으로 한 번에 정한다 (출력 장치 선택 지원 여부와 같은 기준). 통화 중에만 부르므로 LiveKit은 읽혀 있다
+function voicePlatform(): ReturnType<typeof detectPlatform> {
+	return detectPlatform(livekit?.getBrowser(), typeof navigator === 'undefined' ? 0 : navigator.maxTouchPoints ?? 0);
+}
+
 function ensureBoost(): VoiceBoost {
 	if (boost == null) {
 		boost = new VoiceBoost({
@@ -1731,8 +1736,8 @@ function ensureBoost(): VoiceBoost {
 			// 출력 장치를 고를 수 있는 브라우저(LiveKit 기준)에서만 전용 audio 요소를 거친다
 			useElement: livekit?.supportsAudioOutputSelection() ?? false,
 			// iPhone·iPad는 Web Audio만 소리를 내면 무음 스위치를 따르는 범주가 되므로, 소리 없는 요소로 미디어 재생 범주를 유지한다
-			keepMediaCategory: isAppleMobile(),
-			settleDelayMs: pathSwitchDelays().settleMs,
+			keepMediaCategory: voicePlatform().appleMobile,
+			settleDelayMs: voicePlatform().settleDelayMs,
 		});
 		if (boostSinkId !== '') void boost.setSinkId(boostSinkId);
 	}
@@ -1745,7 +1750,7 @@ function ensureBoost(): VoiceBoost {
  * Chromium·Firefox는 페이지에 사용자 활성화가 있으면 조작 밖에서도 시작할 수 있으므로, 기본 상태의 통화에서는 AudioContext를 만들지 않는다.
  */
 export function prepareBoostAudio(): void {
-	if (current == null || !needsGestureToStartAudio()) return;
+	if (current == null || !voicePlatform().needsGestureToStartAudio) return;
 	ensureBoost().prepare();
 }
 
@@ -1802,7 +1807,8 @@ function applyVolume(participant: RemoteParticipant): void {
 // 녹음 믹스는 원래 트랙을 받으므로 여기서 정한 음량과 무관하다
 function setSourceVolume(participant: RemoteParticipant, source: Track.Source.Microphone | Track.Source.ScreenShareAudio, volume: number): void {
 	const track = audioTracks.get(audioTrackKey(participant.identity, source));
-	const apple = isAppleMobile();
+	const platform = voicePlatform();
+	const apple = platform.appleMobile;
 	if (track != null && volume > 0 && (volume > 1 || (apple && volume !== 1))) {
 		const amplifier = ensureBoost();
 		if (amplifier.set(track, volume) && amplifier.isReady(track)) {
@@ -1817,7 +1823,7 @@ function setSourceVolume(participant: RemoteParticipant, source: Track.Source.Mi
 	}
 	// 원래 경로가 돌아온 뒤에 증폭 경로를 푼다 (0%는 바로 푼다)
 	if (track != null) {
-		const handoverMs = pathSwitchDelays().handoverMs;
+		const handoverMs = platform.handoverDelayMs;
 		if (volume > 0 && handoverMs > 0) boost?.release(track, handoverMs);
 		else boost?.release(track);
 	}

@@ -5,16 +5,26 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { Mock } from 'vitest';
-import { HANDOVER_DELAY_MS, MAX_VOLUME, SETTLE_DELAY_MS, VoiceBoost, pathSwitchDelays, isAppleMobile, needsGestureToStartAudio } from '@/utility/voice-boost.js';
+import { getBrowser } from 'livekit-client';
+import { HANDOVER_DELAY_MS, MAX_VOLUME, SETTLE_DELAY_MS, WAKE_GRACE_MS, VoiceBoost, detectPlatform } from '@/utility/voice-boost.js';
 
 type FakeNode = { connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> };
 type FakeGain = FakeNode & { gain: { value: number; setTargetAtTime: ReturnType<typeof vi.fn> } };
 
 // stateDelayMs를 주면 Firefox·WebKit처럼 suspend()·resume()이 끝난 뒤에야 state가 바뀐다 (fake timer 필요)
 function createFakeContext(options: { stateDelayMs?: number } = {}) {
-	const changeState = (state: AudioContextState) => {
-		if (options.stateDelayMs == null) context.setState(state);
-		else setTimeout(() => context.setState(state), options.stateDelayMs);
+	// 실제 브라우저처럼 상태가 바뀐 뒤에 약속이 풀린다
+	const changeState = (state: AudioContextState): Promise<void> => {
+		if (options.stateDelayMs == null) {
+			context.setState(state);
+			return Promise.resolve();
+		}
+		return new Promise(resolve => {
+			setTimeout(() => {
+				context.setState(state);
+				resolve();
+			}, options.stateDelayMs);
+		});
 	};
 	const listeners = new Set<() => void>();
 	const nodes = { gains: [] as FakeGain[], sources: [] as FakeNode[], destinations: [] as Array<FakeNode & { stream: object }> };
@@ -27,8 +37,8 @@ function createFakeContext(options: { stateDelayMs?: number } = {}) {
 		createMediaStreamDestination: vi.fn(() => { const n = { ...node(), stream: {} }; nodes.destinations.push(n); return n; }),
 		addEventListener: vi.fn((_: string, listener: () => void) => { listeners.add(listener); }),
 		removeEventListener: vi.fn((_: string, listener: () => void) => { listeners.delete(listener); }),
-		resume: vi.fn(async () => { changeState('running'); }),
-		suspend: vi.fn(async () => { changeState('suspended'); }),
+		resume: vi.fn(() => changeState('running')),
+		suspend: vi.fn(() => changeState('suspended')),
 		close: vi.fn(async () => { context.state = 'closed'; }),
 		setState(state: AudioContextState) { context.state = state; for (const l of listeners) l(); },
 	};
@@ -139,7 +149,7 @@ describe('VoiceBoost', () => {
 		expect(fake.nodes.gains[0].gain.setTargetAtTime).toHaveBeenLastCalledWith(MAX_VOLUME, 0, 0.005);
 
 		boost.set(t, 7);
-		expect(fake.nodes.gains[0].gain.setTargetAtTime).toHaveBeenLastCalledWith(MAX_VOLUME, 0, 0.1);
+		expect(fake.nodes.gains[0].gain.setTargetAtTime).toHaveBeenCalledOnce();
 	});
 
 	test('tears the track down when the volume goes back to 100%', () => {
@@ -278,10 +288,12 @@ describe('VoiceBoost readiness', () => {
 	});
 
 	test('is ready on the direct output path once the sound has had time to reach the output', async () => {
-		const { boost, onReady } = createBoost({ useElement: false });
+		const { boost, onReady } = createBoost({ useElement: false, settleDelayMs: SETTLE_DELAY_MS });
 		const t = track();
 
 		boost.set(t, 0.5);
+		expect(boost.isReady(t)).toBe(false);
+
 		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
 
 		expect(boost.isReady(t)).toBe(true);
@@ -290,7 +302,7 @@ describe('VoiceBoost readiness', () => {
 
 	test('is ready on the element path only after the element started playing', async () => {
 		let startPlaying!: () => void;
-		const { boost, onReady } = createBoost({ element: element => { element.play.mockImplementation(() => new Promise<void>(resolve => { startPlaying = resolve; })); } });
+		const { boost, onReady } = createBoost({ settleDelayMs: SETTLE_DELAY_MS, element: element => { element.play.mockImplementation(() => new Promise<void>(resolve => { startPlaying = resolve; })); } });
 		const t = track();
 
 		boost.set(t, 1.5);
@@ -501,6 +513,7 @@ describe('VoiceBoost fade-in', () => {
 		const fake = createFakeContext();
 		let rampedWhenReported = false;
 		const boost = new VoiceBoost({
+			settleDelayMs: SETTLE_DELAY_MS,
 			createContext: () => fake.context as unknown as AudioContext,
 			onReadyChange: () => { rampedWhenReported = fake.nodes.gains[0].gain.setTargetAtTime.mock.calls.length > 0; },
 		});
@@ -634,7 +647,9 @@ describe('VoiceBoost handover between the original element and the amplifier', (
 		elements[0].emit('pause');
 
 		elements[0].emit('playing');
+
 		expect(boost.isReady(t)).toBe(false);
+
 		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
 
 		expect(boost.isReady(t)).toBe(true);
@@ -707,31 +722,6 @@ describe('VoiceBoost handover between the original element and the amplifier', (
 	});
 });
 
-describe('pathSwitchDelays', () => {
-	afterEach(() => {
-		vi.unstubAllGlobals();
-	});
-
-	test.each([
-		['Chrome', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36'],
-		['Edge', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36 Edg/140'],
-	])('waits for the output path in %s', (_name, userAgent) => {
-		vi.stubGlobal('navigator', { userAgent });
-
-		expect(pathSwitchDelays()).toEqual({ settleMs: SETTLE_DELAY_MS, handoverMs: HANDOVER_DELAY_MS });
-	});
-
-	test.each([
-		['Firefox', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0'],
-		['Safari', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.4 Safari/605.1.15'],
-		['iPhone Chrome', 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 CriOS/140 Mobile/15E148 Safari/604.1'],
-	])('does not wait in %s', (_name, userAgent) => {
-		vi.stubGlobal('navigator', { userAgent });
-
-		expect(pathSwitchDelays()).toEqual({ settleMs: 0, handoverMs: 0 });
-	});
-});
-
 describe('VoiceBoost media playback category', () => {
 	beforeEach(() => {
 		vi.stubGlobal('MediaStream', class { constructor(public tracks: unknown[]) {} });
@@ -762,7 +752,7 @@ describe('VoiceBoost media playback category', () => {
 		expect(elements).toHaveLength(0);
 	});
 
-	test('starts the element when prepared in a user gesture, and removes it when nothing was amplified', async () => {
+	test('starts the element when prepared in a user gesture, and only pauses it when nothing was amplified', async () => {
 		const { boost, elements } = createBoost({ useElement: false, keepMediaCategory: true });
 
 		boost.prepare();
@@ -773,10 +763,10 @@ describe('VoiceBoost media playback category', () => {
 		await vi.advanceTimersByTimeAsync(5000);
 
 		expect(elements[0].pause).toHaveBeenCalled();
-		expect(elements[0].srcObject).toBeNull();
+		expect(elements[0].srcObject).not.toBeNull();
 	});
 
-	test('keeps the element while another track is still amplified, and removes it after the last one', async () => {
+	test('keeps the element while another track is still amplified, and pauses it after the last one', async () => {
 		const { boost, elements } = createBoost({ useElement: false, keepMediaCategory: true });
 		const a = track();
 		const b = track();
@@ -791,7 +781,28 @@ describe('VoiceBoost media playback category', () => {
 		await vi.advanceTimersByTimeAsync(5000);
 
 		expect(elements[0].pause).toHaveBeenCalled();
-		expect(elements[0].srcObject).toBeNull();
+	});
+
+	test('plays the same element again after it was paused for being idle', async () => {
+		const { boost, elements } = createBoost({ useElement: false, keepMediaCategory: true });
+		boost.prepare();
+		await vi.advanceTimersByTimeAsync(5000);
+
+		boost.set(track(), 0.5);
+
+		expect(elements).toHaveLength(1);
+		expect(elements[0].play).toHaveBeenCalledTimes(2);
+	});
+
+	test('starts the element again in the same synchronous stretch as the sound-on action', async () => {
+		const { boost, fake, elements } = createBoost({ useElement: false, keepMediaCategory: true });
+		boost.prepare();
+		await vi.advanceTimersByTimeAsync(5000);
+		fake.context.resume.mockImplementation(() => new Promise<void>(() => {}));
+
+		void boost.resume();
+
+		expect(elements[0].play).toHaveBeenCalledTimes(2);
 	});
 
 	test('starts the element again by the sound-on action when the browser refused it outside a gesture', async () => {
@@ -816,61 +827,312 @@ describe('VoiceBoost media playback category', () => {
 	});
 });
 
-describe('needsGestureToStartAudio', () => {
-	const withUserAgent = (userAgent: string, maxTouchPoints = 0) => vi.stubGlobal('navigator', { userAgent, maxTouchPoints });
-	afterEach(() => {
-		vi.unstubAllGlobals();
+describe('detectPlatform', () => {
+	const platformOf = (userAgent: string, maxTouchPoints = 0) => detectPlatform(getBrowser(userAgent), maxTouchPoints);
+	const CHROMIUM = { appleMobile: false, needsGestureToStartAudio: false, settleDelayMs: SETTLE_DELAY_MS, handoverDelayMs: HANDOVER_DELAY_MS };
+	const OTHER = { appleMobile: false, needsGestureToStartAudio: false, settleDelayMs: 0, handoverDelayMs: 0 };
+	const APPLE_MOBILE = { appleMobile: true, needsGestureToStartAudio: true, settleDelayMs: 0, handoverDelayMs: 0 };
+	const SAFARI = { appleMobile: false, needsGestureToStartAudio: true, settleDelayMs: 0, handoverDelayMs: 0 };
+
+	test.each([
+		['Chrome on Windows', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36', 0],
+		['Chrome on Mac', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36', 0],
+		['Edge', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0', 0],
+		['Opera', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 OPR/125.0.0.0', 0],
+		['Samsung Internet', 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/28.0 Chrome/130.0.0.0 Mobile Safari/537.36', 5],
+		['Android Chrome', 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36', 5],
+		['Android WebView', 'Mozilla/5.0 (Linux; Android 10; K; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/142.0.0.0 Mobile Safari/537.36', 5],
+	])('waits for the output path and needs no gesture in %s', (_name, userAgent, touchPoints) => {
+		expect(platformOf(userAgent, touchPoints)).toEqual(CHROMIUM);
 	});
 
 	test.each([
-		['iPhone Safari', 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 Version/18.7 Mobile/15E148 Safari/604.1', 5],
-		['iPhone Chrome', 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 CriOS/140 Mobile/15E148 Safari/604.1', 5],
-		['macOS Safari', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.4 Safari/605.1.15', 0],
-	])('is true for %s', (_name, userAgent, touchPoints) => {
-		withUserAgent(userAgent, touchPoints);
-
-		expect(needsGestureToStartAudio()).toBe(true);
+		['Firefox on desktop', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:145.0) Gecko/20100101 Firefox/145.0', 0],
+		['Firefox on Android', 'Mozilla/5.0 (Android 15; Mobile; rv:145.0) Gecko/145.0 Firefox/145.0', 5],
+	])('neither waits nor needs a gesture in %s', (_name, userAgent, touchPoints) => {
+		expect(platformOf(userAgent, touchPoints)).toEqual(OTHER);
 	});
 
 	test.each([
-		['Chrome', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36'],
-		['Chrome on Mac', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140 Safari/537.36'],
-		['Firefox', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0'],
-		['Edge', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36 Edg/140'],
-		['Android Chrome', 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36'],
-	])('is false for %s', (_name, userAgent) => {
-		withUserAgent(userAgent);
+		['iPhone Safari', 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Mobile/15E148 Safari/604.1', 5],
+		['iPhone Chrome', 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/142.0.0.0 Mobile/15E148 Safari/604.1', 5],
+		['iPhone Firefox', 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/145.0 Mobile/15E148 Safari/605.1.15', 5],
+		['iPhone Edge', 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 EdgiOS/142.0.0.0 Mobile/15E148 Safari/605.1.15', 5],
+		['iPad with the mobile user agent', 'Mozilla/5.0 (iPad; CPU OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Mobile/15E148 Safari/604.1', 5],
+		['iPadOS Safari with the desktop user agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Safari/605.1.15', 5],
+	])('treats %s as an Apple mobile device that needs a gesture and does not wait', (_name, userAgent, touchPoints) => {
+		expect(platformOf(userAgent, touchPoints)).toEqual(APPLE_MOBILE);
+	});
 
-		expect(needsGestureToStartAudio()).toBe(false);
+	test.each([
+		['macOS Safari', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Safari/605.1.15'],
+		['Linux WebKitGTK', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15'],
+		['WKWebView without a Safari token', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)'],
+	])('needs a gesture but is not an Apple mobile device in %s', (_name, userAgent) => {
+		expect(platformOf(userAgent, 0)).toEqual(SAFARI);
+	});
+
+	test('does not treat a Mac user agent with touch points as an Apple mobile device unless it is Safari', () => {
+		expect(platformOf('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36', 5).appleMobile).toBe(false);
+	});
+
+	test('is the most cautious when the browser is unknown', () => {
+		expect(detectPlatform(undefined, 5)).toEqual(OTHER);
 	});
 });
 
-describe('isAppleMobile', () => {
-	const setNavigator = (userAgent: string, maxTouchPoints: number) => {
-		vi.stubGlobal('navigator', { userAgent, maxTouchPoints });
-	};
+describe('VoiceBoost gain ramps', () => {
+	beforeEach(() => {
+		vi.stubGlobal('MediaStream', class { constructor(public tracks: unknown[]) {} });
+		vi.useFakeTimers();
+	});
 	afterEach(() => {
-		vi.unstubAllGlobals();
+		vi.useRealTimers();
 	});
 
-	test('is true for iPhone and iPad user agents', () => {
-		setNavigator('Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 Version/18.7 Mobile/15E148 Safari/604.1', 5);
-		expect(isAppleMobile()).toBe(true);
-		setNavigator('Mozilla/5.0 (iPad; CPU OS 18_7 like Mac OS X) AppleWebKit/605.1.15 CriOS/140 Mobile/15E148 Safari/604.1', 5);
-		expect(isAppleMobile()).toBe(true);
+	test.each([0, SETTLE_DELAY_MS])('keeps the short ramp when the caller sets the same volume again as soon as the track is ready (settle %i ms)', async settleDelayMs => {
+		const fake = createFakeContext();
+		const t = track();
+		const boost: VoiceBoost = new VoiceBoost({
+			settleDelayMs,
+			useElement: true,
+			createContext: () => fake.context as unknown as AudioContext,
+			createElement: () => createFakeElement() as unknown as HTMLAudioElement,
+			onReadyChange: () => { boost.set(t, 1.5); },
+		});
+
+		boost.set(t, 1.5);
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS * 2);
+
+		expect(boost.isReady(t)).toBe(true);
+		expect(fake.nodes.gains[0].gain.setTargetAtTime).toHaveBeenLastCalledWith(1.5, 0, 0.005);
 	});
 
-	test('is true for the desktop user agent that iPadOS sends, which has touch points', () => {
-		setNavigator('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.7 Safari/605.1.15', 5);
-		expect(isAppleMobile()).toBe(true);
+	test('does not raise the gain of a track that started while its release was pending', async () => {
+		let startPlaying!: () => void;
+		const { boost, fake } = createBoost({ settleDelayMs: SETTLE_DELAY_MS, element: element => { element.play.mockImplementation(() => new Promise<void>(resolve => { startPlaying = resolve; })); } });
+		const t = track();
+		boost.set(t, 1.5);
+		boost.release(t, HANDOVER_DELAY_MS);
+
+		startPlaying();
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(fake.nodes.gains[0].gain.setTargetAtTime).not.toHaveBeenCalled();
 	});
 
-	test('is false for a Mac and for other platforms', () => {
-		setNavigator('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.4 Safari/605.1.15', 0);
-		expect(isAppleMobile()).toBe(false);
-		setNavigator('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140 Safari/537.36', 10);
-		expect(isAppleMobile()).toBe(false);
-		setNavigator('Mozilla/5.0 (Linux; Android 15) Chrome/140 Mobile Safari/537.36', 5);
-		expect(isAppleMobile()).toBe(false);
+	test('raises the gain when a pending release is cancelled after the track started', async () => {
+		let startPlaying!: () => void;
+		const { boost, fake } = createBoost({ settleDelayMs: SETTLE_DELAY_MS, element: element => { element.play.mockImplementation(() => new Promise<void>(resolve => { startPlaying = resolve; })); } });
+		const t = track();
+		boost.set(t, 1.5);
+		boost.release(t, HANDOVER_DELAY_MS);
+		startPlaying();
+		await vi.advanceTimersByTimeAsync(0);
+
+		boost.set(t, 1.5);
+
+		expect(fake.nodes.gains[0].gain.setTargetAtTime).toHaveBeenLastCalledWith(1.5, 0, 0.005);
+	});
+
+	test('cancels the wait when the context stops, and waits again from the start when it runs', async () => {
+		const { boost, fake } = createBoost({ useElement: false, settleDelayMs: SETTLE_DELAY_MS });
+		const t = track();
+		boost.set(t, 1.5);
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS / 2);
+		fake.context.setState('suspended');
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS * 2);
+
+		fake.context.setState('running');
+
+		expect(boost.isReady(t)).toBe(false);
+
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
+
+		expect(boost.isReady(t)).toBe(true);
+	});
+});
+
+describe('VoiceBoost idle suspend after the sound-on action', () => {
+	beforeEach(() => {
+		vi.stubGlobal('MediaStream', class { constructor(public tracks: unknown[]) {} });
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	test('suspends the context again when it was woken with nothing to amplify', async () => {
+		const { boost, fake } = createBoost({ useElement: false });
+		const t = track();
+		boost.set(t, 1.5);
+		boost.release(t);
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(fake.context.suspend).toHaveBeenCalledOnce();
+
+		await boost.resume();
+		await vi.advanceTimersByTimeAsync(5000);
+
+		expect(fake.context.suspend).toHaveBeenCalledTimes(2);
+	});
+
+	test('does not suspend the context while a track is amplified', async () => {
+		const { boost, fake } = createBoost({ useElement: false });
+		boost.set(track(), 1.5);
+
+		await boost.resume();
+		await vi.advanceTimersByTimeAsync(5000);
+
+		expect(fake.context.suspend).not.toHaveBeenCalled();
+	});
+});
+
+describe('VoiceBoost while a new context is waking up', () => {
+	beforeEach(() => {
+		vi.stubGlobal('MediaStream', class { constructor(public tracks: unknown[]) {} });
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	const createSuspended = () => {
+		const created = createBoost();
+		created.fake.context.state = 'suspended';
+		created.fake.context.resume.mockImplementation(() => new Promise<void>(() => {}));
+		return created;
+	};
+
+	test('is not blocked right after the context was created suspended, but the track is not ready yet', async () => {
+		const { boost, onBlockedChange } = createSuspended();
+		const t = track();
+
+		boost.set(t, 1.5);
+		await vi.advanceTimersByTimeAsync(WAKE_GRACE_MS - 1);
+
+		expect(boost.blocked).toBe(false);
+		expect(boost.isReady(t)).toBe(false);
+		expect(onBlockedChange).not.toHaveBeenCalledWith(true);
+	});
+
+	test('is blocked when the context did not run within the grace time', async () => {
+		const { boost, onBlockedChange } = createSuspended();
+		boost.set(track(), 1.5);
+
+		await vi.advanceTimersByTimeAsync(WAKE_GRACE_MS);
+
+		expect(boost.blocked).toBe(true);
+		expect(onBlockedChange).toHaveBeenLastCalledWith(true);
+	});
+
+	test('is blocked at once when the browser refuses to resume the context', async () => {
+		const { boost, fake, onBlockedChange } = createSuspended();
+		fake.context.resume.mockRejectedValue(new Error('NotAllowedError'));
+
+		boost.set(track(), 1.5);
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(boost.blocked).toBe(true);
+		expect(onBlockedChange).toHaveBeenLastCalledWith(true);
+	});
+
+	test('never reports blocked when the context runs within the grace time', async () => {
+		const { boost, fake, onBlockedChange } = createSuspended();
+		const t = track();
+		boost.set(t, 1.5);
+		await vi.advanceTimersByTimeAsync(WAKE_GRACE_MS / 2);
+
+		fake.context.setState('running');
+		await vi.advanceTimersByTimeAsync(WAKE_GRACE_MS * 2);
+
+		expect(boost.blocked).toBe(false);
+		expect(boost.isReady(t)).toBe(true);
+		expect(onBlockedChange).not.toHaveBeenCalledWith(true);
+	});
+
+	test('is blocked at once when a running context is suspended by the browser', async () => {
+		const { boost, fake } = createBoost();
+		boost.set(track(), 1.5);
+
+		fake.context.setState('suspended');
+
+		expect(boost.blocked).toBe(true);
+	});
+});
+
+describe('VoiceBoost when the browser pauses the amplified element', () => {
+	beforeEach(() => {
+		vi.stubGlobal('MediaStream', class { constructor(public tracks: unknown[]) {} });
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	test('plays the element again once', async () => {
+		const { boost, elements } = createBoost();
+		boost.set(track(), 1.5);
+		await vi.advanceTimersByTimeAsync(0);
+
+		elements[0].emit('pause');
+		await vi.advanceTimersByTimeAsync(0);
+		elements[0].emit('pause');
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(elements[0].play).toHaveBeenCalledTimes(2);
+	});
+
+	test('is blocked when the browser refuses to play it again, and plays it on the sound-on action', async () => {
+		const { boost, elements } = createBoost();
+		const t = track();
+		boost.set(t, 1.5);
+		await vi.advanceTimersByTimeAsync(0);
+		elements[0].play.mockRejectedValueOnce(new Error('NotAllowedError'));
+
+		elements[0].emit('pause');
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(boost.blocked).toBe(true);
+		expect(boost.isReady(t)).toBe(false);
+
+		await boost.resume();
+
+		expect(boost.blocked).toBe(false);
+		expect(boost.isReady(t)).toBe(true);
+	});
+
+	test('plays it again after a later pause once the sound-on action was used', async () => {
+		const { boost, elements } = createBoost();
+		boost.set(track(), 1.5);
+		await vi.advanceTimersByTimeAsync(0);
+		elements[0].emit('pause');
+		await vi.advanceTimersByTimeAsync(0);
+		elements[0].emit('pause');
+		await vi.advanceTimersByTimeAsync(0);
+		await boost.resume();
+		const before = elements[0].play.mock.calls.length;
+
+		elements[0].emit('pause');
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(elements[0].play).toHaveBeenCalledTimes(before + 1);
+	});
+});
+
+describe('VoiceBoost output device failures', () => {
+	beforeEach(() => {
+		vi.stubGlobal('MediaStream', class { constructor(public tracks: unknown[]) {} });
+	});
+
+	test('keeps the failure of a new element recorded while an earlier device change is finishing', async () => {
+		const { boost, elements } = createBoost({ element: element => { if (elements.length === 1) element.setSinkId.mockRejectedValueOnce(new Error('NotFoundError')); } });
+		boost.set(track(), 1.5);
+
+		const changing = boost.setSinkId('device-b');
+		boost.set(track(), 2);
+		await changing;
+		await boost.setSinkId('device-b');
+
+		expect(elements[1].setSinkId).toHaveBeenCalledTimes(2);
 	});
 });
