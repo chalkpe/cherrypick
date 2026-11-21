@@ -122,14 +122,14 @@ describe('VoiceBoost', () => {
 	});
 
 	test('plays a track above 100% through one gain, and the gain follows the volume', async () => {
-		const { boost, fake, elements } = createBoost();
+		const { boost, fake, elements } = createBoost({ settleDelayMs: 0 });
 		const t = track();
 
 		expect(boost.set(t, 1.5)).toBe(true);
 		await vi.waitFor(() => expect(boost.isReady(t)).toBe(true));
 
 		expect(boost.active).toBe(true);
-		expect(fake.nodes.gains[0].gain.setTargetAtTime).toHaveBeenLastCalledWith(1.5, 0, 0.005);
+		expect(fake.nodes.gains[0].gain.value).toBe(1.5);
 		expect(elements).toHaveLength(1);
 		expect(elements[0].srcObject).toBe(fake.nodes.destinations[0].stream);
 		expect(elements[0].play).toHaveBeenCalled();
@@ -549,6 +549,36 @@ describe('VoiceBoost fade-in', () => {
 
 		expect(fake.nodes.gains[0].gain.setTargetAtTime).toHaveBeenLastCalledWith(1.8, 0, 0.005);
 	});
+
+	test('follows a volume change made before the track became ready when the browser does not wait', async () => {
+		let startPlaying!: () => void;
+		const { boost, fake } = createBoost({ settleDelayMs: 0, element: element => { element.play.mockImplementation(() => new Promise<void>(resolve => { startPlaying = resolve; })); } });
+		const t = track();
+		boost.set(t, 1.5);
+
+		boost.set(t, 1.8);
+		expect(fake.nodes.gains[0].gain.setTargetAtTime).not.toHaveBeenCalled();
+		startPlaying();
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(fake.nodes.gains[0].gain.setTargetAtTime).toHaveBeenCalledOnce();
+		expect(fake.nodes.gains[0].gain.setTargetAtTime).toHaveBeenCalledWith(1.8, 0, 0.1);
+	});
+
+	test('keeps the short ramp for volume changes while the original playback is still audible', async () => {
+		const { boost, fake } = createBoost({ settleDelayMs: SETTLE_DELAY_MS });
+		const t = track();
+		boost.set(t, 1.2);
+		await vi.advanceTimersByTimeAsync(0);
+
+		boost.set(t, 1.5);
+		expect(fake.nodes.gains[0].gain.setTargetAtTime).toHaveBeenLastCalledWith(1.5, 0, 0.005);
+
+		await vi.advanceTimersByTimeAsync(SETTLE_DELAY_MS);
+		boost.set(t, 1.8);
+
+		expect(fake.nodes.gains[0].gain.setTargetAtTime).toHaveBeenLastCalledWith(1.8, 0, 0.1);
+	});
 });
 
 describe('VoiceBoost element playback state', () => {
@@ -908,11 +938,11 @@ describe('VoiceBoost gain ramps', () => {
 		vi.useRealTimers();
 	});
 
-	test.each([SETTLE_DELAY_MS])('keeps the short ramp when the caller sets the same volume again as soon as the track is ready (settle %i ms)', async settleDelayMs => {
+	test('keeps the short ramp when the caller sets the same volume again as soon as the track is ready', async () => {
 		const fake = createFakeContext();
 		const t = track();
 		const boost: VoiceBoost = new VoiceBoost({
-			settleDelayMs,
+			settleDelayMs: SETTLE_DELAY_MS,
 			useElement: true,
 			createContext: () => fake.context as unknown as AudioContext,
 			createElement: () => createFakeElement() as unknown as HTMLAudioElement,
@@ -950,14 +980,6 @@ describe('VoiceBoost gain ramps', () => {
 		boost.set(t, 1.8);
 
 		expect(fake.nodes.gains[0].gain.setTargetAtTime).toHaveBeenLastCalledWith(1.8, 0, 0.1);
-	});
-
-	test('starts a new playback silent when the browser waits', () => {
-		const { boost, fake } = createBoost({ settleDelayMs: SETTLE_DELAY_MS });
-
-		boost.set(track(), 1.5);
-
-		expect(fake.nodes.gains[0].gain.value).toBe(0);
 	});
 
 	test('does not raise the gain of a track that started while its release was pending', async () => {

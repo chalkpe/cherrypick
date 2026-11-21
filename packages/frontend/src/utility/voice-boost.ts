@@ -22,6 +22,7 @@
 // (요소를 쓰지 않으면 컨텍스트가 running이 되는 순간) 목표값으로 올린 뒤 settleDelayMs가 지나야 준비된 것으로 알린다.
 // 원래 경로가 꺼지기 전에 두 소리가 겹쳐 커지지 않게 하기 위해서다.
 // 기다리지 않는 브라우저에서는 원래 경로를 끄는 순간 바로 이 경로가 소리를 내야 하므로 gain을 처음부터 목표값으로 둔다.
+// 대신 이 경로가 소리를 내기 시작한 때부터 재생 시작을 알기까지 두 소리가 잠깐 겹칠 수 있다.
 
 export const MAX_VOLUME = 2;
 
@@ -98,7 +99,7 @@ type Playback = {
 	playing: boolean;
 	/** 재생이 시작되었을 때 gain을 올릴 목표값 */
 	target: number;
-	/** gain을 마지막으로 올리기 시작한 목표값. 아직 올린 적이 없으면 null */
+	/** gain이 향하고 있는 값. 아직 올린 적이 없으면 null (기다리지 않는 브라우저는 처음부터 목표값) */
 	raisedTo: number | null;
 	/** 재생을 시작한 뒤 settleDelayMs가 지나 원래 경로를 꺼도 되는지 */
 	settled: boolean;
@@ -407,9 +408,10 @@ export class VoiceBoost {
 		}, { signal });
 	}
 
-	// 처음 올릴 때는 짧게, 이미 올린 뒤의 변경은 슬라이더를 따라가도록 길게 한다
+	// 처음 올릴 때와 원래 경로가 아직 소리를 내는 동안(settled가 거짓)에는 짧게, 그 뒤의 변경은 슬라이더를 따라가도록 길게 한다.
+	// 원래 경로가 소리를 내는 동안 느리게 올리면 그 경로가 꺼진 뒤에도 gain이 덜 올라와 소리가 파인다
 	private rampTo(playback: Playback): void {
-		const timeConstant = playback.raisedTo == null ? READY_TIME_CONSTANT : GAIN_TIME_CONSTANT;
+		const timeConstant = playback.raisedTo == null || !playback.settled ? READY_TIME_CONSTANT : GAIN_TIME_CONSTANT;
 		playback.raisedTo = playback.target;
 		playback.gain.gain.setTargetAtTime(playback.target, 0, timeConstant);
 	}
@@ -513,13 +515,11 @@ export class VoiceBoost {
 				if (this.lastStarted.has(track)) continue;
 				// 재생을 시작한 재생은 호출하는 쪽이 원래 경로를 끄기 전에 목표 gain으로 올리고, 소리가 출력에 닿을 시간을 기다린다.
 				// 풀 예정인 재생은 올리지 않는다 (곧 멈추고, 취소되면 set()이 올린다)
+				const settleMs = this.options.settleDelayMs ?? 0;
+				if (settleMs <= 0) playback.settled = true;
 				if (!playback.releasing && playback.raisedTo !== playback.target) this.rampTo(playback);
 				if (playback.settleTimer != null) window.clearTimeout(playback.settleTimer);
-				const settleMs = this.options.settleDelayMs ?? 0;
-				if (settleMs <= 0) {
-					playback.settled = true;
-					continue;
-				}
+				if (settleMs <= 0) continue;
 				playback.settleTimer = window.setTimeout(() => {
 					playback.settleTimer = null;
 					playback.settled = true;
