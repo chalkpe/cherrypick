@@ -4,6 +4,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { nextTick } from 'vue';
 import { cleanup, fireEvent, render } from '@testing-library/vue';
 import { prefer as mockedPrefer } from '@/preferences.js';
 import type { FakePrefer } from './fake-prefer.js';
@@ -149,6 +150,25 @@ describe('XMessage in a group', () => {
 		const [items, anchor] = vi.mocked(os.popupMenu).mock.calls[0];
 		expect(anchor).toBe(bubble);
 		expect(items).toEqual(expect.arrayContaining([expect.objectContaining({ text: i18n.ts.copyContent })]));
+	});
+
+	test.each([
+		{ label: 'a received message', fromMe: false },
+		{ label: 'my own message', fromMe: true },
+	])('keeps the footer, which anchors the menu, visible while the menu of $label in the middle of a group is open', async ({ fromMe }) => {
+		const result = renderMessage({ firstInGroup: false, lastInGroup: false, message: { id: 'm', createdAt: new Date(base).toISOString(), fromUserId: fromMe ? me.id : alice.id, fromUser: fromMe ? me : alice, text: 'hello', reactions: [], fileIds: [], files: [] } });
+		const footer = () => result.getByTestId('time').parentElement!;
+		expect(footer().className).toContain('groupedFooter');
+
+		await fireEvent.click(result.getByRole('button', { name: i18n.ts.menu }));
+		expect(os.popupMenu).toHaveBeenCalledTimes(1);
+		const [, anchor, options] = vi.mocked(os.popupMenu).mock.calls[0];
+		expect(anchor).toBe(result.getByRole('button', { name: i18n.ts.menu }));
+		expect(footer().className).not.toContain('groupedFooter');
+
+		options?.onClosed?.();
+		await nextTick();
+		expect(footer().className).toContain('groupedFooter');
 	});
 
 	describe('deleting my own message', () => {
