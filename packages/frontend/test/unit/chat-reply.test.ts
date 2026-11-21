@@ -4,7 +4,7 @@
  */
 
 import { expect, test, vi } from 'vitest';
-import { chatReplyAuthorName, chatReplyPreviewText, chatReplyTargetPreview, deletedReplyOf, editedReplyOf, findReplyOriginal } from '@/pages/chat/chat-reply.js';
+import { chatReplyAuthorName, chatReplyPreviewText, chatReplyTargetPreview, deletedReplyOf, editedReplyOf, loadReplyOriginalWindow } from '@/pages/chat/chat-reply.js';
 
 test('인용 본문은 줄바꿈을 접고 긴 문장은 잘라서 보인다', () => {
 	expect(chatReplyPreviewText('안녕\n\n하세요')).toBe('안녕 하세요');
@@ -39,58 +39,30 @@ test('수정된 원문을 인용한 답장만 새 본문으로 바뀐다', () =>
 	expect(editedReplyOf(deleted, 'm1', '새 본문')).toBe(deleted);
 });
 
-function jumpDeps(overrides: Partial<Parameters<typeof findReplyOriginal>[0]> & { loaded?: () => boolean } = {}) {
-	let pages = 0;
-	return {
-		pages: () => pages,
-		deps: {
-			has: () => false,
-			canFetchMore: () => true,
-			isBusy: () => false,
-			fetchMore: vi.fn(async () => { pages++; return true; }),
-			wait: vi.fn(async () => undefined),
-			aborted: () => false,
-			...overrides,
-		},
-	};
-}
+type Q = { sinceId?: string; untilId?: string; limit: number };
 
-test('원문 이동은 상한만큼만 이전 글을 불러오고 더 먼 원문은 따로 알린다', async () => {
-	const { deps } = jumpDeps();
+test('불러오지 않은 원문은 다음 글을 찾은 뒤 원문까지 두 번의 조회로 가져온다', async () => {
+	const fetchPage = vi.fn(async (q: Q) => q.sinceId != null ? [{ id: 'm6' }] : [{ id: 'm5' }, { id: 'm4' }]);
 
-	await expect(findReplyOriginal(deps, 3)).resolves.toBe('tooFar');
-	expect(deps.fetchMore).toHaveBeenCalledTimes(3);
+	await expect(loadReplyOriginalWindow(fetchPage, 'm5', 1)).resolves.toEqual([{ id: 'm5' }, { id: 'm4' }]);
+	expect(fetchPage).toHaveBeenCalledTimes(2);
+	expect(fetchPage).toHaveBeenNthCalledWith(1, { sinceId: 'm5', limit: 1 });
+	expect(fetchPage).toHaveBeenNthCalledWith(2, { untilId: 'm6', limit: 2 });
 });
 
-test('불러오기를 기다리는 동안은 횟수에 세지 않는다', async () => {
-	let busy = 5;
-	let loaded = false;
-	const { deps } = jumpDeps({
-		has: () => loaded,
-		isBusy: () => busy-- > 0,
-		fetchMore: vi.fn(async () => { loaded = true; return true; }),
-	});
+test('원문이 가장 새 글이면 기준 없이 최신부터 받는다', async () => {
+	const fetchPage = vi.fn(async (q: Q) => q.sinceId != null ? [] : [{ id: 'm5' }]);
 
-	await expect(findReplyOriginal(deps, 1)).resolves.toBe('found');
-	expect(deps.wait).toHaveBeenCalledTimes(5);
-	expect(deps.fetchMore).toHaveBeenCalledTimes(1);
+	await expect(loadReplyOriginalWindow(fetchPage, 'm5')).resolves.toEqual([{ id: 'm5' }]);
+	expect(fetchPage).toHaveBeenNthCalledWith(2, { limit: 11 });
 });
 
-test('불러오기가 실패하면 더 알리지 않고 멈춘다', async () => {
-	const { deps } = jumpDeps({ fetchMore: vi.fn(async () => false) });
+test('조회 결과에 원문이 없으면 null이다 (삭제 표식도 없는 보이지 않는 글)', async () => {
+	const fetchPage = vi.fn(async (q: Q) => q.sinceId != null ? [{ id: 'm6' }] : [{ id: 'm4' }]);
 
-	await expect(findReplyOriginal(deps)).resolves.toBe('failed');
-	expect(deps.fetchMore).toHaveBeenCalledTimes(1);
+	await expect(loadReplyOriginalWindow(fetchPage, 'm5')).resolves.toBeNull();
 });
 
-test('더 불러올 글이 없으면 원문이 없는 것으로 본다', async () => {
-	await expect(findReplyOriginal(jumpDeps({ canFetchMore: () => false }).deps)).resolves.toBe('notFound');
-});
-
-test('대화가 바뀌거나 화면이 닫히면 이어 가지 않는다', async () => {
-	let closed = false;
-	const { deps } = jumpDeps({ fetchMore: vi.fn(async () => { closed = true; return true; }), aborted: () => closed });
-
-	await expect(findReplyOriginal(deps)).resolves.toBe('aborted');
-	expect(deps.fetchMore).toHaveBeenCalledTimes(1);
+test('조회가 실패하면 오류가 그대로 올라간다', async () => {
+	await expect(loadReplyOriginalWindow(async () => { throw new Error('x'); }, 'm5')).rejects.toThrow('x');
 });

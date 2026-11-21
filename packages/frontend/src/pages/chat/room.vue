@@ -173,6 +173,7 @@ import { ref, useTemplateRef, computed, watch, nextTick, onMounted, onBeforeUnmo
 import * as Misskey from 'cherrypick-js';
 import { getScrollContainer } from '@@/js/scroll.js';
 import { channelConversationPath, channelListPath } from './chat-channel-references.js';
+import XReplyOriginalDialog from './XReplyOriginalDialog.vue';
 import XMessage from './XMessage.vue';
 import XForm from './room.form.vue';
 import XSearch from './room.search.vue';
@@ -181,7 +182,7 @@ import XInfo from './room.info.vue';
 import XBanner from './room.voice.banner.vue';
 import XStage from './room.voice.stage.vue';
 import { chatJoinErrors, chatLeaveErrors } from './chat-errors.js';
-import { deletedReplyOf, editedReplyOf, findReplyOriginal } from './chat-reply.js';
+import { deletedReplyOf, editedReplyOf, loadReplyOriginalWindow } from './chat-reply.js';
 import { getUninvitableUsers, inviteUsersToRoom } from './chat-invite.js';
 import type { MenuItem } from '@/types/menu.js';
 import type { PageHeaderItem } from '@/types/page-header.js';
@@ -303,37 +304,55 @@ function onReplyMessage(message: NormalizedChatMessage) {
 	editingMessage.value = null;
 }
 
-// 인용을 눌러 원문으로 간다. 손에 없는 옛 글은 목록을 더 불러오는 기존 경로로 찾되, 한 번에 불러오는 쪽 수에 상한을 둔다
+// 인용을 눌러 원문으로 간다. 불러온 범위의 글은 타임라인에서 바로 스크롤하고,
+// 아직 불러오지 않은 옛 글은 목록에 합치지 않고 같은 대화의 조회 결과를 따로 열어 보인다
 let jumping = false;
+
+function scrollToMessage(id: string): boolean {
+	const el = timelineEl.value?.querySelector<HTMLElement>(`[data-chat-message-id="${CSS.escape(id)}"]`);
+	const target = messages.value.find(m => m.id === id);
+	if (el == null || target == null || target.deletedAt != null) return false;
+	el.scrollIntoView({ block: 'center', behavior: prefer.s.animation ? 'smooth' : 'auto' });
+	el.classList.add('chatMessageHighlight');
+	window.setTimeout(() => el.classList.remove('chatMessageHighlight'), 1600);
+	return true;
+}
 
 async function jumpToMessage(id: string) {
 	if (jumping) return;
 	jumping = true;
 	const version = conversationVersion;
 	try {
-		const result = await findReplyOriginal({
-			has: () => messages.value.some(m => m.id === id),
-			canFetchMore: () => canFetchMore.value,
-			isBusy: () => moreFetching.value,
-			fetchMore: () => fetchMore(),
-			wait: () => new Promise<void>(resolve => window.setTimeout(resolve, 100)),
-			aborted: () => destroyed || !isActivated || version !== conversationVersion,
-		});
-		if (result === 'aborted' || result === 'failed') return;
-		if (result === 'tooFar') {
-			os.toast(i18n.ts._chat.replyOriginalTooFar);
+		if (messages.value.some(m => m.id === id)) {
+			if (!scrollToMessage(id)) os.toast(i18n.ts._chat.replyOriginalNotFound);
 			return;
 		}
-		await nextTick();
-		const el = timelineEl.value?.querySelector<HTMLElement>(`[data-chat-message-id="${CSS.escape(id)}"]`);
-		const target = messages.value.find(m => m.id === id);
-		if (result === 'notFound' || el == null || target == null || target.deletedAt != null) {
+		const oldest = messages.value.at(-1)?.id;
+		// 불러온 범위 안인데 없는 글은 보이지 않는 글이다
+		if (oldest == null || id > oldest) {
 			os.toast(i18n.ts._chat.replyOriginalNotFound);
 			return;
 		}
-		el.scrollIntoView({ block: 'center', behavior: prefer.s.animation ? 'smooth' : 'auto' });
-		el.classList.add('chatMessageHighlight');
-		window.setTimeout(() => el.classList.remove('chatMessageHighlight'), 1600);
+		const roomId = room.value?.id;
+		const userId = user.value?.id;
+		let page: Awaited<ReturnType<typeof loadReplyOriginalWindow<Misskey.entities.ChatMessageLite>>>;
+		try {
+			page = await loadReplyOriginalWindow<Misskey.entities.ChatMessageLite>(query => props.userId
+				? misskeyApi('chat/messages/user-timeline', { userId: userId!, includeDeleted: true, ...query })
+				: misskeyApi('chat/messages/room-timeline', { roomId: roomId!, ...(props.channelId ? { channelId: props.channelId } : {}), includeDeleted: true, ...query }), id);
+		} catch (err) {
+			if (destroyed || version !== conversationVersion) return;
+			if ((err as Misskey.api.APIError | null)?.code === 'NO_SUCH_CHANNEL') emit('channelsUpdated');
+			else os.alert({ type: 'error', text: i18n.ts._chat.actionFailed });
+			return;
+		}
+		if (destroyed || !isActivated || version !== conversationVersion) return;
+		const original = page?.find(m => m.id === id);
+		if (page == null || original == null || original.deletedAt != null) {
+			os.toast(i18n.ts._chat.replyOriginalNotFound);
+			return;
+		}
+		const { dispose } = os.popup(XReplyOriginalDialog, { messages: page.map(normalizeMessage), originalId: id }, { closed: () => dispose() });
 	} finally {
 		jumping = false;
 	}

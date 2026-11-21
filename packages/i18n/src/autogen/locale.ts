@@ -7285,6 +7285,10 @@ export interface Locale extends ILocale {
          */
         "editingMessage": string;
         /**
+         * 返信
+         */
+        "reply": string;
+        /**
          * {name}さんに返信中
          */
         "replyingTo": ParameterizedString<"name">;
@@ -7305,9 +7309,9 @@ export interface Locale extends ILocale {
          */
         "replyOriginalNotFound": string;
         /**
-         * 元のメッセージが古すぎて、まだ読み込めていません。さらに上へ読み込んでから、もう一度押してください。
+         * 元のメッセージ
          */
-        "replyOriginalTooFar": string;
+        "replyOriginalTitle": string;
         /**
          * このグループには参加していません。
          */

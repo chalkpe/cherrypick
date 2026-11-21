@@ -13,7 +13,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	<XPostFormAttaches v-if="files.length > 0 && !editingMessage" v-model="files" :max="MAX_FILES" @detach="detachFile" @changeSensitive="(changed, isSensitive) => updateAttachment(changed, { isSensitive })" @changeName="(changed, name) => updateAttachment(changed, { name })"/>
 	<div v-if="replyPreview && !editingMessage" :class="$style.replying">
 		<div :class="$style.replyingBody">
-			<div :class="$style.replyingTitle"><i class="ti ti-arrow-back-up" aria-hidden="true"></i> <template v-if="replyPreview.name != null">{{ i18n.tsx._chat.replyingTo({ name: replyPreview.name }) }}</template><template v-else>{{ i18n.ts.reply }}</template></div>
+			<div :class="$style.replyingTitle"><i class="ti ti-arrow-back-up" aria-hidden="true"></i> <template v-if="replyPreview.name != null">{{ i18n.tsx._chat.replyingTo({ name: replyPreview.name }) }}</template><template v-else>{{ i18n.ts._chat.reply }}</template></div>
 			<div :class="$style.replyingText">
 				<template v-if="replyPreview.text != null">{{ replyPreview.text }}</template>
 				<template v-else><i class="ti ti-photo" aria-hidden="true"></i> {{ i18n.ts._chat.replyAttachment }}</template>

@@ -312,7 +312,7 @@ function getMenu(): MenuItem[] {
 
 	if (props.canReply && !deletedAt.value && !isReadOnly.value && $i.policies.chatAvailability === 'available') {
 		menu.push({
-			text: i18n.ts.reply,
+			text: i18n.ts._chat.reply,
 			icon: 'ti ti-arrow-back-up',
 			action: () => {
 				emit('reply', props.message);

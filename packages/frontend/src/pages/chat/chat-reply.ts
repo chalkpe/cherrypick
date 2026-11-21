@@ -52,36 +52,21 @@ export function editedReplyOf(reply: PackedReply, messageId: string, text: strin
 	return { ...reply, text: chatReplyPreviewText(text) };
 }
 
-/** 한 번 이동하려고 이전 글을 최대 몇 번 더 불러오는지. 이보다 먼 원문은 안내하고, 다시 누르면 이어서 찾는다 */
-export const MAX_REPLY_JUMP_FETCHES = 10;
-
-export type ReplyJumpResult = 'found' | 'notFound' | 'tooFar' | 'failed' | 'aborted';
-
 /**
- * 인용한 원문이 목록에 들어올 때까지 같은 대화의 이전 글 불러오기를 되풀이한다.
- * 진행 중인 불러오기를 기다리는 것은 횟수에 세지 않고, 불러오기가 실패하면 그 쪽에서 이미 알렸으므로 더 알리지 않는다.
+ * 아직 불러오지 않은 원문 주변을 같은 대화의 타임라인 조회로 가져온다. 요청은 최대 2번이다.
+ * 원문 바로 다음 글을 sinceId로 찾고, 그 글을 untilId로 삼아 원문과 그 앞의 글을 받는다.
+ * 대화·방·채널의 접근 검사는 조회하는 타임라인 쪽에서 그대로 적용된다.
+ * 원문이 응답에 없으면 (삭제 표식도 없는 경우 등) null.
  */
-export async function findReplyOriginal(deps: {
-	has: () => boolean;
-	canFetchMore: () => boolean;
-	isBusy: () => boolean;
-	/** 이전 글을 한 쪽 불러온다. 실패하면 false */
-	fetchMore: () => Promise<boolean>;
-	wait: () => Promise<void>;
-	/** 대화가 바뀌었거나 화면이 닫힌 경우 */
-	aborted: () => boolean;
-}, maxFetches = MAX_REPLY_JUMP_FETCHES): Promise<ReplyJumpResult> {
-	let fetches = 0;
-	for (;;) {
-		if (deps.aborted()) return 'aborted';
-		if (deps.has()) return 'found';
-		if (deps.isBusy()) {
-			await deps.wait();
-			continue;
-		}
-		if (!deps.canFetchMore()) return 'notFound';
-		if (fetches >= maxFetches) return 'tooFar';
-		fetches++;
-		if (!await deps.fetchMore()) return deps.aborted() ? 'aborted' : 'failed';
-	}
+export async function loadReplyOriginalWindow<T extends { id: string }>(
+	fetchPage: (query: { sinceId?: string; untilId?: string; limit: number }) => Promise<T[]>,
+	originalId: string,
+	contextSize = REPLY_ORIGINAL_CONTEXT,
+): Promise<T[] | null> {
+	const [next] = await fetchPage({ sinceId: originalId, limit: 1 });
+	const page = await fetchPage({ ...(next != null ? { untilId: next.id } : {}), limit: contextSize + 1 });
+	return page.some(m => m.id === originalId) ? page : null;
 }
+
+/** 원문 보기에 함께 보이는, 원문 앞의 글 수 */
+export const REPLY_ORIGINAL_CONTEXT = 10;
