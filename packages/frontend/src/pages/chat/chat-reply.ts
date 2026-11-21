@@ -53,6 +53,18 @@ export function editedReplyOf(reply: PackedReply, messageId: string, text: strin
 }
 
 /**
+ * 원문 수정 이벤트를 인용에 반영해도 되는지. 원문 id별로 반영한 가장 늦은 수정 시각을 기억하고,
+ * 그보다 오래된(같은 것 포함) 이벤트는 거절한다. 도착 순서가 뒤바뀌어도 이전 본문이 인용을 되돌리지 못하게 한다.
+ */
+export function acceptReplyEdit(seen: Map<string, number>, messageId: string, editedAt: string): boolean {
+	const time = Date.parse(editedAt);
+	const last = seen.get(messageId);
+	if (last != null && time <= last) return false;
+	seen.set(messageId, time);
+	return true;
+}
+
+/**
  * 아직 불러오지 않은 원문 주변을 같은 대화의 타임라인 조회로 가져온다. 요청은 최대 2번이다.
  * 원문 바로 다음 글을 sinceId로 찾고, 그 글을 untilId로 삼아 원문과 그 앞의 글을 받는다.
  * 대화·방·채널의 접근 검사는 조회하는 타임라인 쪽에서 그대로 적용된다.

@@ -182,7 +182,7 @@ import XInfo from './room.info.vue';
 import XBanner from './room.voice.banner.vue';
 import XStage from './room.voice.stage.vue';
 import { chatJoinErrors, chatLeaveErrors } from './chat-errors.js';
-import { deletedReplyOf, editedReplyOf, loadReplyOriginalWindow } from './chat-reply.js';
+import { acceptReplyEdit, deletedReplyOf, editedReplyOf, loadReplyOriginalWindow } from './chat-reply.js';
 import { getUninvitableUsers, inviteUsersToRoom } from './chat-invite.js';
 import type { MenuItem } from '@/types/menu.js';
 import type { PageHeaderItem } from '@/types/page-header.js';
@@ -824,6 +824,9 @@ function onUnreact(ctx: Parameters<Misskey.Channels['chatUser']['events']['unrea
 	}
 }
 
+// 원문 id별로 인용에 반영한 가장 늦은 수정 시각. 목록 밖 원문의 이벤트가 뒤바뀌어 와도 인용을 되돌리지 않는다.
+const replyEditedAt = new Map<string, number>();
+
 function onUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['updated']>[0] & { shouldNotify?: boolean }) {
 	noteChangeDuringRead();
 	const message = messages.value.find(m => m.id === ctx.messageId);
@@ -837,7 +840,7 @@ function onUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['updat
 	}
 	// 이 글에 답한 글의 인용도 고친 본문으로 바꾼다
 	// 원문이 목록에 없어도 불러온 답장의 인용은 고친다
-	if (message == null || !message.deletedAt) {
+	if ((message == null || !message.deletedAt) && acceptReplyEdit(replyEditedAt, ctx.messageId, ctx.editedAt)) {
 		for (const m of messages.value) {
 			if (m.reply != null) m.reply = editedReplyOf(m.reply, ctx.messageId, ctx.text);
 		}

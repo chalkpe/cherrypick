@@ -13,8 +13,9 @@ import type { Packed } from '@/misc/json-schema.js';
 import type { } from '@/models/Blocking.js';
 import { bindThis } from '@/decorators.js';
 import { parseChatDiceResult } from '@/core/chat-dice.js';
-import { chatReplyPreviewText, findReplyTargetByUri, isReplyTargetInConversation, isReplyTargetInScope } from '@/core/chat-reply.js';
+import { chatReplyPreviewText, findReplyTargetsByUri, isReplyTargetInConversation, isReplyTargetInScope } from '@/core/chat-reply.js';
 import type { ChatReplyScope } from '@/core/chat-reply.js';
+import { canReadRoomTimeline } from '@/core/chat-room-access.js';
 import { ChatRoomIconEntityService } from './ChatRoomIconEntityService.js';
 import { IdService } from '@/core/IdService.js';
 import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
@@ -106,22 +107,17 @@ export class ChatEntityService {
 		if (pending.length === 0) return hints;
 
 		const ids = [...new Set(pending.map(m => m.replyToId).filter((x): x is string => x != null))];
-		const uris = [...new Set(pending.filter(m => m.replyToId == null).map(m => m.replyToUri!))];
-		const [byId, byUri] = await Promise.all([
-			ids.length > 0 ? this.chatMessagesRepository.findBy({ id: In(ids) }) : [],
-			uris.length > 0 ? this.chatMessagesRepository.findBy({ uri: In(uris) }) : [],
-		]);
+		const byId = ids.length > 0 ? await this.chatMessagesRepository.findBy({ id: In(ids) }) : [];
 		const idMap = new Map(byId.map(t => [t.id, t]));
-		const uriMap = new Map(byUri.map(t => [t.uri!, t]));
+
+		// 연합으로 받아 id를 모르는 답장은 주소로 한꺼번에 다시 찾는다.
+		const byAddress = await findReplyTargetsByUri(this.chatMessagesRepository, pending.flatMap(m => {
+			const scope = m.replyToId == null ? this.replyScopeOf(m) : null;
+			return scope != null ? [{ key: m.id, uri: m.replyToUri!, scope }] : [];
+		}), this.config.url);
 
 		for (const message of pending) {
-			if (message.replyToId != null) {
-				hints.targets.set(message.id, idMap.get(message.replyToId) ?? null);
-				continue;
-			}
-			const scope = this.replyScopeOf(message);
-			const direct = uriMap.get(message.replyToUri!) ?? null;
-			hints.targets.set(message.id, direct ?? (scope != null ? await findReplyTargetByUri(this.chatMessagesRepository, message.replyToUri!, this.config.url, scope) : null));
+			hints.targets.set(message.id, message.replyToId != null ? idMap.get(message.replyToId) ?? null : byAddress.get(message.id) ?? null);
 		}
 
 		const authorIds = [...new Set([...hints.targets.values()].map(t => t?.fromUserId).filter((x): x is string => x != null))];
@@ -136,11 +132,11 @@ export class ChatEntityService {
 					this.chatRoomMembershipsRepository.findBy({ userId: me.id, roomId: In(roomIds) }),
 					this.chatRoomsRepository.findBy({ id: In(roomIds) }),
 				]);
-				for (const membership of memberships) hints.readableRooms.add(membership.roomId);
-				for (const room of rooms) if (room.ownerId === me.id) hints.readableRooms.add(room.id);
-				// 관리자는 기존과 같이 모든 글을 볼 수 있다.
+				// 접근 기준은 그룹 타임라인 읽기 권한과 같은 함수를 쓴다.
+				const memberRoomIds = new Set(memberships.map(m => m.roomId));
+				for (const room of rooms) if (canReadRoomTimeline(room, me.id, memberRoomIds, false)) hints.readableRooms.add(room.id);
 				if (hints.readableRooms.size < roomIds.length && await this.roleService.isModerator(me)) {
-					for (const roomId of roomIds) hints.readableRooms.add(roomId);
+					for (const room of rooms) if (canReadRoomTimeline(room, me.id, memberRoomIds, true)) hints.readableRooms.add(room.id);
 				}
 			}
 		}

@@ -875,7 +875,7 @@ export class ApRendererService {
 		return buildChatNote(message, fromUser, toUsers, roomId, await this.chatPayloadOptions(message, roomUri));
 	}
 
-	private async chatPayloadOptions(message: MiChatMessage, roomUri?: string): Promise<ChatPayloadOptions> {
+	private async chatPayloadOptions(message: MiChatMessage, roomUri?: string, forHistory = false): Promise<ChatPayloadOptions> {
 		// Files are not referred to by a foreign key, so one can be gone by now. The database returns them in no particular order.
 		const fileIds: MiDriveFile['id'][] = message.fileIds ?? [];
 		const files = fileIds.length > 0 ? await this.driveFilesRepository.findBy({ id: In(fileIds) }) : [];
@@ -888,11 +888,15 @@ export class ApRendererService {
 		// 원문의 id만 주소로 바꿔 싣는다. 내용은 싣지 않으므로 지워진 원문도 받는 쪽이 "삭제된 메시지"로 보이게 주소를 보낸다.
 		const replyTarget = message.replyToId != null ? await this.chatMessagesRepository.findOneBy({ id: message.replyToId }) : null;
 
+		// 이력에는 지워졌거나 작성자가 정지된 글이 실리지 않아, 받는 서버가 그 원문을 영영 받지 못한다. 이력 쪽에서는 그 답장의 원문 주소를 싣지 않는다.
+		const author = forHistory && replyTarget?.fromUserId != null ? await this.usersRepository.findOneBy({ id: replyTarget.fromUserId }) : null;
+		const omitReplyUri = forHistory && replyTarget != null && (replyTarget.deletedAt != null || author?.isSuspended === true);
+
 		return {
 			baseUrl: this.config.url,
 			published: this.idService.parse(message.id).date.toISOString(),
 			roomUri,
-			...(replyTarget != null ? { replyToUri: replyTarget.sourceUri ?? chatMessageUri(replyTarget, this.config.url) } : message.replyToUri != null ? { replyToUri: message.replyToUri } : {}),
+			...(omitReplyUri ? {} : replyTarget != null ? { replyToUri: replyTarget.sourceUri ?? chatMessageUri(replyTarget, this.config.url) } : message.replyToUri != null ? { replyToUri: message.replyToUri } : {}),
 			attachment,
 			tag: apemojis,
 			...(message.toRoomChannelId != null ? await this.chatRoomChannelService.messageFields(message) : {}),
@@ -905,7 +909,7 @@ export class ApRendererService {
 	 */
 	@bindThis
 	public async renderChatHistoryNote(message: MiChatMessage, authorUri: string, remoteEmojis: MiEmoji[] | null, toUsers: MiUser[], roomUri: string): Promise<IPost> {
-		const options = await this.chatPayloadOptions(message, roomUri);
+		const options = await this.chatPayloadOptions(message, roomUri, true);
 		return buildChatNote(message, { id: '', host: null }, toUsers, undefined, {
 			...options,
 			authorUri,

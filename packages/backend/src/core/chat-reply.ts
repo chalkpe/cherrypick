@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { In } from 'typeorm';
 import type { MiChatMessage } from '@/models/ChatMessage.js';
 import { localChatMessageIdFromUri } from '@/core/activitypub/misc/chat-payloads.js';
 
@@ -60,4 +61,46 @@ export async function findReplyTargetByUri(repository: ReplyLookup, uri: string,
 	const localId = localChatMessageIdFromUri(uri, baseUrl);
 	if (localId != null) return repository.findOneBy({ id: localId });
 	return scope.kind === 'room' ? repository.findOneBy({ sourceUri: uri, toRoomId: scope.roomId }) : null;
+}
+
+type ReplyBatchLookup = { findBy(where: Record<string, unknown>): Promise<MiChatMessage[]> };
+
+/**
+ * findReplyTargetByUri를 여러 답장에 대해 한꺼번에 한다. 찾는 순서(원래 주소 → 이 서버 id → 같은 방의 출처 주소)는 같고,
+ * 답장 수와 무관하게 조회는 최대 3번이다. 다른 방의 사본은 고르지 않으며, 같은 대화인지는 부르는 쪽이 확인한다.
+ * 결과의 키는 요청의 key다.
+ */
+export async function findReplyTargetsByUri(
+	repository: ReplyBatchLookup,
+	requests: { key: string; uri: string; scope: ChatReplyScope }[],
+	baseUrl: string,
+): Promise<Map<string, MiChatMessage | null>> {
+	const result = new Map<string, MiChatMessage | null>();
+	if (requests.length === 0) return result;
+
+	const direct = await repository.findBy({ uri: In([...new Set(requests.map(r => r.uri))]) });
+	const byUri = new Map(direct.map(t => [t.uri!, t]));
+
+	const missing = requests.filter(r => !byUri.has(r.uri));
+	const localIds = new Map(missing.map(r => [r.key, localChatMessageIdFromUri(r.uri, baseUrl)]));
+	const idList = [...new Set([...localIds.values()].filter((x): x is string => x != null))];
+	const sourced = missing.filter(r => localIds.get(r.key) == null && r.scope.kind === 'room');
+	const [byIdRows, bySourceRows] = await Promise.all([
+		idList.length > 0 ? repository.findBy({ id: In(idList) }) : [],
+		sourced.length > 0 ? repository.findBy({
+			sourceUri: In([...new Set(sourced.map(r => r.uri))]),
+			toRoomId: In([...new Set(sourced.map(r => (r.scope as { roomId: string }).roomId))]),
+		}) : [],
+	]);
+	const byId = new Map(byIdRows.map(t => [t.id, t]));
+	const bySource = new Map(bySourceRows.map(t => [`${t.toRoomId}\n${t.sourceUri}`, t]));
+
+	for (const r of requests) {
+		const hit = byUri.get(r.uri);
+		if (hit != null) { result.set(r.key, hit); continue; }
+		const localId = localIds.get(r.key);
+		if (localId != null) { result.set(r.key, byId.get(localId) ?? null); continue; }
+		result.set(r.key, r.scope.kind === 'room' ? bySource.get(`${r.scope.roomId}\n${r.uri}`) ?? null : null);
+	}
+	return result;
 }

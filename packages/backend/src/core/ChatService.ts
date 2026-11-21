@@ -58,6 +58,7 @@ import { chatDiceNotation, parseChatDiceResult } from '@/core/chat-dice.js';
 import { ApiError } from '@/server/api/error.js';
 import { findReplyTargetByUri, isReplyTargetInConversation, isReplyTargetInScope, parseChatReplyUri } from '@/core/chat-reply.js';
 import type { ChatReplyScope } from '@/core/chat-reply.js';
+import { canReadRoomTimeline } from '@/core/chat-room-access.js';
 
 export class ChatMessageAccessError extends Error {}
 export class ChatMessageInvalidTextError extends ChatMessageAccessError {}
@@ -796,16 +797,11 @@ export class ChatService {
 
 	@bindThis
 	public async hasPermissionToViewRoomTimeline(meId: MiUser['id'], room: MiChatRoom) {
-		if (await this.isRoomMember(room, meId)) {
-			return true;
-		} else {
-			const iAmModerator = await this.roleService.isModerator({ id: meId });
-			if (iAmModerator) {
-				return true;
-			}
-
-			return false;
-		}
+		// 기준은 답장 원문 미리보기(ChatEntityService)와 같은 canReadRoomTimeline이다.
+		const isMember = await this.isRoomMember(room, meId);
+		const memberRoomIds = new Set(isMember ? [room.id] : []);
+		if (canReadRoomTimeline(room, meId, memberRoomIds, false)) return true;
+		return canReadRoomTimeline(room, meId, memberRoomIds, await this.roleService.isModerator({ id: meId }));
 	}
 
 	private async saveRoomMessageEdit(message: MiChatMessage, patch: Pick<MiChatMessage, 'text' | 'editedAt' | 'emojis' | 'channelRefs'>, remote = false) {

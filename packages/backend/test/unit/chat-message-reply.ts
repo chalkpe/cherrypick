@@ -10,6 +10,7 @@ import { ChatReplyTargetError, ChatService } from '@/core/ChatService.js';
 import jsonld from 'jsonld';
 import { ApRendererService } from '@/core/activitypub/ApRendererService.js';
 import { CONTEXT, PRELOADED_CONTEXTS } from '@/core/activitypub/misc/contexts.js';
+import { canReadRoomTimeline } from '@/core/chat-room-access.js';
 import { ChatEntityService } from '@/core/entities/ChatEntityService.js';
 import type { ChatPayloadOptions } from '@/core/activitypub/misc/chat-payloads.js';
 import type { ChatReplyScope } from '@/core/chat-reply.js';
@@ -297,6 +298,43 @@ describe('packing many replies', () => {
 	});
 });
 
+describe('packing replies whose original is only known by address', () => {
+	const pendingReply = (i: number, uri: string) => roomMessage({ id: `r${i}`, fromUserId: 'bob', replyToId: null, replyToUri: uri } as Partial<MiChatMessage>);
+
+	test('finds history copies of the same room with a fixed number of reads, never one of another room', async () => {
+		const rows = [
+			...Array.from({ length: 5 }, (_, i) => roomMessage({ id: `c${i}`, uri: `https://local.test/chat/history/${i}`, sourceUri: `https://remote.test/m${i}` } as Partial<MiChatMessage>)),
+			roomMessage({ id: 'other', toRoomId: 'room2', uri: 'https://local.test/chat/history/x', sourceUri: 'https://remote.test/mx' } as Partial<MiChatMessage>),
+		];
+		const service = createEntityService(rows);
+		const replies = [...Array.from({ length: 5 }, (_, i) => pendingReply(i, `https://remote.test/m${i}`)), pendingReply(9, 'https://remote.test/mx')];
+
+		const hints = await service.loadHints(replies, { id: 'viewer' }) as { targets: Map<string, MiChatMessage | null> };
+
+		expect(service.repositories.chatMessagesRepository.findOneBy).not.toHaveBeenCalled();
+		expect(service.repositories.chatMessagesRepository.findBy.mock.calls.length).toBeLessThanOrEqual(3);
+		expect(hints.targets.get('r3')?.id).toBe('c3');
+		expect(hints.targets.get('r9')).toBeNull();
+	});
+
+	test('finds originals of this server by the id inside the address', async () => {
+		const service = createEntityService([roomMessage({ id: 'abc' })]);
+		const hints = await service.loadHints([pendingReply(1, 'https://local.test/chat/messages/abc')], { id: 'viewer' }) as { targets: Map<string, MiChatMessage | null> };
+
+		expect(hints.targets.get('r1')?.id).toBe('abc');
+	});
+});
+
+describe('who can read a group timeline', () => {
+	test('the owner, a member and a moderator only', () => {
+		const room = { id: 'room1', ownerId: 'owner' };
+		expect(canReadRoomTimeline(room, 'owner', new Set(), false)).toBe(true);
+		expect(canReadRoomTimeline(room, 'm', new Set(['room1']), false)).toBe(true);
+		expect(canReadRoomTimeline(room, 'x', new Set(['room2']), false)).toBe(false);
+		expect(canReadRoomTimeline(room, 'x', new Set(), true)).toBe(true);
+	});
+});
+
 describe('the original of a reply that was deleted', () => {
 	const room = { kind: 'room', roomId: 'room1', channelId: null } as const;
 
@@ -323,7 +361,8 @@ describe('what the sender renders for a reply', () => {
 		idService: { parse: () => ({ date: new Date(0) }) },
 		driveFilesRepository: { findBy: vi.fn(async () => []) },
 		chatMessagesRepository: { findOneBy: vi.fn(async ({ id }: { id: string }) => rows.find(row => row.id === id) ?? null) },
-	}) as unknown as { chatPayloadOptions(message: MiChatMessage, roomUri?: string): Promise<ChatPayloadOptions> };
+		usersRepository: { findOneBy: vi.fn(async ({ id }: { id: string }) => ({ id, isSuspended: id === 'banned' })) },
+	}) as unknown as { chatPayloadOptions(message: MiChatMessage, roomUri?: string, forHistory?: boolean): Promise<ChatPayloadOptions> };
 
 	const reply = roomMessage({ id: 'reply', replyToId: 'target', emojis: [] } as Partial<MiChatMessage>);
 
@@ -339,6 +378,16 @@ describe('what the sender renders for a reply', () => {
 		const options = await renderer([copy]).chatPayloadOptions(reply);
 
 		expect(options.replyToUri).toBe('https://remote.test/chat/messages/m1');
+	});
+
+	test('no address for an original the history does not carry, while live messages keep it', async () => {
+		const deleted = roomMessage({ id: 'target', deletedAt: new Date(), text: null });
+		const suspended = roomMessage({ id: 'target', fromUserId: 'banned' });
+
+		expect((await renderer([deleted]).chatPayloadOptions(reply, undefined, true)).replyToUri).toBeUndefined();
+		expect((await renderer([suspended]).chatPayloadOptions(reply, undefined, true)).replyToUri).toBeUndefined();
+		expect((await renderer([suspended]).chatPayloadOptions(reply)).replyToUri).toBe('https://local.test/chat/messages/target');
+		expect((await renderer([roomMessage({ id: 'target' })]).chatPayloadOptions(reply, undefined, true)).replyToUri).toBe('https://local.test/chat/messages/target');
 	});
 
 	test('the address of a deleted original too, without its content', async () => {
