@@ -18,9 +18,10 @@
 // 그래서 새 재생을 만들 때와 prepare()에서는 state를 보지 않고 항상 resume()을 부른다.
 // 100%로 되돌린 트랙의 노드와 요소는 바로 정리한다.
 // 호출하는 쪽은 isReady가 true가 된 트랙만 원래 재생 경로를 끈다 (이 경로가 아직 소리를 못 내는데 원래 소리까지 끄지 않도록).
-// 새 재생의 gain은 0으로 시작하고, 요소가 재생을 시작하는 순간(요소를 쓰지 않으면 컨텍스트가 running이 되는 순간) 목표값으로 올린다.
-// 소리가 출력에 닿을 시간을 기다리는 브라우저에서는 그 뒤 settleDelayMs가 지나야 준비된 것으로 알린다.
+// 소리가 출력에 닿을 시간을 기다리는 브라우저에서는 새 재생의 gain을 0으로 시작하고, 요소가 재생을 시작하는 순간
+// (요소를 쓰지 않으면 컨텍스트가 running이 되는 순간) 목표값으로 올린 뒤 settleDelayMs가 지나야 준비된 것으로 알린다.
 // 원래 경로가 꺼지기 전에 두 소리가 겹쳐 커지지 않게 하기 위해서다.
+// 기다리지 않는 브라우저에서는 원래 경로를 끄는 순간 바로 이 경로가 소리를 내야 하므로 gain을 처음부터 목표값으로 둔다.
 
 export const MAX_VOLUME = 2;
 
@@ -305,7 +306,9 @@ export class VoiceBoost {
 			created.push(source);
 			const gainNode = context.createGain();
 			created.push(gainNode);
-			gainNode.gain.value = 0;
+			// 기다리는 브라우저만 0에서 시작한다. 기다리지 않는 브라우저는 처음부터 목표값이라 준비된 뒤 다시 올리지 않는다
+			const waits = (this.options.settleDelayMs ?? 0) > 0;
+			gainNode.gain.value = waits ? 0 : value;
 			source.connect(gainNode);
 			let destination: MediaStreamAudioDestinationNode | null = null;
 			if (this.usesElement()) {
@@ -317,7 +320,7 @@ export class VoiceBoost {
 			} else {
 				gainNode.connect(context.destination);
 			}
-			return { source, gain: gainNode, destination, element, playBlocked: false, sinkFailed: false, replayed: false, playing: false, target: value, raisedTo: null, settled: false, settleTimer: null, releasing: false, releaseTimer: null, listeners: new AbortController() };
+			return { source, gain: gainNode, destination, element, playBlocked: false, sinkFailed: false, replayed: false, playing: false, target: value, raisedTo: waits ? null : value, settled: false, settleTimer: null, releasing: false, releaseTimer: null, listeners: new AbortController() };
 		} catch {
 			for (const node of created) {
 				try {
@@ -510,7 +513,7 @@ export class VoiceBoost {
 				if (this.lastStarted.has(track)) continue;
 				// 재생을 시작한 재생은 호출하는 쪽이 원래 경로를 끄기 전에 목표 gain으로 올리고, 소리가 출력에 닿을 시간을 기다린다.
 				// 풀 예정인 재생은 올리지 않는다 (곧 멈추고, 취소되면 set()이 올린다)
-				if (!playback.releasing) this.rampTo(playback);
+				if (!playback.releasing && playback.raisedTo !== playback.target) this.rampTo(playback);
 				if (playback.settleTimer != null) window.clearTimeout(playback.settleTimer);
 				const settleMs = this.options.settleDelayMs ?? 0;
 				if (settleMs <= 0) {
