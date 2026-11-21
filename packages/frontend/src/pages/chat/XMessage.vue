@@ -259,8 +259,7 @@ function onMenuKeydown(ev: KeyboardEvent) {
 	showMenu(ev);
 }
 
-// メニューが開くとフォーカスがメニューへ移り、まとまりの途中のフッターが隠れてメニューの基準位置を失う。閉じるまでは出したままにする
-// 閉じる途中のメニューと新しいメニューが重なることがあるため、真偽値ではなく開いているメニューの数で数え、最後の閉じ通知までフッターを保つ
+// 겹쳐 닫히는 메뉴가 있어도 마지막 메뉴가 닫힐 때까지 푸터(메뉴 기준 위치)를 유지하려고 열린 메뉴 수를 센다
 const openMenuCount = ref(0);
 
 function showMenu(ev: PointerEvent | KeyboardEvent) {
