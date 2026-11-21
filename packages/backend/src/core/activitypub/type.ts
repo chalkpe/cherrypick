@@ -19,6 +19,7 @@ export interface IObject {
 	_misskey_chatLegacyChannel?: unknown;
 	_misskey_chatChannel?: unknown;
 	_misskey_chatChannelRefs?: unknown;
+	_misskey_chatReplyTo?: unknown;
 	_misskey_chatArchived?: boolean;
 	allowRecording?: boolean;
 	_misskey_chatRoom?: string;

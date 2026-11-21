@@ -53,6 +53,10 @@ export type ChatHistoryImport = {
 	channelRefs: ChatChannelRef[];
 	/** `${userId}/${reaction}` */
 	reactions: string[];
+	/** 이 서버에 이미 저장된 같은 그룹·채널의 원문. 없으면 답장 표시 없이 저장한다. */
+	replyToId?: string | null;
+	/** 원문이 아직 없을 때 보관하는 검증한 원문 주소 */
+	replyToUri?: string | null;
 };
 
 /**
@@ -328,6 +332,8 @@ export class ChatRoomHistoryService {
 			unavailableFileCount: input.unavailableFileCount,
 			emojis: input.emojis,
 			reactions,
+			replyToId: input.replyToId ?? null,
+			replyToUri: input.replyToUri ?? null,
 		}) satisfies Partial<MiChatMessage>;
 
 		try {

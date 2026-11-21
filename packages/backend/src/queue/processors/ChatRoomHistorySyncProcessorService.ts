@@ -336,6 +336,7 @@ export class ChatRoomHistorySyncProcessorService {
 		// 리액션과 작성자 스냅샷은 소유 서버만 아는 기록이므로 기록 항목의 것을 유지한다.
 		const reactions = await this.resolveReactions(item, author, run);
 		const channelRefs = room.hasChannels ? await this.chatRoomChannelService.remoteRefs(room, text ?? '', item.note._misskey_chatChannelRefs) : [];
+		const reply = await this.chatService.resolveReplyTarget({ kind: 'room', roomId: room.id, channelId: channel }, { replyToUri: item.note._misskey_chatReplyTo });
 
 		const unlock = await acquireApObjectLock(this.redisClient, item.uri);
 		try {
@@ -354,6 +355,7 @@ export class ChatRoomHistorySyncProcessorService {
 				toRoomChannelId: channel,
 				channelRefs,
 				reactions,
+				...reply,
 			});
 			// 가져오는 동안 먼저 도착해 보류된 실시간 리액션과 취소를 기존 처리로 적용한다
 			if (stored != null) {

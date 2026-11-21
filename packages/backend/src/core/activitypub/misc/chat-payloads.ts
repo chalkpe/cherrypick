@@ -47,6 +47,8 @@ export type ChatPayloadOptions = {
 	activityId?: string;
 	/** 작성자 계정이 없어진 글처럼 계정 객체 없이 원래 작성자 주소를 쓸 때 */
 	authorUri?: string;
+	/** 답장하는 원문의 주소. 본문과 작성자는 싣지 않으며 받는 쪽이 자기 기록에서 찾는다. */
+	replyToUri?: string | null;
 };
 
 export type ChatScope = 'everyone' | 'followers' | 'following' | 'mutual' | 'none';
@@ -125,6 +127,8 @@ export function buildChatNote(
 		if (options.channelUri != null) note._misskey_chatChannel = options.channelUri;
 		if (options.channelRefs?.length) note._misskey_chatChannelRefs = options.channelRefs;
 	}
+
+	if (options.replyToUri != null) note._misskey_chatReplyTo = options.replyToUri;
 
 	if (options.attachment != null && options.attachment.length > 0) {
 		note.attachment = options.attachment;

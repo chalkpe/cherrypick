@@ -22,6 +22,8 @@ function createService() {
 		{} as never,
 		{} as never,
 		{} as never,
+		{} as never,
+		{ url: 'https://local.test' } as never,
 	);
 }
 

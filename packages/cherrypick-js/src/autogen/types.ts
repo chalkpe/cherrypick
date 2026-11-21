@@ -6608,6 +6608,20 @@ export type components = {
                 start: number;
                 length: number;
             }[];
+            replyToId?: string | null;
+            reply?: {
+                id: string;
+                isDeleted: boolean;
+                text: string | null;
+                fileCount: number;
+                fromUserId: string | null;
+                fromUser?: components['schemas']['UserLite'] | null;
+                archivedAuthor?: {
+                    name: string | null;
+                    username: string | null;
+                    host: string | null;
+                } | null;
+            } | null;
             dice?: {
                 version: number;
                 /** @enum {string} */
@@ -6659,6 +6673,20 @@ export type components = {
                 start: number;
                 length: number;
             }[];
+            replyToId?: string | null;
+            reply?: {
+                id: string;
+                isDeleted: boolean;
+                text: string | null;
+                fileCount: number;
+                fromUserId: string | null;
+                fromUser?: components['schemas']['UserLite'] | null;
+                archivedAuthor?: {
+                    name: string | null;
+                    username: string | null;
+                    host: string | null;
+                } | null;
+            } | null;
             dice?: {
                 version: number;
                 /** @enum {string} */
@@ -6697,6 +6725,20 @@ export type components = {
             deletedAt?: string | null;
             fromUserId: string;
             toUserId: string;
+            replyToId?: string | null;
+            reply?: {
+                id: string;
+                isDeleted: boolean;
+                text: string | null;
+                fileCount: number;
+                fromUserId: string | null;
+                fromUser?: components['schemas']['UserLite'] | null;
+                archivedAuthor?: {
+                    name: string | null;
+                    username: string | null;
+                    host: string | null;
+                } | null;
+            } | null;
             dice?: {
                 version: number;
                 /** @enum {string} */
@@ -6740,6 +6782,20 @@ export type components = {
                 start: number;
                 length: number;
             }[];
+            replyToId?: string | null;
+            reply?: {
+                id: string;
+                isDeleted: boolean;
+                text: string | null;
+                fileCount: number;
+                fromUserId: string | null;
+                fromUser?: components['schemas']['UserLite'] | null;
+                archivedAuthor?: {
+                    name: string | null;
+                    username: string | null;
+                    host: string | null;
+                } | null;
+            } | null;
             dice?: {
                 version: number;
                 /** @enum {string} */
@@ -19349,6 +19405,8 @@ export interface operations {
                     toRoomChannelId?: string;
                     /** Format: misskey:id */
                     toRoomId: string;
+                    /** Format: misskey:id */
+                    replyToId?: string;
                 };
             };
         };
@@ -19428,6 +19486,8 @@ export interface operations {
                     fileIds?: string[];
                     /** Format: misskey:id */
                     toUserId: string;
+                    /** Format: misskey:id */
+                    replyToId?: string;
                 };
             };
         };

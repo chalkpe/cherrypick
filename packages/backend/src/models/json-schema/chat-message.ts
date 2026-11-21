@@ -17,6 +17,21 @@ const chatMessageArchivedAuthorSchema = {
 	},
 } as const;
 
+/** 답장 말풍선에 싣는 원문 미리보기. 지워졌거나 접근할 수 없는 원문은 isDeleted만 참이고 내용이 없다 */
+const chatMessageReplySchema = {
+	type: 'object',
+	optional: true, nullable: true,
+	properties: {
+		id: { type: 'string', optional: false, nullable: false },
+		isDeleted: { type: 'boolean', optional: false, nullable: false },
+		text: { type: 'string', optional: false, nullable: true },
+		fileCount: { type: 'number', optional: false, nullable: false },
+		fromUserId: { type: 'string', optional: false, nullable: true },
+		fromUser: { type: 'object', optional: true, nullable: true, ref: 'UserLite' },
+		archivedAuthor: chatMessageArchivedAuthorSchema,
+	},
+} as const;
+
 export const packedChatMessageSchema = {
 	type: 'object',
 	properties: {
@@ -76,6 +91,8 @@ export const packedChatMessageSchema = {
 			},
 		},
 		channelRefs: { ...packedChatChannelRefsSchema, optional: true },
+		replyToId: { type: 'string', optional: true, nullable: true },
+		reply: chatMessageReplySchema,
 		dice: { ...chatDiceResultSchema, optional: true, nullable: true },
 		text: {
 			type: 'string',
@@ -191,6 +208,8 @@ export const packedChatMessageLiteSchema = {
 			},
 		},
 		channelRefs: { ...packedChatChannelRefsSchema, optional: true },
+		replyToId: { type: 'string', optional: true, nullable: true },
+		reply: chatMessageReplySchema,
 		dice: { ...chatDiceResultSchema, optional: true, nullable: true },
 		text: {
 			type: 'string',
@@ -283,6 +302,8 @@ export const packedChatMessageLiteFor1on1Schema = {
 			type: 'string',
 			optional: false, nullable: false,
 		},
+		replyToId: { type: 'string', optional: true, nullable: true },
+		reply: chatMessageReplySchema,
 		dice: { ...chatDiceResultSchema, optional: true, nullable: true },
 		text: {
 			type: 'string',
@@ -384,6 +405,8 @@ export const packedChatMessageLiteForRoomSchema = {
 			},
 		},
 		channelRefs: { ...packedChatChannelRefsSchema, optional: true },
+		replyToId: { type: 'string', optional: true, nullable: true },
+		reply: chatMessageReplySchema,
 		dice: { ...chatDiceResultSchema, optional: true, nullable: true },
 		text: {
 			type: 'string',

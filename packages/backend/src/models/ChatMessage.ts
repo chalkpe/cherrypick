@@ -85,6 +85,17 @@ export class MiChatMessage {
 	@Column('bigint', { nullable: true })
 	public roomMessageSequence: string | null;
 
+	/** 답장하는 원문의 id. 같은 대화의 글만 가리키며, 원문이 지워져도 값은 남지만 내용은 내주지 않는다. */
+	@Column({ ...id(), nullable: true })
+	public replyToId: MiChatMessage['id'] | null;
+
+	/**
+	 * 연합으로 받은 답장의 원문 주소. 원문이 아직 이 서버에 없을 때 검증한 주소 문자열만 보관하고,
+	 * 읽을 때 저장된 원문을 찾아 같은 대화인지 다시 확인한다.
+	 */
+	@Column('varchar', { length: 512, nullable: true })
+	public replyToUri: string | null;
+
 	@Column('jsonb', { default: [] })
 	public channelRefs: ChatChannelRef[];
 

@@ -11,6 +11,16 @@ SPDX-License-Identifier: AGPL-3.0-only
 	@drop.stop="onDrop"
 >
 	<XPostFormAttaches v-if="files.length > 0 && !editingMessage" v-model="files" :max="MAX_FILES" @detach="detachFile" @changeSensitive="(changed, isSensitive) => updateAttachment(changed, { isSensitive })" @changeName="(changed, name) => updateAttachment(changed, { name })"/>
+	<div v-if="replyPreview && !editingMessage" :class="$style.replying">
+		<div :class="$style.replyingBody">
+			<div :class="$style.replyingTitle"><i class="ti ti-arrow-back-up" aria-hidden="true"></i> <template v-if="replyPreview.name != null">{{ i18n.tsx._chat.replyingTo({ name: replyPreview.name }) }}</template><template v-else>{{ i18n.ts._chat.reply }}</template></div>
+			<div :class="$style.replyingText">
+				<template v-if="replyPreview.text != null">{{ replyPreview.text }}</template>
+				<template v-else><i class="ti ti-photo" aria-hidden="true"></i> {{ i18n.ts._chat.replyAttachment }}</template>
+			</div>
+		</div>
+		<button class="_button" :class="$style.replyingCancel" :title="i18n.ts.cancel" :aria-label="i18n.ts.cancel" @click="emit('cancelReply')"><i class="ti ti-x"></i></button>
+	</div>
 	<div v-if="editingMessage" :class="$style.editing"><i class="ti ti-pencil" aria-hidden="true"></i> {{ i18n.ts._chat.editingMessage }}</div>
 	<!-- iOS 27 の Safari は案内文 (「…입력해 주세요」の「주」) から住所の欄と見なし、キーボードの上に連絡先の自動入力を出す。autocomplete="off" では止まらないので name で普通の入力欄と知らせる -->
 	<textarea
@@ -56,6 +66,7 @@ import * as Misskey from 'cherrypick-js';
 import { rebaseChannelRefs } from './chat-channel-references.js';
 import type { ChatChannelRef } from './chat-channel-references.js';
 import { chatErrorText } from './chat-errors.js';
+import { chatReplyTargetPreview } from './chat-reply.js';
 import { formatTimeString } from '@/utility/format-time-string.js';
 import { selectFile } from '@/utility/drive.js';
 import * as os from '@/os.js';
@@ -80,12 +91,14 @@ const props = defineProps<{
 	channelId?: string;
 	channels?: Misskey.entities.ChatRoomChannel[];
 	editingMessage?: { id: string; text?: string | null; fileIds?: string[]; channelRefs?: ChatChannelRef[] } | null;
+	replyingTo?: Parameters<typeof chatReplyTargetPreview>[0] | null;
 }>();
 
 const emit = defineEmits<{
 	(ev: 'edited'): void;
 	(ev: 'cancelEdit'): void;
-	(ev: 'sent', messageId: string): void;
+	(ev: 'cancelReply', replyId?: string): void;
+	(ev: 'sent', messageId: string, replyId?: string): void;
 }>();
 
 const rootEl = useTemplateRef('rootEl');
@@ -114,11 +127,18 @@ const textareaReadOnly = ref(false);
 let autocompleteInstance: Autocomplete | null = null;
 let editSession = 0;
 
+const replyPreview = computed(() => props.replyingTo != null ? chatReplyTargetPreview(props.replyingTo) : null);
+
 const remainingLength = computed(() => MAX_TEXT_LENGTH - Array.from(text.value).length);
 const remainingLengthId = useId();
 const canSend = computed(() => remainingLength.value >= 0 && (props.editingMessage
 	? text.value.trim() !== '' || (props.editingMessage.fileIds?.length ?? 0) > 0
 	: text.value !== '' || files.value.length > 0));
+
+// 답장하려고 고르면 바로 이어서 쓸 수 있게 입력창으로 옮긴다
+watch(() => props.replyingTo?.id, (id) => {
+	if (id != null) void nextTick(() => textareaEl.value?.focus());
+});
 
 watch(() => props.editingMessage, (message) => {
 	editSession++;
@@ -344,8 +364,10 @@ function onChangeFile() {
 	if (fileEl.value?.files) void uploadFiles(Array.from(fileEl.value.files));
 }
 
-function showSendError(err: Error) {
+function showSendError(err: Error, replyId?: string) {
 	console.error(err);
+	// 원문이 없어져 보낼 수 없을 때는 답장을 내려, 쓴 글은 그대로 두고 다시 보낼 수 있게 한다
+	if ((err as { code?: string }).code === 'NO_SUCH_REPLY_TARGET') emit('cancelReply', replyId);
 	// フォームが無くなったのはルームが閉じたときで、その理由は別に知らせている
 	if (!formClosed) os.alert({ type: 'error', title: i18n.ts.somethingHappened, text: chatErrorText(err) });
 }
@@ -382,6 +404,7 @@ function send() {
 		return;
 	}
 
+	const sentReplyId = props.replyingTo?.id;
 	const sentText = draftText.value;
 	const sentFiles = [...files.value];
 	saveDraft();
@@ -401,27 +424,29 @@ function send() {
 	if (props.user) {
 		misskeyApi('chat/messages/create-to-user', {
 			toUserId: props.user.id,
+			...(sentReplyId != null ? { replyToId: sentReplyId } : {}),
 			text: sentText || undefined,
 			fileIds: sentFiles.length > 0 ? sentFiles.map(file => file.id) : undefined,
 		}).then(message => {
 			clearSent();
-			emit('sent', message.id);
+			emit('sent', message.id, sentReplyId);
 		}).catch(err => {
-			showSendError(err);
+			showSendError(err, sentReplyId);
 		}).then(() => {
 			sending.value = false;
 		});
 	} else if (props.room) {
 		misskeyApi('chat/messages/create-to-room', {
 			toRoomId: props.room.id,
+			...(sentReplyId != null ? { replyToId: sentReplyId } : {}),
 			...(props.channelId ? { toRoomChannelId: props.channelId, channelRefs: draftRefs.value } : {}),
 			text: sentText || undefined,
 			fileIds: sentFiles.length > 0 ? sentFiles.map(file => file.id) : undefined,
 		}).then(message => {
 			clearSent();
-			emit('sent', message.id);
+			emit('sent', message.id, sentReplyId);
 		}).catch(err => {
-			showSendError(err);
+			showSendError(err, sentReplyId);
 		}).then(() => {
 			sending.value = false;
 		});
@@ -517,6 +542,46 @@ onBeforeUnmount(() => {
 	border-bottom: none;
 	border-radius: 14px 14px 0 0;
 	overflow: clip;
+}
+
+.replying {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 8px 16px 0;
+	padding: 4px 8px;
+	border-left: 3px solid var(--MI_THEME-accent);
+	border-radius: 4px;
+	background: var(--MI_THEME-accentedBg);
+	font-size: 85%;
+}
+
+.replyingBody {
+	flex: 1;
+	min-width: 0;
+}
+
+.replyingTitle {
+	color: var(--MI_THEME-accent);
+	font-weight: bold;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.replyingText {
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	overflow: hidden;
+	overflow-wrap: anywhere;
+}
+
+.replyingCancel {
+	flex-shrink: 0;
+	width: 32px;
+	height: 32px;
+	border-radius: 100%;
 }
 
 .editing {

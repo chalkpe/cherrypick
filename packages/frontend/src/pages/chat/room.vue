@@ -112,7 +112,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 											:roomArchived="room?.isArchived === true"
 											:firstInGroup="groupPositions[i]?.first ?? true"
 											:lastInGroup="groupPositions[i]?.last ?? true"
+											:canReply="room?.isArchived !== true && !membershipEnded"
+											:canJumpToReply="!membershipEnded"
 											@edit="onEditMessage"
+											@reply="onReplyMessage"
+											@jumpToReply="jumpToMessage"
 										/>
 									</div>
 									<div v-else-if="item.type === 'date'" :class="$style.dateDivider">
@@ -143,7 +147,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							</button>
 						</div>
 					</Transition>
-					<XForm v-if="initialized && !room?.isArchived && !membershipEnded" ref="chatFormEl" :key="channelId ?? roomId ?? userId" :channelId="channelId" :channels="channels" :user="user" :room="room" :editingMessage="editingMessage" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit" @sent="onSent"/>
+					<XForm v-if="initialized && !room?.isArchived && !membershipEnded" ref="chatFormEl" :key="channelId ?? roomId ?? userId" :channelId="channelId" :channels="channels" :user="user" :room="room" :editingMessage="editingMessage" :replyingTo="replyingTo" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit" @cancelReply="onCancelReply" @sent="onSent"/>
 				</div>
 			</div>
 		</div>
@@ -169,6 +173,8 @@ import { ref, useTemplateRef, computed, watch, nextTick, onMounted, onBeforeUnmo
 import * as Misskey from 'cherrypick-js';
 import { getScrollContainer } from '@@/js/scroll.js';
 import { channelConversationPath, channelListPath } from './chat-channel-references.js';
+import { useReplyWindowLifecycle } from './use-reply-window-lifecycle.js';
+import XReplyOriginalDialog from './XReplyOriginalDialog.vue';
 import XMessage from './XMessage.vue';
 import XForm from './room.form.vue';
 import XSearch from './room.search.vue';
@@ -177,6 +183,7 @@ import XInfo from './room.info.vue';
 import XBanner from './room.voice.banner.vue';
 import XStage from './room.voice.stage.vue';
 import { chatJoinErrors, chatLeaveErrors } from './chat-errors.js';
+import { acceptReplyEdit, deletedReplyOf, editedReplyOf, loadReplyOriginalWindow } from './chat-reply.js';
 import { getUninvitableUsers, inviteUsersToRoom } from './chat-invite.js';
 import type { MenuItem } from '@/types/menu.js';
 import type { PageHeaderItem } from '@/types/page-header.js';
@@ -287,6 +294,74 @@ const editingMessage = ref<NormalizedChatMessage | null>(null);
 
 function onEditMessage(message: NormalizedChatMessage) {
 	editingMessage.value = message;
+	replyingTo.value = null;
+}
+
+// 지금 입력창에서 답장하려는 메시지. 대화나 채널이 바뀌면 내린다
+const replyingTo = ref<NormalizedChatMessage | null>(null);
+
+function onReplyMessage(message: NormalizedChatMessage) {
+	replyingTo.value = message;
+	editingMessage.value = null;
+}
+
+// 인용을 눌러 원문으로 간다. 불러온 범위의 글은 타임라인에서 바로 스크롤하고,
+// 아직 불러오지 않은 옛 글은 목록에 합치지 않고 같은 대화의 조회 결과를 따로 열어 보인다
+let jumping = false;
+
+function scrollToMessage(id: string): boolean {
+	const el = timelineEl.value?.querySelector<HTMLElement>(`[data-chat-message-id="${CSS.escape(id)}"]`);
+	const target = messages.value.find(m => m.id === id);
+	if (el == null || target == null || target.deletedAt != null) return false;
+	el.scrollIntoView({ block: 'center', behavior: prefer.s.animation ? 'smooth' : 'auto' });
+	el.classList.add('chatMessageHighlight');
+	window.setTimeout(() => el.classList.remove('chatMessageHighlight'), 1600);
+	return true;
+}
+
+let originalDispose: (() => void) | null = null;
+// 창 안 링크로 이동하면 이 대화가 비활성화되므로, 그때 원문 창이 남지 않게 닫는다
+useReplyWindowLifecycle(() => originalDispose?.(), isFrontmostConversation);
+
+async function jumpToMessage(id: string) {
+	if (jumping) return;
+	jumping = true;
+	const version = conversationVersion;
+	try {
+		if (messages.value.some(m => m.id === id)) {
+			if (!scrollToMessage(id)) os.toast(i18n.ts._chat.replyOriginalNotFound);
+			return;
+		}
+		const oldest = olderCursorId ?? messages.value.at(-1)?.id;
+		// 불러온 범위 안인데 없는 글은 보이지 않는 글이다
+		if (oldest == null || id > oldest) {
+			os.toast(i18n.ts._chat.replyOriginalNotFound);
+			return;
+		}
+		const roomId = room.value?.id;
+		const userId = user.value?.id;
+		let page: Awaited<ReturnType<typeof loadReplyOriginalWindow<Misskey.entities.ChatMessageLite>>>;
+		try {
+			page = await loadReplyOriginalWindow<Misskey.entities.ChatMessageLite>(query => props.userId
+				? misskeyApi('chat/messages/user-timeline', { userId: userId!, includeDeleted: true, ...query })
+				: misskeyApi('chat/messages/room-timeline', { roomId: roomId!, ...(props.channelId ? { channelId: props.channelId } : {}), includeDeleted: true, ...query }), id);
+		} catch (err) {
+			if (destroyed || version !== conversationVersion) return;
+			if ((err as Misskey.api.APIError | null)?.code === 'NO_SUCH_CHANNEL') emit('channelsUpdated');
+			else os.alert({ type: 'error', text: i18n.ts._chat.actionFailed });
+			return;
+		}
+		if (destroyed || !isActivated || version !== conversationVersion) return;
+		const original = page?.find(m => m.id === id);
+		if (page == null || original == null || original.deletedAt != null) {
+			os.toast(i18n.ts._chat.replyOriginalNotFound);
+			return;
+		}
+		const { dispose } = os.popup(XReplyOriginalDialog, { messages: page.map(normalizeMessage), originalId: id, roomArchived: room.value?.isArchived === true, channels: props.channels }, { closed: () => { if (originalDispose === dispose) originalDispose = null; dispose(); } });
+		originalDispose = dispose;
+	} finally {
+		jumping = false;
+	}
 }
 
 function onEdited() {
@@ -384,8 +459,14 @@ function hasMessageFromOthersSince(id: NormalizedChatMessage['id']) {
 const sentMessageId = ref<NormalizedChatMessage['id'] | null>(null);
 const sentMessageArrived = computed(() => sentMessageId.value != null && messages.value.some(m => m.id === sentMessageId.value));
 
-function onSent(id: NormalizedChatMessage['id']) {
+// 앞선 전송이 끝났을 때 새로 고른 답장 대상까지 내리지 않도록, 그 전송이 답하던 글과 같을 때만 내린다
+function onCancelReply(replyId?: NormalizedChatMessage['id']) {
+	if (replyId == null || replyingTo.value?.id === replyId) replyingTo.value = null;
+}
+
+function onSent(id: NormalizedChatMessage['id'], replyId?: NormalizedChatMessage['id']) {
 	sentMessageId.value = id;
+	if (replyId != null) onCancelReply(replyId);
 }
 
 watch(sentMessageArrived, arrived => {
@@ -425,8 +506,13 @@ watch(timelineEl, el => {
 });
 
 function normalizeMessage(message: Misskey.entities.ChatMessageLite | Misskey.entities.ChatMessage): NormalizedChatMessage {
+	// 일대일의 원문 작성자는 대화 상대와 나뿐이므로 목록에서 바로 정한다
+	const reply = message.reply != null && message.reply.fromUser == null && message.reply.fromUserId != null && message.toRoomId == null
+		? { ...message.reply, fromUser: message.reply.fromUserId === $i.id ? $i : user.value }
+		: message.reply;
 	return {
 		...message,
+		reply,
 		// 일대일 메시지에는 작성자가 실리지 않는다. 그룹 메시지의 null은 계정이 없어진 작성자다
 		fromUser: message.fromUser !== undefined ? message.fromUser : (message.fromUserId === $i.id ? $i : user.value!),
 		reactions: message.reactions.map(record => ({
@@ -471,6 +557,7 @@ async function initialize() {
 	if (destroyed || !isActivated || (initializing.value && initializingKey === key)) return;
 	initializingKey = key;
 	const version = ++conversationVersion;
+	originalDispose?.();
 	const sameTarget = () => !destroyed && version === conversationVersion && key === conversationKey();
 	// 스택 라우터에서 뒤에 남은 그룹 대화는 초기화 응답으로 상태를 적용하거나 안내·이동·구독 연결을 하지 않는다. 돌아온 시점에 다시 초기화한다.
 	// 1:1 대화는 뒤에서도 받은 응답을 적용하고 구독을 연결한다.
@@ -487,6 +574,7 @@ async function initialize() {
 	messages.value = [];
 	olderCursorId = null;
 	editingMessage.value = null;
+	replyingTo.value = null;
 	user.value = null;
 	room.value = null;
 	canFetchMore.value = false;
@@ -610,10 +698,11 @@ onDeactivated(() => {
 	showIndicator.value = false;
 });
 
-async function fetchMore() {
+/** 이전 글을 한 쪽 불러온다. 실패하면 false (오류는 여기서 알린다) */
+async function fetchMore(): Promise<boolean> {
 	const LIMIT = 30;
 	const version = conversationVersion;
-	if (moreFetching.value || !messages.value.length) return;
+	if (moreFetching.value || !messages.value.length) return true;
 	moreFetching.value = true;
 	try {
 		const newMessages = props.userId ? await misskeyApi('chat/messages/user-timeline', {
@@ -621,7 +710,7 @@ async function fetchMore() {
 		}) : await misskeyApi('chat/messages/room-timeline', {
 			roomId: room.value!.id, ...(props.channelId ? { channelId: props.channelId } : {}), limit: LIMIT, untilId: olderCursorId ?? messages.value[messages.value.length - 1].id, includeDeleted: true,
 		});
-		if (destroyed || version !== conversationVersion) return;
+		if (destroyed || version !== conversationVersion) return true;
 		const earlierLoaded = readingPlace.whileLoadingEarlier();
 		if (props.userId) {
 			messages.value.push(...newMessages.map(normalizeMessage));
@@ -642,11 +731,13 @@ async function fetchMore() {
 		canFetchMore.value = newMessages.length === LIMIT;
 		await nextTick();
 		earlierLoaded();
+		return true;
 	} catch (err) {
 		if (!destroyed && version === conversationVersion) {
 			if ((err as Misskey.api.APIError | null)?.code === 'NO_SUCH_CHANNEL') emit('channelsUpdated');
 			else os.alert({ type: 'error', text: i18n.ts._chat.actionFailed });
 		}
+		return false;
 	} finally {
 		if (version === conversationVersion) moreFetching.value = false;
 	}
@@ -704,8 +795,15 @@ function onDeleted(id: string) {
 		message.reactions = [];
 		message.emojis = {};
 	}
+	// 이 글에 답한 글의 인용에는 내용을 남기지 않는다
+	for (const m of messages.value) {
+		if (m.reply?.id === id) m.reply = deletedReplyOf(m.reply);
+	}
 	if (editingMessage.value?.id === id) {
 		editingMessage.value = null;
+	}
+	if (replyingTo.value?.id === id) {
+		replyingTo.value = null;
 	}
 }
 
@@ -733,6 +831,9 @@ function onUnreact(ctx: Parameters<Misskey.Channels['chatUser']['events']['unrea
 	}
 }
 
+// 원문 id별로 인용에 반영한 가장 늦은 수정 시각. 목록 밖 원문의 이벤트가 뒤바뀌어 와도 인용을 되돌리지 않는다.
+const replyEditedAt = new Map<string, number>();
+
 function onUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['updated']>[0] & { shouldNotify?: boolean }) {
 	noteChangeDuringRead();
 	const message = messages.value.find(m => m.id === ctx.messageId);
@@ -743,6 +844,13 @@ function onUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['updat
 		message.editedAt = ctx.editedAt;
 		if (ctx.channelRefs != null) message.channelRefs = ctx.channelRefs;
 		if (ctx.emojis != null) message.emojis = ctx.emojis;
+	}
+	// 이 글에 답한 글의 인용도 고친 본문으로 바꾼다
+	// 원문이 목록에 없어도 불러온 답장의 인용은 고친다
+	if ((message == null || !message.deletedAt) && acceptReplyEdit(replyEditedAt, ctx.messageId, ctx.editedAt)) {
+		for (const m of messages.value) {
+			if (m.reply != null) m.reply = editedReplyOf(m.reply, ctx.messageId, ctx.text);
+		}
 	}
 }
 
@@ -767,7 +875,10 @@ function onRoomUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['r
 
 // 入力欄がなくなるので編集も終わる。解除したときに編集へ戻ると、入力中の内容が原文に戻ってしまう
 watch(() => room.value?.isArchived, isArchived => {
-	if (isArchived) editingMessage.value = null;
+	if (isArchived) {
+		editingMessage.value = null;
+		replyingTo.value = null;
+	}
 });
 
 function onMembershipChanged() {
@@ -904,6 +1015,7 @@ function closeRoom() {
 	initialized.value = false;
 	messages.value = [];
 	editingMessage.value = null;
+	replyingTo.value = null;
 	room.value = null;
 	canFetchMore.value = false;
 	connection.value?.dispose();
@@ -1007,6 +1119,8 @@ async function readLatest(): Promise<boolean> {
 		olderCursorId = latest.at(-1)?.id ?? null;
 	}
 	if (messages.value.find(x => x.id === editingMessage.value?.id)?.deletedAt != null) editingMessage.value = null;
+	// 끊긴 사이에 원문이 지워졌으면 답장 대상도 내린다
+	if (messages.value.find(x => x.id === replyingTo.value?.id)?.deletedAt != null) replyingTo.value = null;
 
 	if (r != null) {
 		room.value = r;
@@ -1081,6 +1195,7 @@ watch(isFrontmostConversation, (frontmost, wasFrontmost) => {
 
 onBeforeUnmount(() => {
 	destroyed = true;
+	originalDispose?.();
 	conversationVersion++;
 	latestRoomPeopleRequest++;
 	connection.value?.dispose();

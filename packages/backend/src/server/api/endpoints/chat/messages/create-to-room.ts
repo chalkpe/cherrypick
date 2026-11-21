@@ -11,7 +11,7 @@ import { Endpoint } from '@/server/api/endpoint-base.js';
 import { GetterService } from '@/server/api/GetterService.js';
 import { ChatDiceError, createChatDiceApiErrors } from '@/core/chat-dice.js';
 import { ApiError } from '@/server/api/error.js';
-import { ChatMessageAccessError, ChatRoomArchivedError, ChatService, MAX_CHAT_MESSAGE_FILES, MAX_CHAT_MESSAGE_TEXT_LENGTH } from '@/core/ChatService.js';
+import { ChatMessageAccessError, ChatReplyTargetError, ChatRoomArchivedError, ChatService, MAX_CHAT_MESSAGE_FILES, MAX_CHAT_MESSAGE_TEXT_LENGTH } from '@/core/ChatService.js';
 
 export const meta = {
 	tags: ['chat'],
@@ -34,6 +34,11 @@ export const meta = {
 	},
 
 	errors: {
+		noSuchReplyTarget: {
+			message: 'No such message to reply to.',
+			code: 'NO_SUCH_REPLY_TARGET',
+			id: 'aff9ccca-27bf-4058-8654-6dfa9cf8c245',
+		},
 		...chatChannelApiErrors,
 		...createChatDiceApiErrors({
 			invalid: '36f66b2a-ca87-48d2-bd95-b2672d3f76be',
@@ -87,6 +92,7 @@ export const paramDef = {
 		},
 		toRoomChannelId: { type: 'string', format: 'misskey:id' },
 		toRoomId: { type: 'string', format: 'misskey:id' },
+		replyToId: { type: 'string', format: 'misskey:id' },
 	},
 	required: ['toRoomId'],
 } as const;
@@ -128,8 +134,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					toRoomChannelId: ps.toRoomChannelId,
 					channelRefs: ps.channelRefs,
 					files,
+					replyToId: ps.replyToId,
 				});
 			} catch (e) {
+				if (e instanceof ChatReplyTargetError) throw new ApiError(meta.errors.noSuchReplyTarget);
 				if (e instanceof ChatChannelError) throw new ApiError(meta.errors[e.reason]);
 				if (e instanceof ChatDiceError) throw new ApiError(e.reason === 'invalid' ? meta.errors.diceInvalid : e.reason === 'limit' ? meta.errors.diceLimit : meta.errors.diceBusy);
 				if (e instanceof ChatRoomArchivedError) throw new ApiError(meta.errors.roomIsArchived);

@@ -9,7 +9,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import * as mfm from 'mfc-js';
 import * as Redis from 'ioredis';
 import { Brackets, DataSource, In, IsNull, LessThan, Not } from 'typeorm';
-import type { SelectQueryBuilder } from 'typeorm';
+import type { EntityManager, SelectQueryBuilder } from 'typeorm';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
 import { QueueService } from '@/core/QueueService.js';
@@ -56,12 +56,17 @@ import { chatActorUri, chatMessageUri, chatRoomUriForOwner, localChatMessageIdFr
 import { ChatDiceService } from '@/core/ChatDiceService.js';
 import { chatDiceNotation, parseChatDiceResult } from '@/core/chat-dice.js';
 import { ApiError } from '@/server/api/error.js';
+import { findReplyTargetByUri, isReplyTargetInConversation, isReplyTargetInScope, parseChatReplyUri } from '@/core/chat-reply.js';
+import type { ChatReplyScope } from '@/core/chat-reply.js';
+import { canReadRoomTimeline } from '@/core/chat-room-access.js';
 
 export class ChatMessageAccessError extends Error {}
 export class ChatMessageInvalidTextError extends ChatMessageAccessError {}
 export class ChatMessageBlockedError extends ChatMessageAccessError {}
 export class ChatMessageRecipientSuspendedError extends ChatMessageAccessError {}
 export class ChatRoomArchivedError extends Error {}
+/** 답장할 원문이 없거나, 지워졌거나, 같은 대화의 글이 아니다. 어느 쪽인지는 알리지 않는다. */
+export class ChatReplyTargetError extends Error {}
 /** The invitation or membership a request relies on is missing. Callers must not reveal whether the room exists. */
 export class ChatRoomAccessError extends Error {}
 export class ChatRoomFullError extends Error {}
@@ -337,8 +342,11 @@ export class ChatService {
 		emojis?: string[];
 		editedAt?: Date | null;
 		dice?: unknown;
+		replyToId?: string | null;
+		replyToUri?: unknown;
 	}): Promise<Packed<'ChatMessageLiteFor1on1'>> {
 		const { iApprovedOther } = await this.assertCanSendToUser(fromUser, toUser);
+		const reply = await this.resolveReplyTarget({ kind: 'user', userIds: [fromUser.id, toUser.id] }, params);
 
 		// Extract emojis from text if not provided
 		// Store only emoji names (like notes do), not name@host format
@@ -366,6 +374,7 @@ export class ChatService {
 			uri: chatMessageUri({ id, uri: params.uri }, this.config.url),
 			editedAt: params.editedAt ?? null,
 			emojis,
+			...reply,
 		} satisfies Partial<MiChatMessage>;
 
 		// 相手を許可しておく。メッセージより先に入れるので、失敗すればメッセージも残らず、そのまま送り直せる
@@ -415,7 +424,7 @@ export class ChatService {
 				if (latest == null || latest.deletedAt != null) return;
 				if (await this.isFromSuspendedUser(latest)) return;
 
-				const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest, toUser);
+				const packedMessageForTo = await this.chatEntityService.packMessageDetailed(latest, toUser, { omitReply: true });
 				// 알림을 준비하는 사이에 읽혔으면 표시를 켜지 않는다. 읽음 알림보다 늦게 도착해 표시가 켜진 채 남는 것을 막는다.
 				if (await this.redisClient.get(`newUserChatMessageExists:${toUser.id}:${fromUser.id}`) == null) return;
 				await this.chatRoomNotificationService.notify([toUser.id]);
@@ -452,6 +461,8 @@ export class ChatService {
 		channelRefs?: ChatChannelRef[];
 		remoteChannelRefs?: unknown;
 		published?: Date | null;
+		replyToId?: string | null;
+		replyToUri?: unknown;
 	}): Promise<Packed<'ChatMessageLiteForRoom'>> {
 		let memberships = (await this.chatRoomMembershipsRepository.findBy({ roomId: toRoom.id })).map(m => ({
 			userId: m.userId,
@@ -516,7 +527,8 @@ export class ChatService {
 				: await this.chatRoomChannelService.remoteRefs(current, text, params.remoteChannelRefs, manager);
 			// 계정이 지워져도 그룹 글이 남도록 작성자 정보를 글과 함께 보관한다.
 			const archivedAuthor = fromUser.username != null ? { uri: chatActorUri(fromUser, this.config.url), username: fromUser.username, name: fromUser.name ?? null, host: fromUser.host } : null;
-			const inserted = await manager.withRepository(this.chatMessagesRepository).insertOne({ ...message, archivedAuthor, toRoomChannelId, channelRefs });
+			const reply = await this.resolveReplyTarget({ kind: 'room', roomId: current.id, channelId: toRoomChannelId ?? null }, params, manager);
+			const inserted = await manager.withRepository(this.chatMessagesRepository).insertOne({ ...message, archivedAuthor, toRoomChannelId, channelRefs, ...reply });
 			const recorded = await this.chatRoomNotificationService.record(manager, current, inserted);
 			Object.assign(toRoom, current);
 			return { inserted, recorded };
@@ -606,6 +618,31 @@ export class ChatService {
 		return users.filter(user => this.userEntityService.isLocalUser(user)).map(user => user.id);
 	}
 
+	/**
+	 * 답장할 원문을 이 서버에 저장된 기록에서 찾는다. 보내는 쪽이 준 것은 id나 주소뿐이고 본문·작성자는 쓰지 않는다.
+	 * 이 서버의 이용자가 보낸 id(replyToId)가 맞지 않으면 거절한다. 연합으로 받은 주소(replyToUri)는
+	 * 다른 대화의 글을 가리키면 답장 표시를 버리고, 아직 이 서버에 없는 글이면 검증한 주소만 보관해 읽을 때 다시 찾는다.
+	 * 모르는 주소를 따라 외부에 요청하지 않는다.
+	 */
+	@bindThis
+	public async resolveReplyTarget(scope: ChatReplyScope, params: { replyToId?: string | null; replyToUri?: unknown }, manager?: EntityManager): Promise<{ replyToId: string | null; replyToUri: string | null }> {
+		const none = { replyToId: null, replyToUri: null };
+		const repository = manager != null ? manager.withRepository(this.chatMessagesRepository) : this.chatMessagesRepository;
+
+		if (params.replyToId != null) {
+			const target = await repository.findOneBy({ id: params.replyToId });
+			if (target == null || !isReplyTargetInScope(target, scope) || await this.isFromSuspendedUser(target, manager)) throw new ChatReplyTargetError('no such reply target');
+			return { replyToId: target.id, replyToUri: null };
+		}
+
+		const uri = parseChatReplyUri(params.replyToUri);
+		if (uri == null) return none;
+		const target = await findReplyTargetByUri(repository, uri, this.config.url, scope);
+		if (target == null) return { replyToId: null, replyToUri: uri };
+		// 지워진 원문도 같은 대화의 글이면 이어 두어 "삭제된 메시지"로 보이게 한다.
+		return isReplyTargetInConversation(target, scope) ? { replyToId: target.id, replyToUri: null } : none;
+	}
+
 	@bindThis
 	public async readUserChatMessage(
 		readerId: MiUser['id'],
@@ -674,7 +711,7 @@ export class ChatService {
 			if (room == null) return;
 			const recipients = await this.chatRoomNotificationService.notificationRecipients(message, room, editRecipients);
 			if (recipients.length === 0) return;
-			const packed = await this.chatEntityService.packMessageDetailed(message);
+			const packed = await this.chatEntityService.packMessageDetailed(message, undefined, { omitReply: true });
 			// 포장 사이에 삭제되었으면 보내지 않는다
 			const latest = await this.chatMessagesRepository.findOneBy({ id: messageId });
 			if (latest == null || latest.deletedAt != null) return;
@@ -705,9 +742,10 @@ export class ChatService {
 	}
 
 	@bindThis
-	public async isFromSuspendedUser(message: Pick<MiChatMessage, 'fromUserId'>): Promise<boolean> {
+	public async isFromSuspendedUser(message: Pick<MiChatMessage, 'fromUserId'>, manager?: EntityManager): Promise<boolean> {
 		if (message.fromUserId == null) return false;
-		return await this.usersRepository.existsBy({ id: message.fromUserId, isSuspended: true });
+		// 트랜잭션 안에서는 같은 연결로 조회해 연결을 하나 더 빌리지 않는다.
+		return await (manager != null ? manager.withRepository(this.usersRepository) : this.usersRepository).existsBy({ id: message.fromUserId, isSuspended: true });
 	}
 
 	/**
@@ -759,16 +797,11 @@ export class ChatService {
 
 	@bindThis
 	public async hasPermissionToViewRoomTimeline(meId: MiUser['id'], room: MiChatRoom) {
-		if (await this.isRoomMember(room, meId)) {
-			return true;
-		} else {
-			const iAmModerator = await this.roleService.isModerator({ id: meId });
-			if (iAmModerator) {
-				return true;
-			}
-
-			return false;
-		}
+		// 기준은 답장 원문 미리보기(ChatEntityService)와 같은 canReadRoomTimeline이다.
+		const isMember = await this.isRoomMember(room, meId);
+		const memberRoomIds = new Set(isMember ? [room.id] : []);
+		if (canReadRoomTimeline(room, meId, memberRoomIds, false)) return true;
+		return canReadRoomTimeline(room, meId, memberRoomIds, await this.roleService.isModerator({ id: meId }));
 	}
 
 	private async saveRoomMessageEdit(message: MiChatMessage, patch: Pick<MiChatMessage, 'text' | 'editedAt' | 'emojis' | 'channelRefs'>, remote = false) {
@@ -850,7 +883,7 @@ export class ChatService {
 	}
 
 	private async removeMessageContent(message: MiChatMessage, deletedAt: Date): Promise<void> {
-		const patch = { text: null, dice: null, fileIds: [], reactions: [], deletedAt };
+		const patch = { text: null, dice: null, fileIds: [], reactions: [], replyToId: null, replyToUri: null, deletedAt };
 		await this.chatMessagesRepository.update(message.id, patch);
 		// 삭제된 글의 미읽음 표식은 다음 열람까지 보수적으로 남긴다. 집계만 지금 다시 계산한다.
 		if (message.toRoomId != null) {
@@ -868,6 +901,8 @@ export class ChatService {
 		message.dice = null;
 		message.fileIds = [];
 		message.reactions = [];
+		message.replyToId = null;
+		message.replyToUri = null;
 		message.deletedAt = deletedAt;
 
 		const participants = await this.participantsForMessage(message);

@@ -312,7 +312,7 @@ describe('telling the page what was sent from here', () => {
 		expect(onSent).not.toHaveBeenCalled();
 
 		sent.resolve({ id: 'sent-1' });
-		await waitFor(() => expect(onSent).toHaveBeenCalledExactlyOnceWith('sent-1'));
+		await waitFor(() => expect(onSent).toHaveBeenCalledExactlyOnceWith('sent-1', undefined));
 	});
 
 	test('does not for a saved edit, which is not new', async () => {

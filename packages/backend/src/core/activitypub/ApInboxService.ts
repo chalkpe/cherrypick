@@ -1384,6 +1384,7 @@ export class ApInboxService {
 					emojis: apEmojis,
 					editedAt,
 					dice: object._misskey_dice,
+					replyToUri: object._misskey_chatReplyTo,
 				});
 			} else {
 				// Group chat
@@ -1407,6 +1408,7 @@ export class ApInboxService {
 					editedAt,
 					dice: object._misskey_dice,
 					published,
+					replyToUri: object._misskey_chatReplyTo,
 				});
 			}
 

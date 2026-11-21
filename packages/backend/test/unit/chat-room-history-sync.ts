@@ -140,7 +140,7 @@ function setup(options: Setup = {}) {
 				findBy: vi.fn(async ({ name }: { name: { value: string[] } }) => name.value.filter(n => options.knownEmojis?.has(n)).map(n => ({ name: n }))),
 				existsBy: vi.fn(async ({ name }: { name: string }) => options.knownEmojis?.has(name) ?? false),
 			},
-		chatService: { applyPendingChatReactions, normalizeRemoteReaction: ChatService.prototype.normalizeRemoteReaction },
+		chatService: { applyPendingChatReactions, resolveReplyTarget: vi.fn(async () => ({ replyToId: null, replyToUri: null })), normalizeRemoteReaction: ChatService.prototype.normalizeRemoteReaction },
 		chatRoomChannelService: {
 			remoteChannel: vi.fn(async (_room: unknown, value: unknown) => options.channel != null ? options.channel(value) : null),
 			remoteRefs: vi.fn(async () => []),
