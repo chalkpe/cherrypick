@@ -7,7 +7,7 @@ import type { MiChatMessage } from '@/models/ChatMessage.js';
 import { ChatRoomChannelService } from '@/core/ChatRoomChannelService.js';
 import { createPublicKey, randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
-import { In } from 'typeorm';
+import { In, IsNull } from 'typeorm';
 import * as mfm from 'mfc-js';
 import { DI } from '@/di-symbols.js';
 import type { Config } from '@/config.js';
@@ -26,7 +26,7 @@ import { MfmService } from '@/core/MfmService.js';
 import { UserEntityService } from '@/core/entities/UserEntityService.js';
 import { DriveFileEntityService } from '@/core/entities/DriveFileEntityService.js';
 import type { MiUserKeypair } from '@/models/UserKeypair.js';
-import type { UsersRepository, UserProfilesRepository, NotesRepository, DriveFilesRepository, PollsRepository, EventsRepository, MiMeta } from '@/models/_.js';
+import type { UsersRepository, UserProfilesRepository, NotesRepository, DriveFilesRepository, ChatMessagesRepository, PollsRepository, EventsRepository, MiMeta } from '@/models/_.js';
 import { bindThis } from '@/decorators.js';
 import { reportedVoiceStatus } from '@/core/voice-participant-status.js';
 import { CustomEmojiService } from '@/core/CustomEmojiService.js';
@@ -50,6 +50,7 @@ import {
 	buildChatRoomUpdate,
 	buildChatUpdate,
 	type ChatPayloadOptions,
+	chatMessageUri,
 	chatRoomUriForOwner,
 } from './misc/chat-payloads.js';
 import type { IAccept, IActivity, IAdd, IAnnounce, IApDocument, IApEmoji, IApHashtag, IApImage, IApMention, IBlock, IChatRoomVoiceState, ICreate, IDelete, IFlag, IFollow, IInvite, IKey, ILike, IMove, IObject, IPost, IQuestion, IRead, IReject, IRemove, ITombstone, IUndo, IUpdate } from './type.js';
@@ -106,6 +107,9 @@ export class ApRendererService {
 
 		@Inject(DI.driveFilesRepository)
 		private driveFilesRepository: DriveFilesRepository,
+
+		@Inject(DI.chatMessagesRepository)
+		private chatMessagesRepository: ChatMessagesRepository,
 
 		@Inject(DI.pollsRepository)
 		private pollsRepository: PollsRepository,
@@ -881,10 +885,14 @@ export class ApRendererService {
 		const emojis = message.emojis && message.emojis.length > 0 ? await this.getEmojis(message.emojis) : [];
 		const apemojis = emojis.filter(emoji => !emoji.localOnly).map(emoji => this.renderEmoji(emoji));
 
+		// 원문의 id만 주소로 바꿔 싣는다. 원문이 지워졌으면 싣지 않는다.
+		const replyTarget = message.replyToId != null ? await this.chatMessagesRepository.findOneBy({ id: message.replyToId, deletedAt: IsNull() }) : null;
+
 		return {
 			baseUrl: this.config.url,
 			published: this.idService.parse(message.id).date.toISOString(),
 			roomUri,
+			...(replyTarget != null ? { replyToUri: chatMessageUri(replyTarget, this.config.url) } : message.replyToUri != null ? { replyToUri: message.replyToUri } : {}),
 			attachment,
 			tag: apemojis,
 			...(message.toRoomChannelId != null ? await this.chatRoomChannelService.messageFields(message) : {}),

@@ -7285,6 +7285,26 @@ export interface Locale extends ILocale {
          */
         "editingMessage": string;
         /**
+         * {name}さんに返信中
+         */
+        "replyingTo": ParameterizedString<"name">;
+        /**
+         * 元のメッセージへ移動
+         */
+        "replyJump": string;
+        /**
+         * 添付ファイル
+         */
+        "replyAttachment": string;
+        /**
+         * 返信先のメッセージが見つかりません。返信を取り消して、もう一度送ってください。
+         */
+        "replyTargetNotFound": string;
+        /**
+         * 元のメッセージを見つけられませんでした。
+         */
+        "replyOriginalNotFound": string;
+        /**
          * このグループには参加していません。
          */
         "removedFromRoom": string;

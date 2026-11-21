@@ -24,6 +24,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 		<MkFukidashi :class="[$style.fukidashi, { [$style.noTailLeft]: !isFirstInGroup && !isMe }]" :tail="!isFirstInGroup ? 'none' : isMe ? 'right' : 'left'" :fullWidth="hasFiles" :accented="isMe">
 			<span v-if="deletedAt" :class="$style.deletedMessage">{{ i18n.ts._chat.deletedMessage }}</span>
 			<template v-else>
+				<component :is="canJumpToReply ? 'button' : 'div'" v-if="replyPreview != null" :type="canJumpToReply ? 'button' : undefined" :class="[$style.reply, { [$style.replyJumpable]: canJumpToReply }]" :aria-label="canJumpToReply ? i18n.ts._chat.replyJump : undefined" @click="onReplyClick">
+					<span v-if="replyPreview.name != null" :class="$style.replyName">{{ replyPreview.name }}</span>
+					<span :class="[$style.replyText, { [$style.replyDeleted]: replyPreview.deleted }]">
+						<template v-if="replyPreview.deleted">{{ i18n.ts._chat.deletedMessage }}</template>
+						<template v-else-if="replyPreview.text != null">{{ replyPreview.text }}</template>
+						<template v-else><i class="ti ti-photo" aria-hidden="true"></i> {{ i18n.ts._chat.replyAttachment }}</template>
+					</span>
+				</component>
 				<Mfm
 					v-if="message.text"
 					ref="text"
@@ -122,6 +130,8 @@ const props = withDefaults(defineProps<{
 	isSearchResult?: boolean;
 	channels?: Misskey.entities.ChatRoomChannel[];
 	canEdit?: boolean;
+	// 답장 메뉴와 원문으로 이동은 타임라인에서만 쓴다. 검색 결과나 단일 메시지 화면에서는 이동할 곳이 없다
+	canReply?: boolean;
 	// ルームの画面のメッセージには toRoom が付かないので、アーカイブの状態はルームから受け取る
 	roomArchived?: boolean;
 	// 同じ送信者が続けて送ったメッセージのまとまりの中での位置。省略すると単独のメッセージとして表示する。
@@ -132,11 +142,14 @@ const props = withDefaults(defineProps<{
 	firstInGroup: true,
 	lastInGroup: true,
 	canEdit: false,
+	canReply: false,
 	roomArchived: false,
 });
 
 const emit = defineEmits<{
 	(ev: 'edit', message: NormalizedChatMessage | Misskey.entities.ChatMessage): void;
+	(ev: 'reply', message: NormalizedChatMessage | Misskey.entities.ChatMessage): void;
+	(ev: 'jumpToReply', messageId: string): void;
 }>();
 
 const fetchedChannels = ref<Misskey.entities.ChatRoomChannel[] | null>(null);
@@ -173,6 +186,20 @@ const unavailableFileCount = computed(() => 'unavailableFileCount' in props.mess
 const editedAt = computed(() => (props.message as NormalizedChatMessage).editedAt ?? null);
 const deletedAt = computed(() => (props.message as NormalizedChatMessage).deletedAt ?? null);
 const hasFiles = computed(() => deletedAt.value == null && props.message.files.length > 0);
+// 답장 말풍선의 원문 미리보기. 서버가 저장된 기록에서 만든 것만 쓰며, 지워진 원문은 내용 없이 지워졌다고만 보인다
+const replyPreview = computed(() => {
+	const reply = props.message.reply;
+	if (reply == null) return null;
+	const author = reply.fromUser ?? null;
+	const name = reply.isDeleted ? null : author != null ? (author.name ?? author.username) : (reply.archivedAuthor?.name ?? reply.archivedAuthor?.username ?? null);
+	return { id: reply.id, deleted: reply.isDeleted, name, text: reply.text, fileCount: reply.fileCount };
+});
+const canJumpToReply = computed(() => props.canReply && replyPreview.value != null && !replyPreview.value.deleted);
+
+function onReplyClick() {
+	if (canJumpToReply.value) emit('jumpToReply', replyPreview.value!.id);
+}
+
 const unmounted = ref(false);
 const isReadOnly = computed(() => props.roomArchived || ('toRoom' in props.message && props.message.toRoom?.isArchived === true));
 // 自分のメッセージにはリアクションできない。サーバーは NO_SUCH_MESSAGE で断る
@@ -277,6 +304,16 @@ function getMenu(): MenuItem[] {
 
 		menu.push({
 			type: 'divider',
+		});
+	}
+
+	if (props.canReply && !deletedAt.value && !isReadOnly.value && $i.policies.chatAvailability === 'available') {
+		menu.push({
+			text: i18n.ts.reply,
+			icon: 'ti ti-arrow-back-up',
+			action: () => {
+				emit('reply', props.message);
+			},
 		});
 	}
 
@@ -495,6 +532,59 @@ function getMenu(): MenuItem[] {
 
 .content {
 	display: block;
+}
+
+// 첨부 이미지처럼 말풍선 안에 원문 작성자와 짧은 본문을 인용으로 보인다
+.reply {
+	display: block;
+	box-sizing: border-box;
+	width: 100%;
+	margin: 0 0 6px;
+	padding: 4px 8px;
+	border: 0;
+	border-left: 3px solid currentColor;
+	border-radius: 4px;
+	background: color-mix(in srgb, currentColor, transparent 85%);
+	color: inherit;
+	font: inherit;
+	font-size: 85%;
+	text-align: left;
+	overflow: hidden;
+
+	&.replyJumpable {
+		cursor: pointer;
+
+		&:hover {
+			background: color-mix(in srgb, currentColor, transparent 78%);
+		}
+	}
+}
+
+.replyName {
+	display: block;
+	font-weight: bold;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.replyText {
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	overflow: hidden;
+	overflow-wrap: anywhere;
+}
+
+.replyDeleted {
+	opacity: 0.7;
+	font-style: italic;
+}
+
+// 이동한 원문을 잠깐 강조한다
+.root:global(.chatMessageHighlight) .fukidashi {
+	outline: 2px solid var(--MI_THEME-accent);
+	outline-offset: 2px;
 }
 
 .footer {

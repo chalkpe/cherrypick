@@ -9,7 +9,7 @@ import { Endpoint } from '@/server/api/endpoint-base.js';
 import { GetterService } from '@/server/api/GetterService.js';
 import { ChatDiceError, createChatDiceApiErrors } from '@/core/chat-dice.js';
 import { ApiError } from '@/server/api/error.js';
-import { ChatMessageAccessError, ChatMessageBlockedError, ChatMessageRecipientSuspendedError, ChatService, MAX_CHAT_MESSAGE_FILES, MAX_CHAT_MESSAGE_TEXT_LENGTH } from '@/core/ChatService.js';
+import { ChatMessageAccessError, ChatMessageBlockedError, ChatMessageRecipientSuspendedError, ChatReplyTargetError, ChatService, MAX_CHAT_MESSAGE_FILES, MAX_CHAT_MESSAGE_TEXT_LENGTH } from '@/core/ChatService.js';
 
 export const meta = {
 	tags: ['chat'],
@@ -32,6 +32,11 @@ export const meta = {
 	},
 
 	errors: {
+		noSuchReplyTarget: {
+			message: 'No such message to reply to.',
+			code: 'NO_SUCH_REPLY_TARGET',
+			id: 'b1ca57ae-e330-438a-9006-18593515b457',
+		},
 		...createChatDiceApiErrors({
 			invalid: 'f0d2515a-4d95-4a17-a5e8-86f8236c607b',
 			limit: '795eec5c-dfd3-47a8-af77-914f6b6bc229',
@@ -100,6 +105,7 @@ export const paramDef = {
 			items: { type: 'string', format: 'misskey:id' },
 		},
 		toUserId: { type: 'string', format: 'misskey:id' },
+		replyToId: { type: 'string', format: 'misskey:id' },
 	},
 	required: ['toUserId'],
 } as const;
@@ -143,8 +149,10 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				return await this.chatService.createMessageToUser(me, toUser, {
 					text: ps.text,
 					files,
+					replyToId: ps.replyToId,
 				});
 			} catch (e) {
+				if (e instanceof ChatReplyTargetError) throw new ApiError(meta.errors.noSuchReplyTarget);
 				if (e instanceof ChatDiceError) throw new ApiError(e.reason === 'invalid' ? meta.errors.diceInvalid : e.reason === 'limit' ? meta.errors.diceLimit : meta.errors.diceBusy);
 				if (e instanceof ChatMessageBlockedError) throw new ApiError(meta.errors.youHaveBeenBlocked);
 				if (e instanceof ChatMessageRecipientSuspendedError) throw new ApiError(meta.errors.recipientIsSuspended);

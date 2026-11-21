@@ -112,7 +112,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 											:roomArchived="room?.isArchived === true"
 											:firstInGroup="groupPositions[i]?.first ?? true"
 											:lastInGroup="groupPositions[i]?.last ?? true"
+											:canReply="room?.isArchived !== true && !membershipEnded"
 											@edit="onEditMessage"
+											@reply="onReplyMessage"
+											@jumpToReply="jumpToMessage"
 										/>
 									</div>
 									<div v-else-if="item.type === 'date'" :class="$style.dateDivider">
@@ -143,7 +146,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 							</button>
 						</div>
 					</Transition>
-					<XForm v-if="initialized && !room?.isArchived && !membershipEnded" ref="chatFormEl" :key="channelId ?? roomId ?? userId" :channelId="channelId" :channels="channels" :user="user" :room="room" :editingMessage="editingMessage" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit" @sent="onSent"/>
+					<XForm v-if="initialized && !room?.isArchived && !membershipEnded" ref="chatFormEl" :key="channelId ?? roomId ?? userId" :channelId="channelId" :channels="channels" :user="user" :room="room" :editingMessage="editingMessage" :replyingTo="replyingTo" :class="$style.form" @edited="onEdited" @cancelEdit="onCancelEdit" @cancelReply="replyingTo = null" @sent="onSent"/>
 				</div>
 			</div>
 		</div>
@@ -177,6 +180,7 @@ import XInfo from './room.info.vue';
 import XBanner from './room.voice.banner.vue';
 import XStage from './room.voice.stage.vue';
 import { chatJoinErrors, chatLeaveErrors } from './chat-errors.js';
+import { chatReplyPreviewText, deletedReplyOf } from './chat-reply.js';
 import { getUninvitableUsers, inviteUsersToRoom } from './chat-invite.js';
 import type { MenuItem } from '@/types/menu.js';
 import type { PageHeaderItem } from '@/types/page-header.js';
@@ -287,6 +291,51 @@ const editingMessage = ref<NormalizedChatMessage | null>(null);
 
 function onEditMessage(message: NormalizedChatMessage) {
 	editingMessage.value = message;
+	replyingTo.value = null;
+}
+
+// 지금 입력창에서 답장하려는 메시지. 대화나 채널이 바뀌면 내린다
+const replyingTo = ref<NormalizedChatMessage | null>(null);
+
+function onReplyMessage(message: NormalizedChatMessage) {
+	replyingTo.value = message;
+	editingMessage.value = null;
+}
+
+// 인용을 눌러 원문으로 간다. 손에 없는 옛 글은 목록을 더 불러오는 기존 경로로 찾는다
+const MAX_JUMP_PAGES = 40;
+let jumping = false;
+
+async function jumpToMessage(id: string) {
+	if (jumping) return;
+	jumping = true;
+	const version = conversationVersion;
+	try {
+		let pages = 0;
+		while (!messages.value.some(m => m.id === id) && canFetchMore.value && pages++ < MAX_JUMP_PAGES) {
+			if (moreFetching.value) {
+				await new Promise(resolve => window.setTimeout(resolve, 100));
+			} else {
+				const before = messages.value.length;
+				await fetchMore();
+				if (messages.value.length === before) break;
+			}
+			if (destroyed || version !== conversationVersion) return;
+		}
+		if (destroyed || version !== conversationVersion) return;
+		await nextTick();
+		const el = timelineEl.value?.querySelector<HTMLElement>(`[data-chat-message-id="${CSS.escape(id)}"]`);
+		const target = messages.value.find(m => m.id === id);
+		if (el == null || target == null || target.deletedAt != null) {
+			os.toast(i18n.ts._chat.replyOriginalNotFound);
+			return;
+		}
+		el.scrollIntoView({ block: 'center', behavior: prefer.s.animation ? 'smooth' : 'auto' });
+		el.classList.add('chatMessageHighlight');
+		window.setTimeout(() => el.classList.remove('chatMessageHighlight'), 1600);
+	} finally {
+		jumping = false;
+	}
 }
 
 function onEdited() {
@@ -386,6 +435,7 @@ const sentMessageArrived = computed(() => sentMessageId.value != null && message
 
 function onSent(id: NormalizedChatMessage['id']) {
 	sentMessageId.value = id;
+	replyingTo.value = null;
 }
 
 watch(sentMessageArrived, arrived => {
@@ -425,8 +475,13 @@ watch(timelineEl, el => {
 });
 
 function normalizeMessage(message: Misskey.entities.ChatMessageLite | Misskey.entities.ChatMessage): NormalizedChatMessage {
+	// 일대일의 원문 작성자는 대화 상대와 나뿐이므로 목록에서 바로 정한다
+	const reply = message.reply != null && message.reply.fromUser == null && message.reply.fromUserId != null && message.toRoomId == null
+		? { ...message.reply, fromUser: message.reply.fromUserId === $i.id ? $i : user.value }
+		: message.reply;
 	return {
 		...message,
+		reply,
 		// 일대일 메시지에는 작성자가 실리지 않는다. 그룹 메시지의 null은 계정이 없어진 작성자다
 		fromUser: message.fromUser !== undefined ? message.fromUser : (message.fromUserId === $i.id ? $i : user.value!),
 		reactions: message.reactions.map(record => ({
@@ -487,6 +542,7 @@ async function initialize() {
 	messages.value = [];
 	olderCursorId = null;
 	editingMessage.value = null;
+	replyingTo.value = null;
 	user.value = null;
 	room.value = null;
 	canFetchMore.value = false;
@@ -704,8 +760,15 @@ function onDeleted(id: string) {
 		message.reactions = [];
 		message.emojis = {};
 	}
+	// 이 글에 답한 글의 인용에는 내용을 남기지 않는다
+	for (const m of messages.value) {
+		if (m.reply?.id === id) m.reply = deletedReplyOf(m.reply);
+	}
 	if (editingMessage.value?.id === id) {
 		editingMessage.value = null;
+	}
+	if (replyingTo.value?.id === id) {
+		replyingTo.value = null;
 	}
 }
 
@@ -744,6 +807,12 @@ function onUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['updat
 		if (ctx.channelRefs != null) message.channelRefs = ctx.channelRefs;
 		if (ctx.emojis != null) message.emojis = ctx.emojis;
 	}
+	// 이 글에 답한 글의 인용도 고친 본문으로 바꾼다
+	if (message != null && !message.deletedAt) {
+		for (const m of messages.value) {
+			if (m.reply?.id === ctx.messageId && !m.reply.isDeleted) m.reply = { ...m.reply, text: chatReplyPreviewText(ctx.text) };
+		}
+	}
 }
 
 function onRoomUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['roomUpdated']>[0]) {
@@ -767,7 +836,10 @@ function onRoomUpdated(ctx: Parameters<Misskey.Channels['chatRoom']['events']['r
 
 // 入力欄がなくなるので編集も終わる。解除したときに編集へ戻ると、入力中の内容が原文に戻ってしまう
 watch(() => room.value?.isArchived, isArchived => {
-	if (isArchived) editingMessage.value = null;
+	if (isArchived) {
+		editingMessage.value = null;
+		replyingTo.value = null;
+	}
 });
 
 function onMembershipChanged() {
@@ -904,6 +976,7 @@ function closeRoom() {
 	initialized.value = false;
 	messages.value = [];
 	editingMessage.value = null;
+	replyingTo.value = null;
 	room.value = null;
 	canFetchMore.value = false;
 	connection.value?.dispose();

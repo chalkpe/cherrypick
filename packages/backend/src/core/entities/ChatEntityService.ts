@@ -6,12 +6,15 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { In } from 'typeorm';
 import { DI } from '@/di-symbols.js';
+import type { Config } from '@/config.js';
 import type { MiUser, MiDriveFile, ChatMessagesRepository, MiChatMessage, ChatRoomsRepository, MiChatRoom, MiChatRoomInvitation, ChatRoomInvitationsRepository, MiChatRoomMembership, ChatRoomMembershipsRepository, MiChatRoomBan, UsersRepository, ChatRoomChannelsRepository } from '@/models/_.js';
 import { awaitAll } from '@/misc/prelude/await-all.js';
 import type { Packed } from '@/misc/json-schema.js';
 import type { } from '@/models/Blocking.js';
 import { bindThis } from '@/decorators.js';
 import { parseChatDiceResult } from '@/core/chat-dice.js';
+import { chatReplyPreviewText, findReplyTargetByUri, isReplyTargetInScope } from '@/core/chat-reply.js';
+import type { ChatReplyScope } from '@/core/chat-reply.js';
 import { ChatRoomIconEntityService } from './ChatRoomIconEntityService.js';
 import { IdService } from '@/core/IdService.js';
 import { ChatRoomNotificationService } from '@/core/ChatRoomNotificationService.js';
@@ -46,6 +49,9 @@ export class ChatEntityService {
 
 		@Inject(DI.chatRoomChannelsRepository)
 		private chatRoomChannelsRepository: ChatRoomChannelsRepository,
+
+		@Inject(DI.config)
+		private config: Config,
 	) {
 	}
 
@@ -73,6 +79,42 @@ export class ChatEntityService {
 
 	private hasArchivedAuthor(message: MiChatMessage, fromUser: MiUser | null): boolean {
 		return message.toRoomId != null && (fromUser == null || fromUser.isDeleted);
+	}
+
+	/**
+	 * 답장 말풍선에 싣는 원문 미리보기. 저장된 원문 기록에서만 만들고, 지워졌거나 같은 대화가 아니면 내용 없이 지워진 것으로 알린다.
+	 * 원문 작성자 정지 여부는 목록 조회가 이미 숨기는 규칙과 같게 본다.
+	 */
+	private async packReply(message: MiChatMessage, me?: { id: MiUser['id'] }, withAuthor = true) {
+		if ((message.replyToId == null && message.replyToUri == null) || message.deletedAt != null) return { replyToId: null, reply: null };
+		const scope: ChatReplyScope | null = message.toRoomId != null
+			? { kind: 'room', roomId: message.toRoomId, channelId: message.toRoomChannelId ?? null }
+			: message.fromUserId != null && message.toUserId != null ? { kind: 'user', userIds: [message.fromUserId, message.toUserId] } : null;
+		// 연합으로 받아 원문 id를 아직 모르는 답장은 저장된 글에서 주소로 다시 찾는다. 아직 없으면 인용 없이 보인다.
+		const target = scope == null ? null
+			: message.replyToId != null ? await this.chatMessagesRepository.findOneBy({ id: message.replyToId })
+				: await findReplyTargetByUri(this.chatMessagesRepository, message.replyToUri!, this.config.url, scope);
+		if (message.replyToId == null && (target == null || scope == null || !isReplyTargetInScope(target, scope))) return { replyToId: null, reply: null };
+		const replyToId = target?.id ?? message.replyToId!;
+		const unavailable = { replyToId, reply: { id: replyToId, isDeleted: true, text: null, fileCount: 0, fromUserId: null, fromUser: null, archivedAuthor: null } };
+
+		if (target == null || scope == null || !isReplyTargetInScope(target, scope)) return unavailable;
+
+		const author = target.fromUserId != null ? await this.usersRepository.findOneBy({ id: target.fromUserId }) : null;
+		if (author?.isSuspended) return unavailable;
+
+		return {
+			replyToId,
+			reply: {
+				id: target.id,
+				isDeleted: false,
+				text: chatReplyPreviewText(target.text),
+				fileCount: target.fileIds.length + (target.unavailableFileCount ?? 0),
+				fromUserId: target.fromUserId,
+				fromUser: withAuthor && !this.hasArchivedAuthor(target, author) ? await this.userEntityService.pack(author ?? target.fromUserId!, me) : null,
+				archivedAuthor: this.archivedAuthorOf(target, author),
+			},
+		};
 	}
 
 	/** A file can be gone by now, as nothing refers to it by a foreign key. `fileId` and `file` are for clients from before there could be several. */
@@ -146,6 +188,7 @@ export class ChatEntityService {
 			toUser: message.toUserId ? (packedUsers?.get(message.toUserId) ?? (await this.userEntityService.pack(message.toUser ?? message.toUserId, me))) : undefined,
 			toRoomId: message.toRoomId,
 			...(await this.packMessageChannel(message)),
+			...(await this.packReply(message, me)),
 			toRoom: message.toRoomId ? (packedRooms?.get(message.toRoomId) ?? (await this.packRoom(message.toRoom ?? message.toRoomId, me))) : undefined,
 			...(await this.packMessageFiles(message, packedFiles)),
 			reactions: deleted ? [] : reactions.filter((r): r is { user: Packed<'UserLite'>; reaction: string; } => r.user != null),
@@ -237,6 +280,7 @@ export class ChatEntityService {
 			dice: deleted ? null : parseChatDiceResult(message.dice),
 			fromUserId: message.fromUserId!,
 			toUserId: message.toUserId!,
+			...(await this.packReply(message, undefined, false)),
 			...(await this.packMessageFiles(message, packedFiles)),
 			reactions,
 			emojis: emojis,
@@ -307,6 +351,7 @@ export class ChatEntityService {
 			unavailableFileCount: message.unavailableFileCount ?? 0,
 			toRoomId: message.toRoomId!,
 			...(await this.packMessageChannel(message)),
+			...(await this.packReply(message)),
 			...(await this.packMessageFiles(message, packedFiles)),
 			reactions: deleted ? [] : reactions.filter((r): r is { user: Packed<'UserLite'>; reaction: string; } => r.user != null),
 			emojis: emojis,
