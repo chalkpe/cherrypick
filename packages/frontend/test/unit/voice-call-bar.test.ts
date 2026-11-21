@@ -30,6 +30,7 @@ vi.mock('@/utility/voice-call.js', async importOriginal => {
 	return {
 		voiceCall,
 		canShareScreen: () => false,
+		canSelectAudioOutput: async () => true,
 		leaveVoiceCall: vi.fn(),
 		resumeAudio: vi.fn(),
 		setDeafened: vi.fn(),
@@ -63,6 +64,7 @@ const devices = [
 async function openMicMenu() {
 	render(XVoiceCallBar, { global: { stubs: { MkA: { template: '<a><slot /></a>' } } } });
 	await fireEvent.click(screen.getAllByRole('button').find(b => b.getAttribute('aria-label') != null && b.querySelector('.ti-settings'))!);
+	await vi.waitFor(() => expect(mocks.popupMenu).toHaveBeenCalled());
 	const items = mocks.popupMenu.mock.calls[0][0] as any[];
 	return await items[0].children() as any[];
 }

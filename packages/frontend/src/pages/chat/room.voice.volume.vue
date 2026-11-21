@@ -4,11 +4,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 -->
 
 <template>
-<div :class="$style.root">
+<div :class="$style.root" @pointerdown="prepareBoostAudio" @pointerup="prepareBoostAudio" @touchstart.passive="prepareBoostAudio" @touchend="prepareBoostAudio">
 	<MkRange
 		:modelValue="volume"
 		:min="0"
-		:max="1"
+		:max="2"
 		:step="0.05"
 		:textConverter="v => `${Math.round(v * 100)}%`"
 		continuousUpdate
@@ -24,7 +24,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import { ref } from 'vue';
 import MkRange from '@/components/MkRange.vue';
 import { i18n } from '@/i18n.js';
-import { participantVolume, setParticipantVolume } from '@/utility/voice-call.js';
+import { participantVolume, prepareBoostAudio, setParticipantVolume } from '@/utility/voice-call.js';
 import type { ParticipantAudio } from '@/utility/voice-call.js';
 
 const props = defineProps<{

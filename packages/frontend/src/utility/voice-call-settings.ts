@@ -9,7 +9,7 @@ import * as os from '@/os.js';
 import { i18n } from '@/i18n.js';
 import { prefer } from '@/preferences.js';
 import { $i } from '@/i.js';
-import { activeAudioDeviceId, canShareScreen, selectAudioDevice } from '@/utility/voice-call.js';
+import { activeAudioDeviceId, canSelectAudioOutput, canShareScreen, selectAudioDevice } from '@/utility/voice-call.js';
 
 export const screenShareAvailable = computed(() => canShareScreen() && $i?.policies.canScreenShare === true);
 
@@ -26,14 +26,18 @@ async function deviceItems(kind: 'audioinput' | 'audiooutput'): Promise<MenuItem
 	}));
 }
 
-export function openVoiceCallSettings(ev: MouseEvent) {
+export async function openVoiceCallSettings(ev: MouseEvent) {
+	// await 뒤에는 이벤트의 대상을 읽을 수 없으므로 먼저 잡아 둔다
+	const anchor = ev.currentTarget ?? ev.target;
+	// 출력 장치를 고를 수 있는지는 LiveKit의 판정을 따른다 (Safari 계열은 메뉴 항목을 낼 수 없다)
+	const outputSelectable = await canSelectAudioOutput();
 	const items: MenuItem[] = [{
 		type: 'parent',
 		icon: 'ti ti-microphone',
 		text: i18n.ts._voiceCall.inputDevice,
 		children: () => deviceItems('audioinput'),
 	}];
-	if ('setSinkId' in HTMLMediaElement.prototype) {
+	if (outputSelectable) {
 		items.push({
 			type: 'parent',
 			icon: 'ti ti-headphones',
@@ -71,5 +75,5 @@ export function openVoiceCallSettings(ev: MouseEvent) {
 		text: i18n.ts._voiceCall.autoGainControl,
 		ref: prefer.model('voiceCall.autoGainControl'),
 	});
-	os.popupMenu(items, ev.currentTarget ?? ev.target);
+	os.popupMenu(items, anchor);
 }
