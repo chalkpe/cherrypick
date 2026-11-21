@@ -173,6 +173,7 @@ import { ref, useTemplateRef, computed, watch, nextTick, onMounted, onBeforeUnmo
 import * as Misskey from 'cherrypick-js';
 import { getScrollContainer } from '@@/js/scroll.js';
 import { channelConversationPath, channelListPath } from './chat-channel-references.js';
+import { useReplyWindowLifecycle } from './use-reply-window-lifecycle.js';
 import XReplyOriginalDialog from './XReplyOriginalDialog.vue';
 import XMessage from './XMessage.vue';
 import XForm from './room.form.vue';
@@ -319,6 +320,8 @@ function scrollToMessage(id: string): boolean {
 }
 
 let originalDispose: (() => void) | null = null;
+// 창 안 링크로 이동하면 이 대화가 비활성화되므로, 그때 원문 창이 남지 않게 닫는다
+useReplyWindowLifecycle(() => originalDispose?.(), isFrontmostConversation);
 
 async function jumpToMessage(id: string) {
 	if (jumping) return;
