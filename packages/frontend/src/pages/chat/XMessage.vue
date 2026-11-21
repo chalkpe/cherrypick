@@ -45,7 +45,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</template>
 		</MkFukidashi>
 		<MkUrlPreview v-for="url in urls" :key="url" :url="url" style="margin: 8px 0;"/>
-		<div :class="[$style.footer, { [$style.groupedFooter]: !isLastInGroup }]">
+		<div :class="[$style.footer, { [$style.groupedFooter]: !isLastInGroup && openMenuCount === 0 }]">
 			<button class="_textButton" :class="$style.menuButton" style="color: currentColor;" :aria-label="i18n.ts.menu" @click="showMenu"><i class="ti ti-dots-circle-horizontal"></i></button>
 			<MkTime :class="$style.time" :time="message.createdAt"/>
 			<span v-if="editedAt && !deletedAt" :class="$style.edited">{{ i18n.ts.edited }}</span>
@@ -259,8 +259,16 @@ function onMenuKeydown(ev: KeyboardEvent) {
 	showMenu(ev);
 }
 
+// 겹쳐 닫히는 메뉴가 있어도 마지막 메뉴가 닫힐 때까지 푸터(메뉴 기준 위치)를 유지하려고 열린 메뉴 수를 센다
+const openMenuCount = ref(0);
+
 function showMenu(ev: PointerEvent | KeyboardEvent) {
-	os.popupMenu(getMenu(), ev.currentTarget ?? ev.target);
+	openMenuCount.value++;
+	os.popupMenu(getMenu(), ev.currentTarget ?? ev.target, {
+		onClosed: () => {
+			openMenuCount.value--;
+		},
+	});
 }
 
 function getMenu(): MenuItem[] {
