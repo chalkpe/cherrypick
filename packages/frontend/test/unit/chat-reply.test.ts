@@ -70,7 +70,7 @@ test('조회가 실패하면 오류가 그대로 올라간다', async () => {
 test('목록 밖 원문의 수정 이벤트가 뒤바뀌어 와도 늦은 수정의 본문이 남는다', () => {
 	const seen = new Map<string, number>();
 	const reply = { id: 'm1', isDeleted: false, text: '처음', fileCount: 0, fromUserId: 'u1', fromUser: null, archivedAuthor: null };
-	let quote = reply;
+	let quote: Parameters<typeof editedReplyOf>[0] = reply;
 	for (const e of [{ at: '2026-01-01T00:00:02Z', text: '둘째' }, { at: '2026-01-01T00:00:01Z', text: '첫째' }]) {
 		if (acceptReplyEdit(seen, 'm1', e.at)) quote = editedReplyOf(quote, 'm1', e.text);
 	}

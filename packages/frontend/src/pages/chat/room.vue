@@ -318,6 +318,8 @@ function scrollToMessage(id: string): boolean {
 	return true;
 }
 
+let originalDispose: (() => void) | null = null;
+
 async function jumpToMessage(id: string) {
 	if (jumping) return;
 	jumping = true;
@@ -327,7 +329,7 @@ async function jumpToMessage(id: string) {
 			if (!scrollToMessage(id)) os.toast(i18n.ts._chat.replyOriginalNotFound);
 			return;
 		}
-		const oldest = messages.value.at(-1)?.id;
+		const oldest = olderCursorId ?? messages.value.at(-1)?.id;
 		// 불러온 범위 안인데 없는 글은 보이지 않는 글이다
 		if (oldest == null || id > oldest) {
 			os.toast(i18n.ts._chat.replyOriginalNotFound);
@@ -352,7 +354,8 @@ async function jumpToMessage(id: string) {
 			os.toast(i18n.ts._chat.replyOriginalNotFound);
 			return;
 		}
-		const { dispose } = os.popup(XReplyOriginalDialog, { messages: page.map(normalizeMessage), originalId: id }, { closed: () => dispose() });
+		const { dispose } = os.popup(XReplyOriginalDialog, { messages: page.map(normalizeMessage), originalId: id, roomArchived: room.value?.isArchived === true, channels: props.channels }, { closed: () => { if (originalDispose === dispose) originalDispose = null; dispose(); } });
+		originalDispose = dispose;
 	} finally {
 		jumping = false;
 	}
@@ -551,6 +554,7 @@ async function initialize() {
 	if (destroyed || !isActivated || (initializing.value && initializingKey === key)) return;
 	initializingKey = key;
 	const version = ++conversationVersion;
+	originalDispose?.();
 	const sameTarget = () => !destroyed && version === conversationVersion && key === conversationKey();
 	// 스택 라우터에서 뒤에 남은 그룹 대화는 초기화 응답으로 상태를 적용하거나 안내·이동·구독 연결을 하지 않는다. 돌아온 시점에 다시 초기화한다.
 	// 1:1 대화는 뒤에서도 받은 응답을 적용하고 구독을 연결한다.
@@ -1188,6 +1192,7 @@ watch(isFrontmostConversation, (frontmost, wasFrontmost) => {
 
 onBeforeUnmount(() => {
 	destroyed = true;
+	originalDispose?.();
 	conversationVersion++;
 	latestRoomPeopleRequest++;
 	connection.value?.dispose();
