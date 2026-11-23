@@ -624,7 +624,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 								<SearchMarker :keywords="['note', 'menu', 'long press', 'longpress', 'long', 'press', 'touch', 'tap', 'hold', 'contextmenu', '길게', '누르기', '롱프레스']">
 									<MkPreferenceContainer k="openNoteMenuOnLongPress">
-										<MkSwitch v-model="openNoteMenuOnLongPress">
+										<MkSwitch v-model="openNoteMenuOnLongPress" accessible>
 											<template #label><SearchLabel>{{ i18n.ts.openNoteMenuOnLongPress }}</SearchLabel></template>
 										</MkSwitch>
 									</MkPreferenceContainer>
