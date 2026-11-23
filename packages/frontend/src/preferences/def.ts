@@ -264,6 +264,9 @@ export const PREF_DEF = definePreferences({
 	useReactionPickerForContextMenu: {
 		default: false,
 	},
+	openNoteMenuOnLongPress: {
+		default: true,
+	},
 	showGapBetweenNotesInTimeline: {
 		default: true,
 	},

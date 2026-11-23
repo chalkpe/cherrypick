@@ -369,6 +369,7 @@ import { computed, inject, markRaw, onMounted, provide, reactive, ref, useTempla
 import * as mfm from 'mfc-js';
 import * as Misskey from 'cherrypick-js';
 import { isLink } from '@@/js/is-link.js';
+import { isTouchContextmenu } from '@/utility/is-touch-contextmenu.js';
 import { host } from '@@/js/config.js';
 import type { OpenOnRemoteOptions } from '@/utility/please-login.js';
 import type { Keymap } from '@/utility/hotkey.js';
@@ -805,6 +806,7 @@ function toggleReact() {
 function onContextmenu(ev: PointerEvent): void {
 	if (ev.target && isLink(ev.target as HTMLElement)) return;
 	if (window.getSelection()?.toString() !== '') return;
+	if (!prefer.s.openNoteMenuOnLongPress && isTouchContextmenu(ev)) return;
 
 	if (prefer.s.useReactionPickerForContextMenu) {
 		ev.preventDefault();
