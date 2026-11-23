@@ -10,12 +10,20 @@ import type * as Misskey from 'cherrypick-js';
 import MkNote from '@/components/MkNote.vue';
 import MkNoteDetailed from '@/components/MkNoteDetailed.vue';
 import { prefer } from '@/preferences.js';
+import { PreferencesManager } from '@/preferences/manager.js';
 
 const mocks = vi.hoisted(() => ({
 	contextMenu: vi.fn(() => Promise.resolve()),
 	popupMenu: vi.fn(() => Promise.resolve()),
 	getNoteMenu: vi.fn(() => ({ menu: [], cleanup: () => {} })),
 	pickerShow: vi.fn(),
+	io: {
+		load: () => null,
+		save: () => {},
+		cloudGet: async () => null,
+		cloudGetBulk: async () => ({}),
+		cloudSet: async () => {},
+	},
 }));
 
 vi.mock('@/os.js', () => ({ contextMenu: mocks.contextMenu, popupMenu: mocks.popupMenu }));
@@ -33,13 +41,7 @@ vi.mock('@@/js/interval.js', () => ({ createVisibilityAwareInterval: vi.fn() }))
 vi.mock('@/stream.js', () => ({ useStream: () => ({ send: vi.fn(), on: vi.fn(), off: vi.fn() }) }));
 vi.mock('@/preferences.js', async () => {
 	const { PreferencesManager } = await import('@/preferences/manager.js');
-	return { prefer: new PreferencesManager({
-		load: () => null,
-		save: () => {},
-		cloudGet: async () => null,
-		cloudGetBulk: async () => ({}),
-		cloudSet: async () => {},
-	}, { id: 'viewer' }) };
+	return { prefer: new PreferencesManager(mocks.io, { id: 'viewer' }) };
 });
 
 const note = {
@@ -50,23 +52,36 @@ const note = {
 	myReaction: null, repliesCount: 0, renoteCount: 0,
 } as unknown as Misskey.entities.Note;
 
-type Input = 'mouse' | 'pen' | 'touch' | 'touch-mouseevent' | 'keyboard' | 'mouseevent-plain';
+type Input = 'mouse' | 'pen' | 'touch' | 'touch-mouseevent' | 'mouse-from-touch' | 'unknown-from-touch' | 'keyboard' | 'mouseevent-plain';
 
-/** jsdom には PointerEvent が無いので、ブラウザが送る contextmenu の形を手で作る */
-function contextmenu(input: Input): Event {
-	const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
-	if (input === 'mouse' || input === 'pen' || input === 'touch') {
-		Object.defineProperty(ev, 'pointerType', { value: input });
-	} else if (input === 'keyboard') {
-		// Shift+F10 / メニューキーは pointerType が空
-		Object.defineProperty(ev, 'pointerType', { value: '' });
-	} else if (input === 'touch-mouseevent') {
-		// 旧 Chrome: pointerType を持たない MouseEvent で、入力元だけが touch を示す
-		Object.defineProperty(ev, 'sourceCapabilities', { value: { firesTouchEvents: true } });
-	} else {
-		Object.defineProperty(ev, 'sourceCapabilities', { value: { firesTouchEvents: false } });
-	}
+/** 입력 출처 정보(sourceCapabilities)는 happy-dom 이 만들지 않으므로 직접 붙인다 */
+function withTouchSource(ev: Event, firesTouchEvents: boolean): Event {
+	Object.defineProperty(ev, 'sourceCapabilities', { value: { firesTouchEvents } });
 	return ev;
+}
+
+/** 브라우저가 보내는 contextmenu 의 형태를 재현한다 */
+function contextmenu(input: Input): Event {
+	const init = { bubbles: true, cancelable: true };
+	switch (input) {
+		case 'mouse':
+		case 'pen':
+		case 'touch':
+			return new PointerEvent('contextmenu', { ...init, pointerType: input });
+		case 'keyboard':
+			// Shift+F10 / 메뉴 키는 pointerType 이 빈 문자열이고 터치 출처도 아니다
+			return withTouchSource(new PointerEvent('contextmenu', { ...init, pointerType: '' }), false);
+		case 'mouse-from-touch':
+			// 일부 구형 Chromium 은 터치 유래 contextmenu 의 pointerType 을 'mouse' 로 보낸다
+			return withTouchSource(new PointerEvent('contextmenu', { ...init, pointerType: 'mouse' }), true);
+		case 'unknown-from-touch':
+			return withTouchSource(new PointerEvent('contextmenu', { ...init, pointerType: '' }), true);
+		case 'touch-mouseevent':
+			// pointerType 이 없는 MouseEvent 로 전달되고 입력 출처만 터치를 나타낸다
+			return withTouchSource(new MouseEvent('contextmenu', init), true);
+		case 'mouseevent-plain':
+			return withTouchSource(new MouseEvent('contextmenu', init), false);
+	}
 }
 
 const stubs = {
@@ -92,11 +107,8 @@ function mount(component: typeof MkNote | typeof MkNoteDetailed) {
 	return { container, article };
 }
 
-let initialValue: unknown;
-
 beforeEach(async () => {
 	await prefer.cloudReady;
-	initialValue ??= prefer.s.openNoteMenuOnLongPress; // 저장값이 없는 최초 상태
 	prefer.commit('openNoteMenuOnLongPress', true);
 	prefer.commit('useReactionPickerForContextMenu', false);
 	mocks.contextMenu.mockClear();
@@ -104,18 +116,28 @@ beforeEach(async () => {
 	mocks.getNoteMenu.mockClear();
 	mocks.pickerShow.mockClear();
 });
-afterEach(cleanup);
+afterEach(() => {
+	cleanup();
+	vi.restoreAllMocks();
+});
 
 describe.each([['MkNote', MkNote], ['MkNoteDetailed', MkNoteDetailed]] as const)('%s 길게 누르기 메뉴', (_name, component) => {
-	test('저장값이 없으면 켜짐이라 손가락 입력에서도 기존처럼 메뉴가 열린다', async () => {
-		expect(initialValue).toBe(true);
+	test('설정 키가 없는 기존 프로필은 켜짐으로 열려 손가락 입력에서도 기존처럼 메뉴가 열린다', async () => {
+		// 다른 키만 저장된 기존 프로필을 불러와도 기본값(켜짐)이 채워진다
+		const legacy = new PreferencesManager({
+			...mocks.io,
+			load: () => ({ id: 'viewer', version: 'old', type: 'main', modifiedAt: 0, name: 'legacy', preferences: { useReactionPickerForContextMenu: [[{}, false, {}]] } }),
+		}, { id: 'viewer' });
+		expect(legacy.s.openNoteMenuOnLongPress).toBe(true);
+		prefer.commit('openNoteMenuOnLongPress', legacy.s.openNoteMenuOnLongPress);
+
 		const { article } = mount(component);
 		article.dispatchEvent(contextmenu('touch'));
 		await nextTick();
 		expect(mocks.contextMenu).toHaveBeenCalledTimes(1);
 	});
 
-	test.each(['touch', 'touch-mouseevent'] as const)('끄면 %s 입력에서는 메뉴가 열리지 않는다', async (input) => {
+	test.each(['touch', 'touch-mouseevent', 'mouse-from-touch', 'unknown-from-touch'] as const)('끄면 %s 입력에서는 메뉴가 열리지 않는다', async (input) => {
 		prefer.commit('openNoteMenuOnLongPress', false);
 		const { article } = mount(component);
 		const ev = contextmenu(input);
@@ -137,6 +159,16 @@ describe.each([['MkNote', MkNote], ['MkNoteDetailed', MkNoteDetailed]] as const)
 		expect(ev.defaultPrevented).toBe(false);
 	});
 
+	test('켜져 있으면 손가락 입력에서 리액션 선택기가 열린다', async () => {
+		prefer.commit('useReactionPickerForContextMenu', true);
+		const { article } = mount(component);
+		const ev = contextmenu('touch');
+		article.dispatchEvent(ev);
+		await nextTick();
+		expect(mocks.pickerShow).toHaveBeenCalledTimes(1);
+		expect(ev.defaultPrevented).toBe(true);
+	});
+
 	test.each(['mouse', 'pen', 'keyboard', 'mouseevent-plain'] as const)('끄더라도 %s 입력에서는 메뉴가 열린다', async (input) => {
 		prefer.commit('openNoteMenuOnLongPress', false);
 		const { article } = mount(component);
@@ -153,6 +185,7 @@ describe.each([['MkNote', MkNote], ['MkNoteDetailed', MkNoteDetailed]] as const)
 		article.dispatchEvent(ev);
 		await nextTick();
 		expect(ev.defaultPrevented).toBe(true);
+		expect(mocks.pickerShow).toHaveBeenCalledTimes(1);
 		expect(mocks.contextMenu).not.toHaveBeenCalled();
 	});
 
@@ -172,6 +205,5 @@ describe.each([['MkNote', MkNote], ['MkNoteDetailed', MkNoteDetailed]] as const)
 		article.dispatchEvent(contextmenu('touch'));
 		await nextTick();
 		expect(mocks.contextMenu).not.toHaveBeenCalled();
-		vi.restoreAllMocks();
 	});
 });
