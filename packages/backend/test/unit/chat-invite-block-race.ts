@@ -37,7 +37,7 @@ function fixture(linkInvitationId: string | null) {
 	return { service, invitations, removeMemberFromAllLists };
 }
 
-describe('blocking removes the blockee from the blocker\'s lists', () => {
+describe('blocking removes the blocker from the blockee\'s lists', () => {
 	test('without notifying the blockee\'s client', async () => {
 		const f = fixture(null);
 

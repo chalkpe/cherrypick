@@ -132,12 +132,12 @@ async function regenerateToken() {
 		});
 	} catch (err) {
 		hideWaiting();
-		// 待機表示を閉じてから、これまでと同じエラー案内を出す
+		// 대기 표시를 닫은 뒤, 기존과 같은 오류 안내를 띄운다
 		await os.apiErrorDialog('i/regenerate-token', err as Misskey.api.APIError);
 		return;
 	}
 
-	// ログアウトが終わるまで待機表示を保ち、無効なトークンのまま操作されないようにする
+	// 로그아웃이 끝날 때까지 대기 표시를 유지해, 무효화된 토큰으로 조작되지 않도록 한다
 	try {
 		await signout(false);
 	} catch (err) {
