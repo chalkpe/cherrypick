@@ -469,7 +469,9 @@ describe('messages from a suspended author', () => {
 
 	function createService() {
 		const conditions: string[] = [];
+		const limits: number[] = [];
 		const builder = {
+			limit(value: number) { limits.push(value); return this; },
 			andWhere(condition: unknown) { if (typeof condition === 'string') conditions.push(condition); return this; },
 			where() { return this; }, orderBy() { return this; }, take() { return this; }, setParameter() { return this; }, setParameters() { return this; },
 			leftJoinAndSelect() { return this; }, select() { return this; }, getQuery: () => 'query', getParameters: () => ({}), getMany: async () => [], getOne: async () => null,
@@ -482,7 +484,7 @@ describe('messages from a suspended author', () => {
 			chatRoomChannelService: Object.assign(Object.create(ChatRoomChannelService.prototype), { db: { manager: {} } }),
 			mutingsRepository: { createQueryBuilder: () => builder },
 		}) as ChatService;
-		return { service, conditions };
+		return { service, conditions, limits };
 	}
 
 	test.each([
@@ -499,6 +501,17 @@ describe('messages from a suspended author', () => {
 		await run(f.service);
 
 		expect(f.conditions.some(condition => condition.includes(hidden))).toBe(true);
+	});
+
+	test.each([
+		['the list of conversations', (service: ChatService) => service.userHistory('me', 1)],
+		['the list of rooms', (service: ChatService) => service.roomHistory('me', 1)],
+	])('read one latest message per entry of %s', async (_name, run) => {
+		const f = createService();
+
+		await run(f.service);
+
+		expect(f.limits).toEqual([1]);
 	});
 
 	function createShow(options: { suspended: boolean; moderator: boolean }) {

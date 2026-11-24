@@ -322,7 +322,8 @@ export class UserListService implements OnApplicationShutdown, OnModuleInit {
 			await this.userListMembershipsRepository.insert(arrayToInsert);
 
 			for (const { userListId } of arrayToInsert) {
-				this.globalEventService.publishInternalEvent('userListMemberAdded', { userListId, memberId: dst.id });
+				// 공유 캐시를 먼저 지운 뒤 내부 이벤트를 보낸다. 클라이언트용 userAdded는 아래에서 따로 보낸다.
+				await this.publishMemberChange(userListId, 'userAdded', { id: dst.id }, false);
 				this.globalEventService.publishUserListStream(userListId, 'internalMembershipUpdated', { userId: dst.id });
 			}
 		}

@@ -243,7 +243,7 @@ describe('chat/rooms/voice/convert-recording', () => {
 	});
 
 	test('reports a missing folder instead of a generic conversion failure', async () => {
-		const f = fixture({ addFileError: new Error('folder-not-found') });
+		const f = fixture({ addFileError: new IdentifiableError('b9adda75-abe9-4c6d-bf12-b5575833960d', 'No such folder.') });
 
 		await expect(f.endpoint.exec({ fileIds: ['original0'], requestId, folderId: 'gone' }, me, null, null)).rejects.toMatchObject({ code: 'NO_SUCH_FOLDER' });
 		expect(meta.errors).toHaveProperty('noSuchFolder');
@@ -384,7 +384,7 @@ describe('chat/rooms/voice/convert-recording', () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'convert-recording-test-'));
 		const kept = path.join(dir, 'kept.mp3');
 		fs.writeFileSync(kept, 'x');
-		const f = fixture({ addFileError: new Error('folder-not-found'), remembered: { download: { id: 'dl-1', name: 'room.mp3', size: 1, reason: 'tooLarge' }, remainingParts: [] } });
+		const f = fixture({ addFileError: new IdentifiableError('b9adda75-abe9-4c6d-bf12-b5575833960d', 'No such folder.'), remembered: { download: { id: 'dl-1', name: 'room.mp3', size: 1, reason: 'tooLarge' }, remainingParts: [] } });
 		f.recordingStorage.getDownload.mockResolvedValue({ id: 'dl-1', userId: 'me', requestId, path: kept, name: 'room.mp3', size: 1 });
 
 		try {

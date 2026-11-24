@@ -11,6 +11,7 @@ vi.mock('@/i.js', () => ({ $i: { token: 'unit-token' } }));
 
 import * as os from '@/os.js';
 import { prefer } from '@/preferences.js';
+import { i18n } from '@/i18n.js';
 import { deleteDriveItems } from '@/utility/drive-delete.js';
 
 const done = {
@@ -32,16 +33,41 @@ beforeEach(() => {
 });
 
 test('confirmation cancellation sends prepare but no destructive request over the real API transport', async () => {
-	fetchMock.mockResponseOnce(JSON.stringify({ operationId: done.operationId, totalCount: 0 }));
+	fetchMock.mockResponses(JSON.stringify({ operationId: done.operationId, totalCount: 0 }), JSON.stringify({ id: 'child', parentId: null, parent: null }));
 	vi.mocked(os.confirm).mockResolvedValue({ canceled: true });
 
 	const result = await deleteDriveItems({ folderId: 'root', name: 'Empty' });
 
 	expect(result).toBeNull();
-	expect(fetchMock).toHaveBeenCalledTimes(1);
-	expect(String(fetchMock.mock.calls[0][0])).toContain('/api/drive/delete/prepare');
+	expect(fetchMock.mock.calls.map(call => String(call[0]))).toEqual([
+		expect.stringContaining('/api/drive/delete/prepare'),
+		expect.stringContaining('/api/drive/folders/show'),
+	]);
+	expect(vi.mocked(os.confirm).mock.calls[0][0].text).not.toContain(i18n.ts.uploadFolderDeletionConfirm);
 	expect(vi.mocked(os.confirm).mock.calls[0][0].text).toContain('0');
 	expect(vi.mocked(os.confirm).mock.calls[0][0].text).toContain('Empty');
+});
+
+test('warns when the upload folder is inside the folder being deleted', async () => {
+	const nested = { id: 'child', parentId: 'middle', parent: { id: 'middle', parentId: 'root', parent: { id: 'root', parentId: null, parent: null } } };
+	fetchMock.mockResponses(JSON.stringify({ operationId: done.operationId, totalCount: 3 }), JSON.stringify(nested));
+	vi.mocked(os.confirm).mockResolvedValue({ canceled: true });
+
+	await deleteDriveItems({ folderId: 'root', name: 'Parent' });
+
+	const showBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+	expect(showBody).toMatchObject({ folderId: 'child' });
+	expect(vi.mocked(os.confirm).mock.calls[0][0].text).toContain(i18n.ts.uploadFolderDeletionConfirm);
+});
+
+test('still asks for confirmation without a warning when the upload folder cannot be read', async () => {
+	fetchMock.mockResponses(JSON.stringify({ operationId: done.operationId, totalCount: 3 }), [JSON.stringify({ error: { message: 'No such folder.', code: 'NO_SUCH_FOLDER', id: 'x', kind: 'client' } }), { status: 404 }]);
+	vi.mocked(os.confirm).mockResolvedValue({ canceled: true });
+
+	await deleteDriveItems({ folderId: 'root', name: 'Parent' });
+
+	expect(os.confirm).toHaveBeenCalledOnce();
+	expect(vi.mocked(os.confirm).mock.calls[0][0].text).not.toContain(i18n.ts.uploadFolderDeletionConfirm);
 });
 
 test('uses frozen IDs, reports actual partial results and clears deleted upload-folder preference', async () => {
@@ -81,6 +107,7 @@ test('blocks a second activation while confirmation is pending', async () => {
 test('executes serial batches until the server finishes', async () => {
 	fetchMock.mockResponses(
 		JSON.stringify({ operationId: done.operationId, totalCount: 205 }),
+		JSON.stringify({ id: 'child', parentId: null, parent: null }),
 		JSON.stringify({ ...done, deletedCount: 100, done: false }),
 		JSON.stringify({ ...done, deletedCount: 200, done: false }),
 		JSON.stringify({ ...done, deletedCount: 205, failedCount: 0, remainingCount: 0 }),
@@ -90,7 +117,7 @@ test('executes serial batches until the server finishes', async () => {
 	const result = await deleteDriveItems({ folderId: 'root', name: 'Nested' });
 
 	expect(result?.deletedCount).toBe(205);
-	expect(fetchMock).toHaveBeenCalledTimes(4);
+	expect(fetchMock).toHaveBeenCalledTimes(5);
 });
 
 test('recovers persisted results through a read-only status request after a lost execute response', async () => {
@@ -138,7 +165,7 @@ test.each([
 		text: 'Files deleted: 2.\nFolders deleted: 1.\nFiles already missing or unavailable: 3.\nFailed files: 4.\nFiles remaining: 4.\nFolders remaining: 1.\nCheck the remaining items and retry deletion.', type: 'warning',
 	},
 ])('reports $name through the deletion result dialog', async ({ response, text, type }) => {
-	fetchMock.mockResponses(JSON.stringify({ operationId: response.operationId, totalCount: response.totalCount }), JSON.stringify(response));
+	fetchMock.mockResponses(JSON.stringify({ operationId: response.operationId, totalCount: response.totalCount }), JSON.stringify({ id: 'child', parentId: null, parent: null }), JSON.stringify(response));
 	vi.mocked(os.confirm).mockResolvedValue({ canceled: false });
 
 	const result = await deleteDriveItems({ folderId: 'root', name: 'Garden' });

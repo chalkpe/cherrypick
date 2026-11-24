@@ -5,6 +5,7 @@
 
 import { createHash } from 'node:crypto';
 import { toArray } from '@/misc/prelude/array.js';
+import { UntrustedHtmlLimitError } from '@/misc/parse-untrusted-html.js';
 import { isStorableText } from '@/core/chat-room-channels.js';
 import { getApType, getOneApId } from '../type.js';
 import { parseRemoteChatDate } from './chat-remote-date.js';
@@ -192,7 +193,14 @@ export function parseChatHistoryItem(value: unknown, ctx: ChatHistoryItemContext
 	const published = parseRemoteChatDate(note.published, ctx.now);
 	if (published == null || !ctx.isSafeTime(published.getTime())) return { skip: 'invalid published' };
 
-	const text = ctx.text(note);
+	let text: string | null;
+	try {
+		text = ctx.text(note);
+	} catch (err) {
+		// 본문 HTML이 한도를 넘은 글은 그 글만 건너뛴다
+		if (err instanceof UntrustedHtmlLimitError) return { skip: 'html limit exceeded' };
+		throw err;
+	}
 	if (text != null && !isStorableText(text)) return { skip: 'invalid text' };
 	if (text != null && Array.from(text.trim()).length > MAX_MESSAGE_TEXT_LENGTH) return { skip: 'too long' };
 

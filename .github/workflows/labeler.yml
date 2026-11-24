@@ -41,8 +41,6 @@ jobs:
             /^packages\/cherrypick-js\/etc\/cherrypick-js\.api\.md$/,
             // locales/ja-JP.yml から生成
             /^packages\/i18n\/src\/autogen\//,
-            // ja-JP.yml 以外は Crowdin から同期
-            /^locales\/(?!ja-JP\.yml$)[^/]+\.yml$/,
           ];
           const sizeLabels = [
             [1000, 'size:XXL'],

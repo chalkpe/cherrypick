@@ -16,6 +16,20 @@ export const driveDeletionBusy = ref(false);
 type DeleteResult = Misskey.Endpoints['drive/delete/execute']['res'];
 type Selection = { fileIds: readonly string[] } | { folderId: string; name: string };
 
+/** 기본 업로드 폴더가 삭제할 폴더 자신이거나 그 하위 폴더인지 확인한다. 확인하지 못하면 경고만 생략한다. */
+async function uploadFolderIsDeleted(folderId: string): Promise<boolean> {
+	const uploadFolder = prefer.s.uploadFolder;
+	if (uploadFolder == null) return false;
+	if (uploadFolder === folderId) return true;
+	try {
+		const folder = await misskeyApi('drive/folders/show', { folderId: uploadFolder });
+		for (let parent = folder.parent; parent != null; parent = parent.parent) {
+			if (parent.id === folderId) return true;
+		}
+	} catch { /* 확인하지 못해도 삭제 확인은 계속한다. */ }
+	return false;
+}
+
 export async function deleteDriveItems(input: Selection): Promise<DeleteResult | null> {
 	if (driveDeletionBusy.value) return null;
 	driveDeletionBusy.value = true;
@@ -53,6 +67,7 @@ export async function deleteDriveItems(input: Selection): Promise<DeleteResult |
 		}
 
 		operationId = plan.operationId;
+		const warnUploadFolder = !('fileIds' in input) && await uploadFolderIsDeleted(input.folderId);
 		closeWaiting();
 		closeWaiting = undefined;
 		const { canceled } = await os.confirm({
@@ -61,7 +76,7 @@ export async function deleteDriveItems(input: Selection): Promise<DeleteResult |
 			text: ('fileIds' in input
 				? i18n.tsx._driveDeletion.filesConfirm({ count: plan.totalCount })
 				: i18n.tsx._driveDeletion.folderConfirm({ name: mfmPlain(input.name), count: plan.totalCount })) + '\n\n' + i18n.ts._driveDeletion.scope
-				+ (!('fileIds' in input) && prefer.s.uploadFolder === input.folderId ? '\n\n' + i18n.ts.uploadFolderDeletionConfirm : ''),
+				+ (warnUploadFolder ? '\n\n' + i18n.ts.uploadFolderDeletionConfirm : ''),
 		});
 		if (canceled) return null;
 		confirmed = true;
