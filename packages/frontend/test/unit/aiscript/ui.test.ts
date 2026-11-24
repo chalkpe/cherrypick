@@ -27,7 +27,8 @@ type ExeResult = {
 	get: (id: string) => AsUiComponent;
 	components: Map<string, AsUiComponent>;
 	outputs: values.Value[];
-}
+};
+
 async function exe(script: string): Promise<ExeResult> {
 	const rootRef = ref<AsUiRoot>();
 	const components = new Map<string, AsUiComponent>();

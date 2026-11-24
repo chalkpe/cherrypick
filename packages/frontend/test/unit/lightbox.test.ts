@@ -279,5 +279,4 @@ describe('Lightbox background taps', () => {
 		await fireEvent.click(view.main, { clientX: 50, clientY: 200 });
 		expect(view.emitted('close')).toHaveLength(1);
 	});
-
 });
