@@ -13,7 +13,6 @@ on:
       - .github/workflows/api-cherrypick-js.yml
 jobs:
   report:
-
     runs-on: ubuntu-latest
 
     steps:

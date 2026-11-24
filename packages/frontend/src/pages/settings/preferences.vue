@@ -1247,6 +1247,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 								</MkPreferenceContainer>
 							</SearchMarker>
 
+							<SearchMarker :keywords="['url', 'preview', 'expand', 'player', 'embed']">
+								<MkPreferenceContainer k="expandUrlPreviewAutomatically">
+									<MkSwitch v-model="expandUrlPreviewAutomatically">
+										<template #label><SearchLabel>{{ i18n.ts._settings.expandUrlPreviewAutomatically }}</SearchLabel></template>
+									</MkSwitch>
+								</MkPreferenceContainer>
+							</SearchMarker>
+
 							<SearchMarker :keywords="['image', 'photo', 'picture', 'media', 'thumbnail', 'new', 'tab']">
 								<MkPreferenceContainer k="imageNewTab">
 									<MkSwitch v-model="imageNewTab">
@@ -1533,6 +1541,7 @@ const reactionsDisplaySize = prefer.model('reactionsDisplaySize');
 const limitWidthOfReaction = prefer.model('limitWidthOfReaction');
 const squareAvatars = prefer.model('squareAvatars');
 const autoplayEmbededPlayerOfUrlPreview = prefer.model('autoplayEmbededPlayerOfUrlPreview');
+const expandUrlPreviewAutomatically = prefer.model('expandUrlPreviewAutomatically');
 const enableSeasonalScreenEffect = prefer.model('enableSeasonalScreenEffect');
 const enableSnowEffect = prefer.model('enableSnowEffect');
 const showAvatarDecorations = prefer.model('showAvatarDecorations');

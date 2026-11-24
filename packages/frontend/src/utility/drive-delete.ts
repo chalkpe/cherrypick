@@ -60,7 +60,8 @@ export async function deleteDriveItems(input: Selection): Promise<DeleteResult |
 			title: i18n.ts.delete,
 			text: ('fileIds' in input
 				? i18n.tsx._driveDeletion.filesConfirm({ count: plan.totalCount })
-				: i18n.tsx._driveDeletion.folderConfirm({ name: mfmPlain(input.name), count: plan.totalCount })) + '\n\n' + i18n.ts._driveDeletion.scope,
+				: i18n.tsx._driveDeletion.folderConfirm({ name: mfmPlain(input.name), count: plan.totalCount })) + '\n\n' + i18n.ts._driveDeletion.scope
+				+ (!('fileIds' in input) && prefer.s.uploadFolder === input.folderId ? '\n\n' + i18n.ts.uploadFolderDeletionConfirm : ''),
 		});
 		if (canceled) return null;
 		confirmed = true;

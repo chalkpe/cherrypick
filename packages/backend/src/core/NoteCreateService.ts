@@ -1084,7 +1084,9 @@ export class NoteCreateService implements OnApplicationShutdown {
 	@bindThis
 	private async publishPackedNoteToMainStream(userId: MiUser['id'], type: 'reply' | 'renote', note: MiNote) {
 		try {
+			// noteObj は skipHide で pack されているため、受信者向けに pack し直し、隠れる場合は配信しない
 			const packed = await this.noteEntityService.pack(note, { id: userId }, { withReactionAndUserPairCache: true });
+			if (packed.isHidden) return;
 			this.globalEventService.publishMainStream(userId, type, packed);
 		} catch (err) {
 			this.logger.error(`Failed to publish ${type} event of note ${note.id} to user ${userId}`, { error: err });
@@ -1100,6 +1102,7 @@ export class NoteCreateService implements OnApplicationShutdown {
 			if (!webhooks.some(webhook => webhook.userId === userId && webhook.on.includes(type))) return;
 
 			const packed = await this.noteEntityService.pack(note, { id: userId }, { withReactionAndUserPairCache: true });
+			if (packed.isHidden) return;
 			await this.webhookService.enqueueUserWebhook(userId, type, { note: packed });
 		} catch (err) {
 			this.logger.error(`Failed to enqueue ${type} webhook of note ${note.id} for user ${userId}`, { error: err });
