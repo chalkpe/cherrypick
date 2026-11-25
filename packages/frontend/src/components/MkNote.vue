@@ -401,6 +401,7 @@ import { computed, inject, onMounted, reactive, ref, useTemplateRef, watch, prov
 import * as mfm from 'mfc-js';
 import * as Misskey from 'cherrypick-js';
 import { isLink } from '@@/js/is-link.js';
+import { isTouchContextmenu } from '@/utility/is-touch-contextmenu.js';
 import { shouldCollapsed, shouldMfmCollapsed } from '@@/js/collapsed.js';
 import { host } from '@@/js/config.js';
 import { concat } from '@@/js/array.js';
@@ -973,6 +974,7 @@ function onContextmenu(ev: PointerEvent): void {
 
 	if (ev.target && isLink(ev.target as HTMLElement)) return;
 	if (window.getSelection()?.toString() !== '') return;
+	if (!prefer.s.openNoteMenuOnLongPress && isTouchContextmenu(ev)) return;
 
 	if (prefer.s.useReactionPickerForContextMenu) {
 		ev.preventDefault();

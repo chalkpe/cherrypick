@@ -4161,6 +4161,10 @@ export interface Locale extends ILocale {
      */
     "useReactionPickerForContextMenu": string;
     /**
+     * ノートを長押ししてメニューを開く
+     */
+    "openNoteMenuOnLongPress": string;
+    /**
      * {users}が入力中
      */
     "typingUsers": ParameterizedString<"users">;

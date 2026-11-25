@@ -622,6 +622,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 									</MkPreferenceContainer>
 								</SearchMarker>
 
+								<SearchMarker :keywords="['note', 'menu', 'long press', 'longpress', 'long', 'press', 'touch', 'tap', 'hold', 'contextmenu', '길게', '누르기', '롱프레스']">
+									<MkPreferenceContainer k="openNoteMenuOnLongPress">
+										<MkSwitch v-model="openNoteMenuOnLongPress" accessible>
+											<template #label><SearchLabel>{{ i18n.ts.openNoteMenuOnLongPress }}</SearchLabel></template>
+										</MkSwitch>
+									</MkPreferenceContainer>
+								</SearchMarker>
+
 								<SearchMarker :keywords="['reaction', 'order']">
 									<MkPreferenceContainer k="showAvailableReactionsFirstInNote">
 										<MkSwitch v-model="showAvailableReactionsFirstInNote">
@@ -1514,6 +1522,7 @@ const showFixedPostFormInChannel = prefer.model('showFixedPostFormInChannel');
 const numberOfPageCache = prefer.model('numberOfPageCache');
 const enableInfiniteScroll = prefer.model('enableInfiniteScroll');
 const useReactionPickerForContextMenu = prefer.model('useReactionPickerForContextMenu');
+const openNoteMenuOnLongPress = prefer.model('openNoteMenuOnLongPress');
 const showAvailableReactionsFirstInNote = prefer.model('showAvailableReactionsFirstInNote');
 const useGroupedNotifications = prefer.model('useGroupedNotifications');
 const alwaysConfirmFollow = prefer.model('alwaysConfirmFollow');
