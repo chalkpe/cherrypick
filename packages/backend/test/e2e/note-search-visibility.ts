@@ -69,10 +69,13 @@ describe('Note search visibility', () => {
 		const next = await api('notes/search', { query, limit: 2, untilId: quote.id }, viewer);
 		const previous = await api('notes/search', { query, limit: 2, sinceId: reply.id }, viewer);
 
+		expect(first.status).toBe(200);
 		expect(first.body.map(result => result.id)).toEqual([plain.id, quote.id]);
 		expect(first.body[1].renote?.user.id).toBe(target.id);
+		expect(next.status).toBe(200);
 		expect(next.body.map(result => result.id)).toEqual([reply.id]);
 		expect(next.body[0].reply?.user.id).toBe(target.id);
+		expect(previous.status).toBe(200);
 		expect(previous.body.map(result => result.id)).toEqual([quote.id, plain.id]);
 	});
 

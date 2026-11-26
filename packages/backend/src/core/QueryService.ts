@@ -418,9 +418,9 @@ export class QueryService {
 	}
 
 	// Requirements: user replyUser renoteUser must be joined
-	// With lookupRelatedUsers: user reply renote must be joined. Ignored when excludeAuthor is set.
+	// lookupRelatedUserSuspension을 켜면 user, reply, renote를 조인해야 한다. excludeAuthor를 설정하면 무시한다.
 	@bindThis
-	public generateSuspendedUserQueryForNote(q: SelectQueryBuilder<any>, excludeAuthor?: boolean, lookupRelatedUsers?: boolean): void {
+	public generateSuspendedUserQueryForNote(q: SelectQueryBuilder<any>, excludeAuthor?: boolean, lookupRelatedUserSuspension?: boolean): void {
 		if (excludeAuthor) {
 			const brakets = (user: string) => new Brackets(qb => qb
 				.where(`${user}.id IS NULL`) // そもそもreplyやrenoteではない、もしくはleftjoinなどでuserが存在しなかった場合を考慮
@@ -429,9 +429,9 @@ export class QueryService {
 			q
 				.andWhere(brakets('replyUser'))
 				.andWhere(brakets('renoteUser'));
-		} else if (lookupRelatedUsers) {
-			// ユーザーを結合せず、行ごとに主キーで引く。一致件数が極端に少なく見積もられると、
-			// 結合ではuserテーブル全体の走査が行数分繰り返されることがあるため。
+		} else if (lookupRelatedUserSuspension) {
+			// 사용자를 조인하지 않고 행마다 기본 키로 조회한다. 일치 건수를 지나치게 적게 추정하면
+			// 조인에서는 user 테이블 전체 탐색이 행 수만큼 반복될 수 있기 때문이다.
 			const notSuspended = (relation: string) => {
 				const alias = `${relation}Author`;
 				const isSuspended = q.subQuery()
