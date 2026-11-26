@@ -261,11 +261,18 @@ export class SearchService {
 		query
 			.innerJoinAndSelect('note.user', 'user')
 			.leftJoinAndSelect('note.reply', 'reply')
-			.leftJoinAndSelect('note.renote', 'renote')
-			.leftJoinAndSelect('reply.user', 'replyUser')
-			.leftJoinAndSelect('renote.user', 'renoteUser');
+			.leftJoinAndSelect('note.renote', 'renote');
 
-		if (this.config.fulltextSearch?.provider === 'sqlPgroonga') {
+		const isPgroonga = this.config.fulltextSearch?.provider === 'sqlPgroonga';
+		// 로그인한 sqlLike 검색만 ID를 먼저 고른다. 방문자 검색은 한 번에 읽는 편이 빠르다.
+		const selectsIdsFirst = me != null && !isPgroonga;
+		if (!selectsIdsFirst) {
+			query
+				.leftJoinAndSelect('reply.user', 'replyUser')
+				.leftJoinAndSelect('renote.user', 'renoteUser');
+		}
+
+		if (isPgroonga) {
 			query.andWhere('note.text &@~ :q', { q });
 		} else {
 			query.andWhere('LOWER(note.text) LIKE :q', { q: `%${ sqlLikeEscape(q.toLowerCase()) }%` });
@@ -293,12 +300,34 @@ export class SearchService {
 				if (upper != null) query.andWhere('note.id < :upperTimeId', { upperTimeId: upper });
 			}
 		}
-		query.orderBy('note.id', isAscending(pagination) ? 'ASC' : 'DESC');
+		const order = isAscending(pagination) ? 'ASC' : 'DESC';
+		query.orderBy('note.id', order);
 
 		this.queryService.generateNoteContentVisibilityQuery(query, me);
-		this.queryService.generateBaseNoteFilteringQuery(query, me);
 
-		return await query.limit(pagination.limit).getMany();
+		// ID 선별에서는 답글·리노트 작성자를 조인하지 않고 정지 여부만 PK로 조회한다.
+		this.queryService.generateBaseNoteFilteringQuery(query, me, { lookupRelatedUserSuspension: selectsIdsFirst });
+
+		query.limit(pagination.limit);
+
+		if (!selectsIdsFirst) {
+			return await query.getMany();
+		}
+
+		// 모든 조건과 LIMIT을 적용해 ID만 고른 뒤, 고른 노트의 내용을 읽는다.
+		// 선별과 읽기가 같은 시점의 데이터를 보도록 한 문장으로 실행한다.
+		query.select('note.id');
+
+		return await this.notesRepository.createQueryBuilder('note')
+			.innerJoinAndSelect('note.user', 'user')
+			.leftJoinAndSelect('note.reply', 'reply')
+			.leftJoinAndSelect('note.renote', 'renote')
+			.leftJoinAndSelect('reply.user', 'replyUser')
+			.leftJoinAndSelect('renote.user', 'renoteUser')
+			.where(`note.id IN (${query.getQuery()})`)
+			.setParameters(query.getParameters())
+			.orderBy('note.id', order)
+			.getMany();
 	}
 
 	@bindThis

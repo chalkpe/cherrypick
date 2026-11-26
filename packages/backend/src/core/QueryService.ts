@@ -6,7 +6,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Brackets, ObjectLiteral } from 'typeorm';
 import { DI } from '@/di-symbols.js';
-import type { MiUser } from '@/models/User.js';
+import { MiUser } from '@/models/User.js';
 import type { UserProfilesRepository, FollowingsRepository, ChannelFollowingsRepository, BlockingsRepository, NoteThreadMutingsRepository, MutingsRepository, RenoteMutingsRepository, MiMeta } from '@/models/_.js';
 import { bindThis } from '@/decorators.js';
 import { IdService } from '@/core/IdService.js';
@@ -96,13 +96,15 @@ export class QueryService {
 		{
 			excludeUserFromMute,
 			excludeAuthor,
+			lookupRelatedUserSuspension,
 		}: {
 			excludeUserFromMute?: MiUser['id'],
 			excludeAuthor?: boolean,
+			lookupRelatedUserSuspension?: boolean,
 		} = {},
 	): void {
 		this.generateBlockedHostQueryForNote(query, excludeAuthor);
-		this.generateSuspendedUserQueryForNote(query, excludeAuthor);
+		this.generateSuspendedUserQueryForNote(query, excludeAuthor, lookupRelatedUserSuspension);
 		if (me) {
 			this.generateMutedUserQueryForNotes(query, me, { excludeUserFromMute });
 			this.generateBlockedUserQueryForNotes(query, me);
@@ -416,8 +418,9 @@ export class QueryService {
 	}
 
 	// Requirements: user replyUser renoteUser must be joined
+	// With lookupRelatedUsers: user reply renote must be joined. Ignored when excludeAuthor is set.
 	@bindThis
-	public generateSuspendedUserQueryForNote(q: SelectQueryBuilder<any>, excludeAuthor?: boolean): void {
+	public generateSuspendedUserQueryForNote(q: SelectQueryBuilder<any>, excludeAuthor?: boolean, lookupRelatedUsers?: boolean): void {
 		if (excludeAuthor) {
 			const brakets = (user: string) => new Brackets(qb => qb
 				.where(`${user}.id IS NULL`) // そもそもreplyやrenoteではない、もしくはleftjoinなどでuserが存在しなかった場合を考慮
@@ -426,6 +429,22 @@ export class QueryService {
 			q
 				.andWhere(brakets('replyUser'))
 				.andWhere(brakets('renoteUser'));
+		} else if (lookupRelatedUsers) {
+			// ユーザーを結合せず、行ごとに主キーで引く。一致件数が極端に少なく見積もられると、
+			// 結合ではuserテーブル全体の走査が行数分繰り返されることがあるため。
+			const notSuspended = (relation: string) => {
+				const alias = `${relation}Author`;
+				const isSuspended = q.subQuery()
+					.select(`${alias}.isSuspended`)
+					.from(MiUser, alias)
+					.where(`${alias}.id = ${relation}.userId`)
+					.getQuery();
+				return `${isSuspended} IS NOT TRUE`;
+			};
+			q
+				.andWhere('user.isSuspended = FALSE')
+				.andWhere(notSuspended('reply'))
+				.andWhere(notSuspended('renote'));
 		} else {
 			const brakets = (user: string) => new Brackets(qb => qb
 				.where(`${user}.id IS NULL`) // そもそもreplyやrenoteではない、もしくはleftjoinなどでuserが存在しなかった場合を考慮
