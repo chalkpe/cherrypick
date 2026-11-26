@@ -14,6 +14,7 @@ import {
 	parseChatHistoryPage,
 } from '@/core/activitypub/misc/chat-history.js';
 import type { ChatHistoryItemContext } from '@/core/activitypub/misc/chat-history.js';
+import { UntrustedHtmlLimitError } from '@/misc/parse-untrusted-html.js';
 import type { IPost } from '@/core/activitypub/type.js';
 
 const roomUri = 'https://owner.example/chat/rooms/room1';
@@ -154,6 +155,14 @@ describe('받은 항목 검증', () => {
 			author: { name: '이름', username: 'u1', host: 'member.example' },
 			reactions: [{ actor: 'https://third.example/users/r1', reaction: ':blob:' }],
 		});
+	});
+
+	test('HTML 한도를 넘은 글은 그 글만 건너뛰고 다른 오류는 그대로 던진다', () => {
+		const limit = { ...context, text: () => { throw new UntrustedHtmlLimitError('HTML is too large'); } };
+		const failure = { ...context, text: () => { throw new Error('unexpected'); } };
+
+		expect(parseChatHistoryItem(note(), limit)).toEqual({ skip: 'html limit exceeded' });
+		expect(() => parseChatHistoryItem(note(), failure)).toThrow('unexpected');
 	});
 
 	test.each([

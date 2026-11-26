@@ -35,6 +35,9 @@ import { RoleService } from '@/core/RoleService.js';
 import { IdentifiableError } from '@/misc/identifiable-error.js';
 import type { Config } from '@/config.js';
 
+// DriveService.addFile가 저장 폴더를 찾지 못할 때 던지는 IdentifiableError의 id
+const NO_SUCH_FOLDER_ERROR_ID = 'b9adda75-abe9-4c6d-bf12-b5575833960d';
+
 // 녹화 원본(들)을 MP3/MP4 하나로 변환한다. 긴 녹화는 올리는 동안만 조각으로 나뉘고,
 // 여기서 순서대로 이어 붙여 최종 파일 하나만 드라이브에 남긴 뒤 임시 조각은 지운다.
 // 드라이브 파일 한도를 넘으면 드라이브에 넣지 않고 잠시 보관해 본인만 한 번 내려받게 한다.
@@ -343,7 +346,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 				if (error instanceof ApiError) throw error;
 				if (error instanceof RecordingOutputLimitError) throw new ApiError(meta.errors.outputTooLarge);
 				if (error instanceof RecordingInputLimitError) throw new ApiError(meta.errors.inputTooLarge);
-				if (error instanceof Error && error.message === 'folder-not-found') throw new ApiError(meta.errors.noSuchFolder);
+				if (identifiableId === NO_SUCH_FOLDER_ERROR_ID) throw new ApiError(meta.errors.noSuchFolder);
 				throw new ApiError(meta.errors.conversionFailed);
 			} finally {
 				await this.redisClient.eval(RELEASE_CONVERSION_SCRIPT, 2, ...slots, token).catch(() => {});
@@ -376,7 +379,7 @@ export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-
 					const identifiableId = error instanceof IdentifiableError ? error.id : null;
 					if (identifiableId === 'f9e4e5f3-4df4-40b5-b400-f236945f7073') reason = 'tooLarge';
 					else if (identifiableId === 'c6244ed2-a39a-4e1c-bf93-f0fbd7764fa6') reason = 'noFreeSpace';
-					else if (error instanceof Error && error.message === 'folder-not-found') throw new ApiError(meta.errors.noSuchFolder);
+					else if (identifiableId === NO_SUCH_FOLDER_ERROR_ID) throw new ApiError(meta.errors.noSuchFolder);
 					else {
 						this.apiLoggerService.logger.warn(`Could not save a kept recording: ${JSON.stringify({ downloadId: download.id, identifiableId, error: String(error) })}`);
 						throw new ApiError(meta.errors.conversionFailed);

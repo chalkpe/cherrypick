@@ -48,6 +48,11 @@ describe('UserListService membership changes', () => {
 		return instance;
 	}
 
+	/** 클라이언트용 이벤트와 타임라인 내부 이벤트를 종류별로 나누어 호출 내용을 비교한다. */
+	function streamCalls(type: string) {
+		return events.publishUserListStream.mock.calls.filter(call => call[1] === type);
+	}
+
 	async function removeAndWaitForEvent() {
 		const event = Promise.withResolvers<void>();
 		subscriber.once('message', () => event.resolve());
@@ -129,7 +134,9 @@ describe('UserListService membership changes', () => {
 
 		await Promise.all([writer.removeMember(target, list), reader.removeMember(target, list)]);
 		expect(events.publishInternalEvent).toHaveBeenCalledExactlyOnceWith('userListMemberRemoved', { userListId: list.id, memberId: target.id });
-		expect(events.publishUserListStream).toHaveBeenCalledExactlyOnceWith(list.id, 'userRemoved', { id: target.id });
+		expect(streamCalls('userRemoved')).toEqual([[list.id, 'userRemoved', { id: target.id }]]);
+		expect(streamCalls('internalMembershipUpdated')).toEqual([[list.id, 'internalMembershipUpdated', { userId: target.id }]]);
+		expect(events.publishUserListStream).toHaveBeenCalledTimes(2);
 	});
 
 	test('completes removal and evicts stale values after Redis recovers', async () => {
@@ -145,7 +152,9 @@ describe('UserListService membership changes', () => {
 		expect(row).toBeNull();
 		expect(await redis.get(key)).toBe(JSON.stringify([target.id]));
 		expect(await service().isMember(list.id, target.id)).toBe(true);
-		expect(events.publishUserListStream).toHaveBeenCalledExactlyOnceWith(list.id, 'userRemoved', { id: target.id });
+		expect(streamCalls('userRemoved')).toEqual([[list.id, 'userRemoved', { id: target.id }]]);
+		expect(streamCalls('internalMembershipUpdated')).toEqual([[list.id, 'internalMembershipUpdated', { userId: target.id }]]);
+		expect(events.publishUserListStream).toHaveBeenCalledTimes(2);
 
 		await vi.waitFor(async () => {
 			expect(deletion).toHaveBeenCalledTimes(3);
@@ -165,11 +174,55 @@ describe('UserListService membership changes', () => {
 
 		expect(row).not.toBeNull();
 		expect(queue.createFollowJob).toHaveBeenCalledExactlyOnceWith([{ from: { id: 'proxy' }, to: { id: remote.id } }]);
-		expect(events.publishUserListStream).toHaveBeenCalledExactlyOnceWith(list.id, 'userAdded', { id: remote.id });
+		expect(streamCalls('userAdded')).toEqual([[list.id, 'userAdded', { id: remote.id }]]);
+		expect(streamCalls('internalMembershipUpdated')).toEqual([[list.id, 'internalMembershipUpdated', { userId: remote.id }]]);
+		expect(events.publishUserListStream).toHaveBeenCalledTimes(2);
 		await vi.waitFor(async () => {
 			expect(deletion).toHaveBeenCalledTimes(2);
 			expect(await reader.isMember(list.id, remote.id)).toBe(true);
 		}, { timeout: 5000 });
 		expect(events.publishInternalEvent).toHaveBeenCalledExactlyOnceWith('userListMemberAdded', { userListId: list.id, memberId: remote.id });
+	});
+
+	describe('copyMemberships after an account move', () => {
+		const dst = mock<MiUser>({ id: 'moved', host: null });
+		let dstMembers: MiUserListMembership[];
+
+		beforeEach(() => {
+			dstMembers = [];
+			userEntityService.pack.mockResolvedValue({ id: dst.id } as Awaited<ReturnType<UserEntityService['pack']>>);
+			repository.find.mockImplementation((async (options: { where: { userId?: string; userListId?: string } }) => {
+				const { userId, userListId } = options.where;
+				if (userId === 'old') return [{ userListId: list.id, userListUserId: 'owner' }];
+				if (userId === dst.id) return [];
+				if (userListId === list.id) return [...(row == null ? [] : [row]), ...dstMembers];
+				return [];
+			}) as never);
+			repository.insert.mockImplementation((async () => {
+				dstMembers = [mock<MiUserListMembership>({ id: 'copied', userId: dst.id })];
+				return { identifiers: [], generatedMaps: [], raw: [] };
+			}) as never);
+		});
+
+		test('lets other workers see the moved account in the list right away', async () => {
+			expect(await reader.isMember(list.id, dst.id)).toBe(false);
+			const event = Promise.withResolvers<void>();
+			subscriber.once('message', () => event.resolve());
+
+			await writer.copyMemberships({ id: 'old' }, dst);
+			await event.promise;
+
+			expect(await redis.get(`kvcache:userListMembers:v2:${list.id}`)).toBeNull();
+			expect(await reader.isMember(list.id, dst.id)).toBe(true);
+			expect(await service().isMember(list.id, dst.id)).toBe(true);
+		});
+
+		test('keeps the client event, the timeline event and the single internal notification of each list', async () => {
+			await writer.copyMemberships({ id: 'old' }, dst);
+
+			expect(events.publishInternalEvent.mock.calls.filter(call => call[0] === 'userListMemberAdded')).toEqual([['userListMemberAdded', { userListId: list.id, memberId: dst.id }]]);
+			expect(streamCalls('userAdded')).toEqual([[list.id, 'userAdded', { id: dst.id }]]);
+			expect(streamCalls('internalMembershipUpdated')).toEqual([[list.id, 'internalMembershipUpdated', { userId: dst.id }]]);
+		});
 	});
 });

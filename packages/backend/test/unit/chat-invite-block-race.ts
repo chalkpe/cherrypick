@@ -14,12 +14,13 @@ const invitationId = 'invite';
 
 function fixture(linkInvitationId: string | null) {
 	const invitations: Invitation[] = [{ roomId: 'room', userId: remote.id }];
+	const removeMemberFromAllLists = vi.fn(async () => {});
 	const remove = vi.fn(async (where: { id?: string; userId?: string }) => {
 		if (where.userId === remote.id || where.id === invitationId) invitations.splice(0);
 	});
 	const service = Object.assign(Object.create(UserBlockingService.prototype), {
 		followRequestsRepository: { findOneBy: vi.fn(async () => null) },
-		userListsRepository: { findBy: vi.fn(async () => []) },
+		userListService: { removeMemberFromAllLists },
 		userFollowingService: { unfollow: vi.fn() },
 		apRendererService: { renderBlock: vi.fn(), addContext: vi.fn() },
 		queueService: { deliver: vi.fn() },
@@ -33,8 +34,18 @@ function fixture(linkInvitationId: string | null) {
 		globalEventService: { publishInternalEvent: vi.fn() },
 		userEntityService: { isLocalUser: (user: typeof owner) => user.host == null, isRemoteUser: (user: typeof owner) => user.host != null },
 	}) as UserBlockingService;
-	return { service, invitations };
+	return { service, invitations, removeMemberFromAllLists };
 }
+
+describe('blocking removes the blocker from the blockee\'s lists', () => {
+	test('without notifying the blockee\'s client', async () => {
+		const f = fixture(null);
+
+		await f.service.block(remote as never, owner as never);
+
+		expect(f.removeMemberFromAllLists).toHaveBeenCalledExactlyOnceWith(owner, remote, { notifyClients: false });
+	});
+});
 
 describe('blocking while a link join is in flight', () => {
 	test('the invitee blocking the owner does not cancel that link join', async () => {

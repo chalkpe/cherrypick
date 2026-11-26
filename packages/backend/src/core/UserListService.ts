@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Inject, Injectable, Logger, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
 import * as Redis from 'ioredis';
 import { ModuleRef } from '@nestjs/core';
+import { In } from 'typeorm';
 import type { UserListMembershipsRepository } from '@/models/_.js';
 import type { MiUser } from '@/models/User.js';
 import type { MiUserList } from '@/models/UserList.js';
@@ -159,7 +160,7 @@ export class UserListService implements OnApplicationShutdown, OnModuleInit {
 		return false;
 	}
 
-	private async publishMemberChange(listId: string, type: 'userAdded' | 'userRemoved', member: UserListEventTypes[typeof type]): Promise<void> {
+	private async publishMemberChange(listId: string, type: 'userAdded' | 'userRemoved', member: UserListEventTypes[typeof type] | { id: MiUser['id'] }, notifyClients = true): Promise<void> {
 		const memberId = member.id;
 		const publishInvalidation = () => {
 			this.invalidateLocalMembers(listId);
@@ -184,7 +185,9 @@ export class UserListService implements OnApplicationShutdown, OnModuleInit {
 				if (recovered) publishInvalidation();
 			});
 		}
-		this.globalEventService.publishUserListStream(listId, type, member);
+		if (notifyClients) {
+			this.globalEventService.publishUserListStream(listId, type, member as UserListEventTypes[typeof type]);
+		}
 	}
 
 	@bindThis
@@ -206,6 +209,7 @@ export class UserListService implements OnApplicationShutdown, OnModuleInit {
 		} as MiUserListMembership);
 
 		await this.publishMemberChange(list.id, 'userAdded', packed);
+		this.globalEventService.publishUserListStream(list.id, 'internalMembershipUpdated', { userId: target.id });
 
 		// このインスタンス内にこのリモートユーザーをフォローしているユーザーがいなくても投稿を受け取るためにダミーのユーザーがフォローしたということにする
 		if (this.userEntityService.isRemoteUser(target)) {
@@ -226,6 +230,7 @@ export class UserListService implements OnApplicationShutdown, OnModuleInit {
 		if (!result.affected) return;
 
 		await this.publishMemberChange(list.id, 'userRemoved', packed);
+		this.globalEventService.publishUserListStream(list.id, 'internalMembershipUpdated', { userId: target.id });
 	}
 
 	@bindThis
@@ -244,6 +249,104 @@ export class UserListService implements OnApplicationShutdown, OnModuleInit {
 		}, {
 			withReplies: options.withReplies,
 		});
+
+		this.globalEventService.publishUserListStream(list.id, 'internalMembershipUpdated', { userId: target.id });
+	}
+
+	@bindThis
+	public async removeMemberFromAllLists(listOwner: { id: MiUser['id'] }, target: MiUser, options: { notifyClients?: boolean } = {}) {
+		const removed = await this.userListMembershipsRepository.createQueryBuilder()
+			.delete()
+			.where({
+				userId: target.id,
+				userListUserId: listOwner.id,
+			})
+			.returning(['userListId'])
+			.execute()
+			.then(result => result.raw as Pick<MiUserListMembership, 'userListId'>[]);
+
+		if (removed.length === 0) return;
+
+		const packedTarget = (options.notifyClients ?? true) ? await this.userEntityService.pack(target) : null;
+		for (const { userListId } of removed) {
+			await this.publishMemberChange(userListId, 'userRemoved', packedTarget ?? { id: target.id }, packedTarget != null);
+			this.globalEventService.publishUserListStream(userListId, 'internalMembershipUpdated', { userId: target.id });
+		}
+	}
+
+	/**
+	 * src が入っているリストに dst を追加する (アカウント移行用)
+	 * - src はリストから外さない
+	 * - リストのメンバー数の上限は確認しない
+	 */
+	@bindThis
+	public async copyMemberships(src: { id: MiUser['id'] }, dst: MiUser) {
+		// Return if there is no list to be updated.
+		const oldMemberships = await this.userListMembershipsRepository.find({
+			where: {
+				userId: src.id,
+			},
+			select: { userListId: true, userListUserId: true },
+		});
+		if (oldMemberships.length === 0) return;
+
+		const existingUserListIds = await this.userListMembershipsRepository.find({
+			where: {
+				userId: dst.id,
+				userListId: In(oldMemberships.map(membership => membership.userListId)),
+			},
+			select: { userListId: true },
+		}).then(memberships => new Set(memberships.map(membership => membership.userListId)));
+
+		const newMemberships: Map<string, { userId: string; userListId: string; userListUserId: string; }> = new Map();
+
+		// 重複しないようにIDを生成
+		const genId = (): string => {
+			let id: string;
+			do {
+				id = this.idService.gen();
+			} while (newMemberships.has(id));
+			return id;
+		};
+		for (const membership of oldMemberships) {
+			if (existingUserListIds.has(membership.userListId)) continue; // skip if dst exists in this user's list
+			newMemberships.set(genId(), {
+				userId: dst.id,
+				userListId: membership.userListId,
+				userListUserId: membership.userListUserId,
+			});
+		}
+
+		const arrayToInsert = Array.from(newMemberships.entries()).map(entry => ({ ...entry[1], id: entry[0] }));
+		if (arrayToInsert.length > 0) {
+			await this.userListMembershipsRepository.insert(arrayToInsert);
+
+			for (const { userListId } of arrayToInsert) {
+				// 공유 캐시를 먼저 지운 뒤 내부 이벤트를 보낸다. 클라이언트용 userAdded는 아래에서 따로 보낸다.
+				await this.publishMemberChange(userListId, 'userAdded', { id: dst.id }, false);
+				this.globalEventService.publishUserListStream(userListId, 'internalMembershipUpdated', { userId: dst.id });
+			}
+		}
+
+		// クライアントへの通知とプロキシのフォローは、一方が失敗しても他方を行う
+		const results = await Promise.allSettled([
+			(async () => {
+				if (arrayToInsert.length === 0) return;
+				const packedDst = await this.userEntityService.pack(dst);
+				for (const { userListId } of arrayToInsert) {
+					this.globalEventService.publishUserListStream(userListId, 'userAdded', packedDst);
+				}
+			})(),
+			(async () => {
+				// Have the proxy account follow the new account in the same way as addMember
+				if (!this.userEntityService.isRemoteUser(dst)) return;
+				const proxy = await this.systemAccountService.fetch('proxy');
+				await this.queueService.createFollowJob([{ from: { id: proxy.id }, to: { id: dst.id } }]);
+			})(),
+		]);
+		for (const result of results) {
+			if (result.status === 'rejected') throw result.reason;
+		}
 	}
 
 	@bindThis

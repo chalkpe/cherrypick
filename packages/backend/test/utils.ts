@@ -298,13 +298,17 @@ interface UploadOptions {
 	name?: string;
 	/** A Blob can be provided instead of path */
 	blob?: Blob;
+	/** The folder ID to upload the file to */
+	folderId?: string;
+	/** Whether to force upload even if a duplicate file hash exists */
+	force?: boolean;
 }
 
 /**
  * Upload file
  * @param user User
  */
-export const uploadFile = async (user?: UserToken, { path, name, blob }: UploadOptions = {}): Promise<{
+export const uploadFile = async (user?: UserToken, { path, name, blob, folderId, force }: UploadOptions = {}): Promise<{
 	status: number,
 	headers: Headers,
 	body: misskey.entities.DriveFile | null
@@ -322,9 +326,12 @@ export const uploadFile = async (user?: UserToken, { path, name, blob }: UploadO
 		basename(absPath.toString()),
 	);
 
-	formData.append('force', 'true');
+	formData.append('force', (force ?? true) ? 'true' : 'false');
 	if (name) {
 		formData.append('name', name);
+	}
+	if (folderId) {
+		formData.append('folderId', folderId);
 	}
 
 	const headers: Record<string, string> = {};
@@ -444,14 +451,16 @@ export function makeStreamCatcher<T>(
 	extractor: (message: Record<string, any>) => T,
 	timeout = 60 * 1000): Promise<T> {
 	let ws: WebSocket;
-	const p = new Promise<T>(async (resolve) => {
-		ws = await connectStream(user, channel, (msg) => {
+	const p = new Promise<T>((resolve, reject) => {
+		connectStream(user, channel, (msg) => {
 			if (cond(msg)) {
 				resolve(extractor(msg));
 			}
-		});
+		}).then(connected => {
+			ws = connected;
+		}, reject);
 	}).finally(() => {
-		ws.close();
+		ws?.close();
 	});
 
 	return timeoutPromise(p, timeout);
@@ -654,31 +663,33 @@ export async function captureWebhook<T = SystemWebhookPayload>(postAction: () =>
 	const fastify = Fastify();
 
 	let timeoutHandle: NodeJS.Timeout | null = null;
-	const result = await new Promise<string>(async (resolve, reject) => {
-		fastify.all('/', async (req, res) => {
-			if (timeoutHandle) {
-				clearTimeout(timeoutHandle);
+	const result = await new Promise<string>((resolve, reject) => {
+		void (async () => {
+			fastify.all('/', async (req, res) => {
+				if (timeoutHandle) {
+					clearTimeout(timeoutHandle);
+				}
+
+				const body = JSON.stringify(req.body);
+				res.status(200).send('ok');
+				await fastify.close();
+				resolve(body);
+			});
+
+			await fastify.listen({ port });
+
+			timeoutHandle = setTimeout(async () => {
+				await fastify.close();
+				reject(new Error('timeout'));
+			}, 3000);
+
+			try {
+				await postAction();
+			} catch (e) {
+				await fastify.close();
+				reject(e);
 			}
-
-			const body = JSON.stringify(req.body);
-			res.status(200).send('ok');
-			await fastify.close();
-			resolve(body);
-		});
-
-		await fastify.listen({ port });
-
-		timeoutHandle = setTimeout(async () => {
-			await fastify.close();
-			reject(new Error('timeout'));
-		}, 3000);
-
-		try {
-			await postAction();
-		} catch (e) {
-			await fastify.close();
-			reject(e);
-		}
+		})().catch(reject);
 	});
 
 	await fastify.close();

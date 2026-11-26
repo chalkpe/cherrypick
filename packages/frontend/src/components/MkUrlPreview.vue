@@ -35,7 +35,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		:src="`https://platform.twitter.com/embed/index.html?embedId=${embedId}&amp;hideCard=false&amp;hideThread=false&amp;lang=en&amp;theme=${store.s.darkMode ? 'dark' : 'light'}&amp;id=${tweetId}`"
 	></iframe>
 	<div :class="$style.action">
-		<MkButton :small="true" inline @click.stop="postExpanded = false">
+		<MkButton :small="true" inline @click.stop="setPostExpanded(false)">
 			<i class="ti ti-x"></i> {{ i18n.ts.close }}
 		</MkButton>
 	</div>
@@ -51,7 +51,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		></iframe>
 	</div>
 	<div :class="$style.action">
-		<MkButton :small="true" inline @click.stop="postExpanded = false">
+		<MkButton :small="true" inline @click.stop="setPostExpanded(false)">
 			<i class="ti ti-x"></i> {{ i18n.ts.close }}
 		</MkButton>
 	</div>
@@ -82,7 +82,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</component>
 	<template v-if="showActions">
 		<div v-if="tweetId" :class="$style.action">
-			<MkButton :small="true" inline @click.stop="postExpanded = true">
+			<MkButton :small="true" inline @click.stop="setPostExpanded(true)">
 				<i class="ti ti-brand-x"></i> {{ i18n.ts.expandPost }}
 			</MkButton>
 		</div>
@@ -105,7 +105,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 </template>
 
 <script lang="ts" setup>
-import { computed, defineAsyncComponent, onDeactivated, onUnmounted, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, onActivated, onDeactivated, onUnmounted, ref, watch } from 'vue';
 import { maybeMakeRelative } from '@@/js/url.js';
 import { url as local } from '@@/js/config.js';
 import { versatileLang } from '@@/js/intl-const.js';
@@ -161,10 +161,11 @@ watch(() => inviteJoinState.value?.joinedHere === true && inviteJoinState.value.
 		void refreshChatInviteMembersCount(chatInvite.value.url, chatInvite.value.membersCount);
 	}
 }, { immediate: true });
-const playerEnabled = ref(false);
+const playerEnabled = ref(false); // 初期値はsummaly取り終わったあとに設定
 const embedId = `embed${Math.random().toString().replace(/\D/, '')}`;
 
-const postExpanded = ref(props.detail);
+const postExpanded = ref(false); // 初期値はsummaly取り終わったあとに設定
+let postExpandedByUser = false;
 const postHeight = ref(150);
 
 const tweetId = ref<string | null>(null);
@@ -174,8 +175,14 @@ const bskyDid = ref<string | null>(null);
 const bskyPostRecordKey = ref<string | null>(null);
 
 const unknownUrl = ref(false);
+let isDeactivated = false;
+
+onActivated(() => {
+	isDeactivated = false;
+});
 
 onDeactivated(() => {
+	isDeactivated = true;
 	playerEnabled.value = false;
 });
 
@@ -192,9 +199,6 @@ if (requestUrl.hostname === 'bsky.app') {
 	if (bskyPostPageUrl[0] === 'profile' && bskyPostPageUrl[1] && bskyPostPageUrl[2] === 'post' && bskyPostPageUrl[3]) {
 		bskyHandleOrDid.value = bskyPostPageUrl[1];
 		bskyPostRecordKey.value = bskyPostPageUrl[3];
-		if (postExpanded.value) {
-			openBskyEmbed();
-		}
 	}
 }
 
@@ -215,10 +219,17 @@ window.fetch(`/url?url=${encodeURIComponent(requestUrl.href)}&lang=${versatileLa
 
 		return res.json();
 	})
+	.catch(err => {
+		if (_DEV_) {
+			console.warn('Failed to fetch url preview', err);
+		}
+		return null;
+	})
 	.then((info: SummalyResultWithChatInvite | null) => {
 		if (!info || info.url == null) {
 			fetching.value = false;
 			unknownUrl.value = true;
+			autoExpandPost();
 			return;
 		}
 
@@ -226,7 +237,28 @@ window.fetch(`/url?url=${encodeURIComponent(requestUrl.href)}&lang=${versatileLa
 		unknownUrl.value = false;
 
 		summalyResult.value = info;
+
+		if (!info.sensitive) {
+			autoExpandPost();
+			if (!isDeactivated) {
+				playerEnabled.value = (props.showActions && prefer.s.expandUrlPreviewAutomatically);
+			}
+		}
 	});
+
+function setPostExpanded(expanded: boolean) {
+	postExpandedByUser = true;
+	postExpanded.value = expanded;
+}
+
+function autoExpandPost() {
+	if (!props.detail || postExpandedByUser) return;
+	if (bskyPostRecordKey.value != null) {
+		void openBskyEmbed();
+	} else {
+		postExpanded.value = true;
+	}
+}
 
 async function openBskyEmbed() {
 	if (bskyHandleOrDid.value == null || bskyPostRecordKey.value == null) return;
@@ -242,7 +274,7 @@ async function openBskyEmbed() {
 			}
 		}
 	}
-	postExpanded.value = true;
+	setPostExpanded(true);
 }
 
 function openPlayer(): void {

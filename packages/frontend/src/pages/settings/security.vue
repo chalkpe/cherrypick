@@ -58,13 +58,18 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 <script lang="ts" setup>
 import { computed, markRaw } from 'vue';
+import * as Misskey from 'cherrypick-js';
 import X2fa from './2fa.vue';
 import FormSection from '@/components/form/section.vue';
 import FormSlot from '@/components/form/slot.vue';
 import MkButton from '@/components/MkButton.vue';
 import MkPagination from '@/components/MkPagination.vue';
 import * as os from '@/os.js';
+import { misskeyApi } from '@/utility/misskey-api.js';
 import { i18n } from '@/i18n.js';
+import { cloudBackup } from '@/preferences/utility.js';
+import { signout } from '@/signout.js';
+import { store } from '@/store.js';
 import { definePage } from '@/page.js';
 import MkFeatureBanner from '@/components/MkFeatureBanner.vue';
 import { Paginator } from '@/utility/paginator.js';
@@ -110,9 +115,35 @@ async function regenerateToken() {
 	const auth = await os.authenticateDialog();
 	if (auth.canceled) return;
 
-	await os.apiWithDialog('i/regenerate-token', {
-		password: auth.result.password,
-	}).catch(() => { /* apiWithDialog already displays the error. */ });
+	const hideWaiting = os.waiting();
+
+	// トークンが消えるので先にバックアップを終わらせる
+	if (store.s.enablePreferencesAutoCloudBackup) {
+		try {
+			await cloudBackup();
+		} catch {
+			// nop
+		}
+	}
+
+	try {
+		await misskeyApi('i/regenerate-token', {
+			password: auth.result.password,
+		});
+	} catch (err) {
+		hideWaiting();
+		// 대기 표시를 닫은 뒤, 기존과 같은 오류 안내를 띄운다
+		await os.apiErrorDialog('i/regenerate-token', err as Misskey.api.APIError);
+		return;
+	}
+
+	// 로그아웃이 끝날 때까지 대기 표시를 유지해, 무효화된 토큰으로 조작되지 않도록 한다
+	try {
+		await signout(false);
+	} catch (err) {
+		hideWaiting();
+		throw err;
+	}
 }
 
 const headerActions = computed(() => []);

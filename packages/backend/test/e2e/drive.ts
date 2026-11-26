@@ -8,7 +8,7 @@ process.env.NODE_ENV = 'test';
 import * as assert from 'assert';
 import { spawnSync } from 'node:child_process';
 import { describe, beforeAll, afterAll, test } from 'vitest';
-import { api, createAppToken, initTestDb, makeStreamCatcher, post, relativeFetch, signup, uploadFile, waitFire } from '../utils.js';
+import { api, castAsError, createAppToken, initTestDb, makeStreamCatcher, post, relativeFetch, signup, uploadFile, waitFire } from '../utils.js';
 import { IdService } from '@/core/IdService.js';
 import { loadConfig } from '@/config.js';
 import { MiDriveFolder } from '@/models/DriveFolder.js';
@@ -73,6 +73,18 @@ describe('Drive', () => {
 		const thumbnail = await relativeFetch(new URL(video.body.thumbnailUrl).pathname);
 		assert.strictEqual(thumbnail.status, 200);
 		assert.strictEqual(thumbnail.headers.get('content-type'), 'image/webp');
+	});
+
+	test('存在しないフォルダを指定するとエラーになる', async () => {
+		const existing = await uploadFile(alice);
+		assert.strictEqual(existing.status, 200);
+
+		for (const force of [true, false]) {
+			const res = await uploadFile(alice, { folderId: '0000000000000000', force });
+
+			assert.strictEqual(res.status, 400);
+			assert.strictEqual(castAsError(res.body as any).error.id, 'b9adda75-abe9-4c6d-bf12-b5575833960d');
+		}
 	});
 
 	test('添付ノート一覧を取得できる', async () => {
