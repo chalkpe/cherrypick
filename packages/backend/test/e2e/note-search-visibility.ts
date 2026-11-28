@@ -8,10 +8,11 @@ import type * as Misskey from 'cherrypick-js';
 import { api, post, signup } from '../utils.js';
 
 describe('Note search visibility', () => {
+	let root: Misskey.entities.SignupResponse;
 	let viewer: Misskey.entities.SignupResponse;
 
 	beforeAll(async () => {
-		const root = await signup({ username: 'search_root' });
+		root = await signup({ username: 'search_root' });
 		viewer = await signup({ username: 'search_viewer' });
 		expect((await api('admin/update-meta', { ugcVisibilityForVisitor: 'all' }, root)).status).toBe(204);
 		const policies = { canSearchNotes: true };
@@ -48,6 +49,34 @@ describe('Note search visibility', () => {
 		expect(visitor.body.map(result => result.id)).toEqual([visible.id]);
 		expect(member.status).toBe(200);
 		expect(member.body.map(result => result.id)).toEqual([membersOnly.id]);
+	});
+
+	test('pages through replies and quotes while omitting those that point at suspended users', async () => {
+		const author = await signup({ username: 'search_thread' });
+		const target = await signup({ username: 'search_target' });
+		const suspended = await signup({ username: 'search_suspended' });
+		const query = 'meadowflowers';
+		const parent = await post(target, { text: 'garden', localOnly: true });
+		const hiddenParent = await post(suspended, { text: 'garden', localOnly: true });
+		const reply = await post(author, { text: query, replyId: parent.id, localOnly: true });
+		await post(author, { text: query, replyId: hiddenParent.id, localOnly: true });
+		const quote = await post(author, { text: query, renoteId: parent.id, localOnly: true });
+		await post(author, { text: query, renoteId: hiddenParent.id, localOnly: true });
+		const plain = await post(author, { text: query, localOnly: true });
+		expect((await api('admin/suspend-user', { userId: suspended.id }, root)).status).toBe(204);
+
+		const first = await api('notes/search', { query, limit: 2 }, viewer);
+		const next = await api('notes/search', { query, limit: 2, untilId: quote.id }, viewer);
+		const previous = await api('notes/search', { query, limit: 2, sinceId: reply.id }, viewer);
+
+		expect(first.status).toBe(200);
+		expect(first.body.map(result => result.id)).toEqual([plain.id, quote.id]);
+		expect(first.body[1].renote?.user.id).toBe(target.id);
+		expect(next.status).toBe(200);
+		expect(next.body.map(result => result.id)).toEqual([reply.id]);
+		expect(next.body[0].reply?.user.id).toBe(target.id);
+		expect(previous.status).toBe(200);
+		expect(previous.body.map(result => result.id)).toEqual([quote.id, plain.id]);
 	});
 
 	test('applies the same age-based visibility to text, tags, and clip searches', async () => {

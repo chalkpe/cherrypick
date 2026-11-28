@@ -6,7 +6,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Brackets, ObjectLiteral } from 'typeorm';
 import { DI } from '@/di-symbols.js';
-import type { MiUser } from '@/models/User.js';
+import { MiUser } from '@/models/User.js';
 import type { UserProfilesRepository, FollowingsRepository, ChannelFollowingsRepository, BlockingsRepository, NoteThreadMutingsRepository, MutingsRepository, RenoteMutingsRepository, MiMeta } from '@/models/_.js';
 import { bindThis } from '@/decorators.js';
 import { IdService } from '@/core/IdService.js';
@@ -96,13 +96,15 @@ export class QueryService {
 		{
 			excludeUserFromMute,
 			excludeAuthor,
+			lookupRelatedUserSuspension,
 		}: {
 			excludeUserFromMute?: MiUser['id'],
 			excludeAuthor?: boolean,
+			lookupRelatedUserSuspension?: boolean,
 		} = {},
 	): void {
 		this.generateBlockedHostQueryForNote(query, excludeAuthor);
-		this.generateSuspendedUserQueryForNote(query, excludeAuthor);
+		this.generateSuspendedUserQueryForNote(query, excludeAuthor, lookupRelatedUserSuspension);
 		if (me) {
 			this.generateMutedUserQueryForNotes(query, me, { excludeUserFromMute });
 			this.generateBlockedUserQueryForNotes(query, me);
@@ -416,8 +418,9 @@ export class QueryService {
 	}
 
 	// Requirements: user replyUser renoteUser must be joined
+	// lookupRelatedUserSuspension을 켜면 user, reply, renote를 조인해야 한다. excludeAuthor를 설정하면 무시한다.
 	@bindThis
-	public generateSuspendedUserQueryForNote(q: SelectQueryBuilder<any>, excludeAuthor?: boolean): void {
+	public generateSuspendedUserQueryForNote(q: SelectQueryBuilder<any>, excludeAuthor?: boolean, lookupRelatedUserSuspension?: boolean): void {
 		if (excludeAuthor) {
 			const brakets = (user: string) => new Brackets(qb => qb
 				.where(`${user}.id IS NULL`) // そもそもreplyやrenoteではない、もしくはleftjoinなどでuserが存在しなかった場合を考慮
@@ -426,6 +429,25 @@ export class QueryService {
 			q
 				.andWhere(brakets('replyUser'))
 				.andWhere(brakets('renoteUser'));
+		} else if (lookupRelatedUserSuspension) {
+			// 사용자를 조인하지 않고 행마다 기본 키로 조회한다. 일치 건수를 지나치게 적게 추정하면
+			// 조인에서는 user 테이블 전체 탐색이 행 수만큼 반복될 수 있기 때문이다.
+			// 정지된 경우에만 1을 돌려주고 정수로 비교한다. 불리언 식(IS NOT TRUE 등)은 PostgreSQL이 절반만
+			// 남는다고 추정하므로, 일치가 많은 검색어에서 최신순 인덱스를 읽다가 일찍 멈추는 계획을 고르지 않게 된다.
+			const notSuspended = (relation: string) => {
+				const alias = `${relation}Author`;
+				const suspended = q.subQuery()
+					.select('1')
+					.from(MiUser, alias)
+					.where(`${alias}.id = ${relation}.userId`)
+					.andWhere(`${alias}.isSuspended = TRUE`)
+					.getQuery();
+				return `${suspended} IS DISTINCT FROM 1`;
+			};
+			q
+				.andWhere('user.isSuspended = FALSE')
+				.andWhere(notSuspended('reply'))
+				.andWhere(notSuspended('renote'));
 		} else {
 			const brakets = (user: string) => new Brackets(qb => qb
 				.where(`${user}.id IS NULL`) // そもそもreplyやrenoteではない、もしくはleftjoinなどでuserが存在しなかった場合を考慮
